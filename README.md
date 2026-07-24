@@ -1,5 +1,7 @@
 # react-native-smooth-clip-view
 
+[![npm version](https://img.shields.io/npm/v/react-native-smooth-clip-view.svg)](https://www.npmjs.com/package/react-native-smooth-clip-view)
+
 Layout-free animated rounded clipping for React Native Fabric.
 
 `SmoothClipView` keeps a fixed maximum Yoga footprint while Reanimated sends
@@ -18,6 +20,8 @@ The package supports iOS, Android, and React Native Web. It does not include a
 legacy Paper implementation.
 
 ## Installation
+
+Available from [npm](https://www.npmjs.com/package/react-native-smooth-clip-view):
 
 ```sh
 npm install react-native-smooth-clip-view react-native-reanimated react-native-worklets
