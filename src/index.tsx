@@ -1,0 +1,1 @@
+export { SmoothClipViewView } from './SmoothClipViewView';
