@@ -6,8 +6,8 @@ Layout-free animated rounded clipping for React Native Fabric.
 
 `SmoothClipView` keeps a fixed maximum Yoga footprint while Reanimated sends
 one atomic clip geometry update to the native view on the UI runtime. It is
-useful for expanding cards, sheets, maps, media, and other reveals where
-animating layout width and height would reflow descendants.
+useful for expanding cards, sheets, maps, media, zoom transitions, and other reveals where
+animating layout width and height cause lag because of yoga/fabric calculating layout every frame.
 
 ## Requirements
 
