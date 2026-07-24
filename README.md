@@ -9,6 +9,8 @@ one atomic clip geometry update to the native view on the UI runtime. It is
 useful for expanding cards, sheets, maps, media, zoom transitions, and other reveals where
 animating layout width and height cause lag because of yoga/fabric calculating layout every frame.
 
+In other words, it makes animating width height on Reanimated a cheap operation.
+
 ## Requirements
 
 - React Native 0.85 or newer with the New Architecture enabled
