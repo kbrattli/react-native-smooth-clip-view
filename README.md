@@ -155,20 +155,20 @@ The [`example`](./example) workspace is an Expo SDK 57 app that exercises the
 package through its public import on iOS, Android, and web.
 
 ```sh
-yarn
-yarn example ios
-yarn example android
-yarn example web
+npm install
+npm run example -- ios
+npm run example -- android
+npm run example -- web
 ```
 
 Run the repository checks with:
 
 ```sh
-yarn lint
-yarn typecheck
-yarn test
-yarn prepare
-yarn example build:web
+npm run lint
+npm run typecheck
+npm test
+npm run prepare
+npm run example -- build:web
 ```
 
 ## License
