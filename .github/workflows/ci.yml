@@ -57,6 +57,9 @@ jobs:
       - name: Build package
         run: yarn prepare
 
+      - name: Validate npm package contents
+        run: npm pack --dry-run --json
+
   build-android:
     runs-on: ubuntu-latest
 
@@ -119,6 +122,9 @@ jobs:
           JAVA_OPTS: "-XX:MaxHeapSize=6g"
         run: |
           yarn turbo run build:android --cache-dir="${{ env.TURBO_CACHE_DIR }}"
+
+      - name: Run Android native unit tests
+        run: yarn test:android
 
   build-ios:
     runs-on: macos-latest

@@ -6,12 +6,16 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.module.model.ReactModuleInfoProvider
 import com.facebook.react.uimanager.ViewManager
 
-class SmoothClipViewViewPackage : BaseReactPackage() {
-  override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
-    return listOf(SmoothClipViewViewManager())
-  }
+class SmoothClipViewPackage : BaseReactPackage() {
+    override fun createViewManagers(
+        reactContext: ReactApplicationContext,
+    ): List<ViewManager<*, *>> = listOf(SmoothClipViewManager())
 
-  override fun getModule(name: String, reactContext: ReactApplicationContext): NativeModule? = null
+    override fun getModule(
+        name: String,
+        reactContext: ReactApplicationContext,
+    ): NativeModule? = null
 
-  override fun getReactModuleInfoProvider() = ReactModuleInfoProvider { emptyMap() }
+    override fun getReactModuleInfoProvider() =
+        ReactModuleInfoProvider { emptyMap() }
 }
