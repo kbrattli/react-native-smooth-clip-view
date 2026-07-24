@@ -29,10 +29,10 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Lint files
-        run: yarn lint
+        run: npm run lint
 
       - name: Typecheck files
-        run: yarn typecheck
+        run: npm run typecheck
 
   test:
     runs-on: ubuntu-latest
@@ -45,7 +45,7 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Run unit tests
-        run: yarn test --maxWorkers=2 --coverage
+        run: npm test -- --maxWorkers=2 --coverage
 
   build-library:
     runs-on: ubuntu-latest
@@ -58,7 +58,7 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Build package
-        run: yarn prepare
+        run: npm run prepare
 
       - name: Validate npm package contents
         run: npm pack --dry-run --json
