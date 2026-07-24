@@ -1,13 +1,15 @@
 import { StatusBar } from 'expo-status-bar';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import {
   type ClipGeometry,
   SmoothClipView,
 } from 'react-native-smooth-clip-view';
 import {
+  default as Animated,
   Easing,
   interpolate,
+  useAnimatedStyle,
   useDerivedValue,
   useSharedValue,
   withTiming,
@@ -24,8 +26,11 @@ const COLLAPSED_CLIP: ClipGeometry = {
   radius: 52,
 };
 
+const COLLAPSED_CONTENT_SCALE = COLLAPSED_CLIP.width / HOST_WIDTH;
+
 export default function App() {
   const [expanded, setExpanded] = useState(false);
+  const expandedTarget = useRef(false);
   const progress = useSharedValue(0);
   const animatedClip = useDerivedValue<ClipGeometry>(() => ({
     x: interpolate(progress.value, [0, 1], [COLLAPSED_CLIP.x, 0]),
@@ -42,9 +47,22 @@ export default function App() {
     ),
     radius: interpolate(progress.value, [0, 1], [COLLAPSED_CLIP.radius, 32]),
   }));
+  const animatedContentStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(progress.value, [0, 0.35, 1], [0, 0, 1]),
+    transform: [
+      {
+        scale: interpolate(
+          progress.value,
+          [0, 1],
+          [COLLAPSED_CONTENT_SCALE, 1]
+        ),
+      },
+    ],
+  }));
 
   const toggleClip = () => {
-    const nextExpanded = !expanded;
+    const nextExpanded = !expandedTarget.current;
+    expandedTarget.current = nextExpanded;
     setExpanded(nextExpanded);
     progress.value = withTiming(nextExpanded ? 1 : 0, {
       duration: 650,
@@ -59,8 +77,8 @@ export default function App() {
         <Text style={styles.eyebrow}>FABRIC + REANIMATED</Text>
         <Text style={styles.title}>Smooth clip, fixed layout.</Text>
         <Text style={styles.description}>
-          The host stays 320 × 360 while native clipping animates independently
-          of Yoga layout.
+          Animate width and height without expensive layout calculations while
+          preserving a smooth border radius.
         </Text>
 
         <View style={styles.stage}>
@@ -72,23 +90,27 @@ export default function App() {
             <View style={styles.card}>
               <View style={styles.glowLarge} />
               <View style={styles.glowSmall} />
-              <Text style={styles.cardKicker}>REVEAL WINDOW</Text>
-              <Text style={styles.cardTitle}>One atomic geometry update.</Text>
-              <Text style={styles.cardCopy}>
-                Position, size, and corner radius travel together on the UI
-                runtime.
-              </Text>
-              <View style={styles.metricRow}>
-                <View>
-                  <Text style={styles.metricValue}>60 fps</Text>
-                  <Text style={styles.metricLabel}>layout-free target</Text>
+              <Animated.View style={[styles.cardContent, animatedContentStyle]}>
+                <Text style={styles.cardKicker}>REVEAL WINDOW</Text>
+                <Text style={styles.cardTitle}>
+                  One atomic geometry update.
+                </Text>
+                <Text style={styles.cardCopy}>
+                  Position, size, and corner radius travel together on the UI
+                  runtime.
+                </Text>
+                <View style={styles.metricRow}>
+                  <View style={styles.metricItem}>
+                    <Text style={styles.metricValue}>60 fps</Text>
+                    <Text style={styles.metricLabel}>layout-free target</Text>
+                  </View>
+                  <View style={styles.metricDivider} />
+                  <View style={styles.metricItem}>
+                    <Text style={styles.metricValue}>5 values</Text>
+                    <Text style={styles.metricLabel}>one native command</Text>
+                  </View>
                 </View>
-                <View style={styles.metricDivider} />
-                <View>
-                  <Text style={styles.metricValue}>5 values</Text>
-                  <Text style={styles.metricLabel}>one native command</Text>
-                </View>
-              </View>
+              </Animated.View>
             </View>
           </SmoothClipView>
         </View>
@@ -156,11 +178,13 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: '#112743',
     borderRadius: 32,
-    height: HOST_HEIGHT,
+    flex: 1,
     overflow: 'hidden',
+  },
+  cardContent: {
+    flex: 1,
     padding: 30,
     paddingTop: 38,
-    width: HOST_WIDTH,
   },
   glowLarge: {
     backgroundColor: '#0CA7C7',
@@ -190,6 +214,7 @@ const styles = StyleSheet.create({
   },
   cardTitle: {
     color: '#FFFFFF',
+    flexShrink: 1,
     fontSize: 28,
     fontWeight: '800',
     letterSpacing: -0.6,
@@ -199,6 +224,7 @@ const styles = StyleSheet.create({
   },
   cardCopy: {
     color: '#B9C9DC',
+    flexShrink: 1,
     fontSize: 15,
     lineHeight: 22,
     marginTop: 16,
@@ -206,18 +232,22 @@ const styles = StyleSheet.create({
   },
   metricRow: {
     alignItems: 'center',
-    bottom: 30,
     flexDirection: 'row',
-    left: 30,
-    position: 'absolute',
+    marginTop: 'auto',
+  },
+  metricItem: {
+    flex: 1,
+    minWidth: 0,
   },
   metricValue: {
     color: '#FFFFFF',
+    flexShrink: 1,
     fontSize: 17,
     fontWeight: '800',
   },
   metricLabel: {
     color: '#8397AF',
+    flexShrink: 1,
     fontSize: 11,
     marginTop: 3,
   },
