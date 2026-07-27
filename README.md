@@ -4,8 +4,8 @@
 
 Layout-free animated rounded clipping for React Native Fabric.
 
-`SmoothClipView` keeps a fixed maximum Yoga footprint while Reanimated sends
-one atomic clip geometry update to the native view on the UI runtime. It is
+`SmoothClipView` keeps a fixed maximum Yoga footprint while a reusable driver
+updates only the native clipping layer. It is
 useful for expanding cards, sheets, maps, media, zoom transitions, and other reveals where
 animating layout width and height cause lag because of yoga/fabric calculating layout every frame.
 
@@ -13,8 +13,9 @@ In other words, it makes animating width height on Reanimated a cheap operation.
 
 ## Requirements
 
-- React Native 0.85 or newer with the New Architecture enabled
-- React Native Reanimated 4.3 or newer
+- React Native 0.86 or newer with the New Architecture enabled
+- React Native Reanimated 4.5 or newer
+- React Native Worklets 0.10 or newer
 - iOS 16.4 or newer
 - Android API 26 or newer
 
@@ -46,13 +47,9 @@ import { Button, StyleSheet, View } from 'react-native';
 import {
   type ClipGeometry,
   SmoothClipView,
+  createClipPresentation,
+  useSmoothClipDriver,
 } from 'react-native-smooth-clip-view';
-import {
-  interpolate,
-  useDerivedValue,
-  useSharedValue,
-  withTiming,
-} from 'react-native-reanimated';
 
 const initialClip: ClipGeometry = {
   x: 120,
@@ -64,28 +61,29 @@ const initialClip: ClipGeometry = {
 
 export function ClipExample() {
   const [expanded, setExpanded] = useState(false);
-  const progress = useSharedValue(0);
-  const animatedClip = useDerivedValue<ClipGeometry>(() => ({
-    x: interpolate(progress.value, [0, 1], [120, 0]),
-    y: interpolate(progress.value, [0, 1], [180, 0]),
-    width: interpolate(progress.value, [0, 1], [80, 320]),
-    height: interpolate(progress.value, [0, 1], [80, 480]),
-    radius: interpolate(progress.value, [0, 1], [40, 24]),
-  }));
+  const driver = useSmoothClipDriver(
+    createClipPresentation(initialClip, -initialClip.x, -initialClip.y)
+  );
 
   const toggle = () => {
     const next = !expanded;
     setExpanded(next);
-    progress.value = withTiming(next ? 1 : 0);
+    const clip = next
+      ? { x: 0, y: 0, width: 320, height: 480, radius: 24 }
+      : initialClip;
+    void driver.react.animateTo(
+      createClipPresentation(clip, -clip.x, -clip.y),
+      {
+        type: 'timing',
+        duration: 450,
+        controlPoints: [0.42, 0, 0.58, 1],
+      }
+    );
   };
 
   return (
     <View>
-      <SmoothClipView
-        initialClip={initialClip}
-        animatedClip={animatedClip}
-        style={styles.host}
-      >
+      <SmoothClipView driver={driver} style={styles.host}>
         <View style={styles.content} />
       </SmoothClipView>
       <Button title="Toggle clip" onPress={toggle} />
@@ -99,9 +97,57 @@ const styles = StyleSheet.create({
 });
 ```
 
-`initialClip` must equal `animatedClip.value` when the component mounts. This
-lets native rendering start with the correct clip before the first UI-runtime
-command is dispatched.
+The same driver can be passed to multiple hosts. One native registry update
+fans the seven-scalar presentation out to all mounted hosts. Interactive
+updates avoid Yoga and ShadowTree commits.
+
+For transitions whose endpoint is known, let Core Animation interpolate on the
+render server:
+
+```tsx
+const expandFromReact = () =>
+  driver.react.animateTo(
+    createClipPresentation(
+      { x: 0, y: 0, width: 320, height: 480, radius: 24 },
+      0,
+      0
+    ),
+    {
+      type: 'timing',
+      duration: 450,
+      controlPoints: [0.42, 0, 0.58, 1],
+    }
+  );
+```
+
+Native timing, spring, and keyframed transitions have no app callback between
+setup and completion on iOS. Core Animation interpolates the clip and content
+translation as one presentation. Android runs one C++ frame-loop driven by the
+vsync clock with registry fanout; outline calculation and invalidation still
+run on its UI thread. Springs are physically integrated per geometry channel
+and finish when they settle below sub-pixel thresholds on both platforms.
+Retargeting starts from visible state.
+The same driver can be grabbed by a gesture without a visual jump:
+
+```tsx
+const gesture = Gesture.Pan()
+  .onStart(() => {
+    const visible = driver.ui.beginInteraction();
+    dragStart.value = visible.clip.height;
+  })
+  .onUpdate((event) => {
+    const clip = geometryForDrag(dragStart.value, event.translationY);
+    // Per-frame hot path: writes straight to native without SharedValue
+    // bookkeeping. Assigning driver.presentation.value also works.
+    driver.ui.setScalars(clip.x, clip.y, clip.width, clip.height, clip.radius, 0, 0);
+  })
+  .onEnd(() => {
+    driver.ui.animateTo(createClipPresentation(expandedClip), {
+      type: 'spring',
+      initialVelocity: 'inherit',
+    });
+  });
+```
 
 ## API
 
@@ -109,11 +155,71 @@ command is dispatched.
 
 `SmoothClipViewProps` extends React Native `ViewProps` and adds:
 
-| Prop | Type | Description |
-| --- | --- | --- |
-| `initialClip` | `ClipGeometry` | Clip rendered synchronously at mount. |
-| `animatedClip` | `SharedValue<ClipGeometry>` | Geometry observed on the Reanimated UI runtime. |
-| `children` | `ReactNode` | Content rendered inside the fixed host. |
+| Prop       | Type               | Description                             |
+| ---------- | ------------------ | --------------------------------------- |
+| `driver`   | `SmoothClipDriver` | Reusable hybrid clip driver.            |
+| `children` | `ReactNode`        | Content rendered inside the fixed host. |
+
+### Driver
+
+- `useSmoothClipDriver(initialPresentation, options)` returns one hybrid driver
+  whose writable `presentation` SharedValue contains clip geometry and content
+  translation. Passing a `ClipGeometry` remains supported and initializes both
+  translations to zero.
+- `driver.ui` is the synchronous UI-worklet interface. `beginInteraction()`
+  freezes a transition at visible presentation state; `set()`, `animateTo()`,
+  and `cancel()` change ownership atomically.
+- `driver.ui.setScalars(x, y, width, height, radius, tx, ty)` is the per-frame
+  hot path: it writes geometry straight to native without touching
+  `driver.presentation`, skipping SharedValue bookkeeping for high-frequency
+  streams such as gestures. `driver.presentation.value` is stale after hot
+  writes by design; `beginInteraction()` remains the source of truth for
+  visible geometry, and `animateTo()` after hot writes starts from the native
+  registry's latest value rather than the stale SharedValue. Do not interleave
+  `setScalars` with `presentation.value` writes on the same driver.
+- Spring `initialVelocity` is one normalized scalar along the current-to-target
+  trajectory, in units of the remaining distance per second (`1` covers the
+  remaining distance in one second). Every geometry channel continues with the
+  same normalized rate, so grab/release preserves the felt direction and
+  speed. `'inherit'` (the default) estimates the scalar from the last two
+  interactive samples on iOS and Android; samples older than 100 ms — and the
+  web fallback — fall back to zero.
+- `driver.react` exposes `beginInteraction`, `set`, `animateTo`, and `cancel`
+  as Promises (`setScalars` is UI-worklet-only). React code never blocks
+  waiting for main/UI-thread work. An immediate animation request resolves
+  before its completion callback is delivered.
+- `animateTo()` transfers ownership to native animation. Timing uses
+  cubic Bézier control points; springs accept mass, stiffness, damping, and an
+  explicit normalized velocity or `'inherit'` (the default). Keyframes accept
+  validated, monotonically increasing offsets from zero through one.
+- `cancel()` freezes visible presentation by default. Pass `'target'` as its
+  behavior to jump to the requested endpoint.
+- `options.onAnimationComplete` fires once per animation with its ID and
+  `finished` state, including cancellation, replacement, participant unmount,
+  and native-side rejection (`animateTo` then returns `0` and one
+  `finished: false` completion is delivered).
+
+Do not call `driver.ui` from React code — it throws on the React runtime; use
+`driver.react` there. During a native transition, `driver.presentation.value`
+is the requested target, not a per-frame mirror of the native presentation
+layer. `beginInteraction()` returns geometry normalized against the host
+bounds, so a clip that extended beyond the host comes back clamped. Start
+gestures with `beginInteraction()`: interactive writes issued while native
+still owns rendering are dropped.
+
+### `SmoothClipPresentation`
+
+```ts
+type SmoothClipPresentation = Readonly<{
+  clip: ClipGeometry;
+  contentTranslateX: number;
+  contentTranslateY: number;
+}>;
+```
+
+Use the content translation fields when a clipped viewport must reveal a
+fixed-size child without a separate Reanimated transform. Native transitions
+animate clip position, bounds, radius, and content translation together.
 
 ### `ClipGeometry`
 
@@ -136,6 +242,15 @@ negative sizes, and clamps `radius` to half of the visible shortest edge.
 `normalizeClipGeometry(geometry, bounds)` mirrors the native normalization
 contract for tests and non-native calculations. Native bounds remain
 authoritative at render time.
+
+## Migrating from 0.0.x
+
+Version 0.1.0 removes the `initialClip` and `animatedClip` props in favor of
+the driver API: create a driver with `useSmoothClipDriver(initialPresentation)`,
+pass it as the `driver` prop, and move per-frame updates from the
+`animatedClip` SharedValue to `driver.presentation.value` (or
+`driver.ui.setScalars`). Autonomous transitions move from Reanimated
+`withTiming`/`withSpring` to `driver.ui.animateTo` / `driver.react.animateTo`.
 
 ## Layout and styling contract
 

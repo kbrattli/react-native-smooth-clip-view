@@ -1,0 +1,39 @@
+cmake_minimum_required(VERSION 3.16)
+project(smoothclipview)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(fbjni REQUIRED CONFIG)
+find_package(ReactAndroid REQUIRED CONFIG)
+
+# Folly compile flags used across the React Native C++ surface.
+include("${REACT_NATIVE_DIR}/ReactAndroid/cmake-utils/folly-flags.cmake")
+add_compile_options(${folly_FLAGS})
+
+file(GLOB smoothclip_SOURCES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/main/cpp/*.cpp")
+
+add_library(smoothclipview SHARED ${smoothclip_SOURCES})
+
+# C++20, RTTI, exceptions and React Native macros.
+include("${REACT_NATIVE_DIR}/ReactCommon/cmake-utils/react-native-flags.cmake")
+target_compile_reactnative_options(smoothclipview PUBLIC)
+
+target_include_directories(
+  smoothclipview
+  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/main/cpp"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../cpp"
+          "${REACT_NATIVE_DIR}/ReactCommon"
+          "${REACT_NATIVE_DIR}/ReactCommon/jsi"
+          "${REACT_NATIVE_DIR}/ReactCommon/callinvoker"
+          "${REACT_NATIVE_DIR}/ReactCommon/react/nativemodule/core/ReactCommon"
+          "${REACT_NATIVE_DIR}/ReactAndroid/src/main/jni/react/turbomodule")
+
+target_link_libraries(
+  smoothclipview
+  android
+  log
+  fbjni::fbjni
+  ReactAndroid::jsi
+  ReactAndroid::reactnative)

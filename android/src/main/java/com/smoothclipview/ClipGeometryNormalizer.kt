@@ -3,6 +3,7 @@ package com.smoothclipview
 import android.view.View
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * Normalizes clip geometry without allocating a result object. The callback is
@@ -52,6 +53,30 @@ internal inline fun normalizeClipGeometryPx(
 
 internal fun clipVisibility(isEmpty: Boolean): Int =
     if (isEmpty) View.INVISIBLE else View.VISIBLE
+
+/**
+ * Outline dedupe on the rounded integer physical-pixel edges actually emitted
+ * to the outline provider. Sub-pixel motion that rounds to the cached integers
+ * must not invalidate the outline; the radius stays a float comparison because
+ * it is emitted to the outline as a float.
+ */
+internal fun outlineChanged(
+    left: Float,
+    top: Float,
+    right: Float,
+    bottom: Float,
+    radius: Float,
+    cachedLeft: Int,
+    cachedTop: Int,
+    cachedRight: Int,
+    cachedBottom: Int,
+    cachedRadius: Float,
+): Boolean =
+    left.roundToInt() != cachedLeft ||
+        top.roundToInt() != cachedTop ||
+        right.roundToInt() != cachedRight ||
+        bottom.roundToInt() != cachedBottom ||
+        radius != cachedRadius
 
 internal fun clipAccessibility(
     isEmpty: Boolean,

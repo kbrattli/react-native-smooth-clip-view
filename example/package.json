@@ -4,6 +4,7 @@
   "main": "index.js",
   "dependencies": {
     "@expo/metro-runtime": "~57.0.7",
+    "@shopify/react-native-skia": "2.6.2",
     "expo": "~57.0.8",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
@@ -11,6 +12,7 @@
     "react-native": "0.86.0",
     "react-native-reanimated": "4.5.0",
     "react-native-smooth-clip-view": "*",
+    "react-native-svg": "15.15.4",
     "react-native-web": "~0.21.0",
     "react-native-worklets": "0.10.0"
   },
