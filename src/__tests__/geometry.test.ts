@@ -1,6 +1,9 @@
 import { describe, expect, it } from '@jest/globals';
 
 import {
+  clipPresentationEquals,
+  createClipPresentation,
+  isFiniteClipPresentation,
   clipGeometryEquals,
   isFiniteClipGeometry,
   normalizeClipGeometry,
@@ -99,5 +102,26 @@ describe('normalizeClipGeometry', () => {
     );
     expect(clipPath).not.toContain('width');
     expect(clipPath).not.toContain('height');
+  });
+});
+
+describe('SmoothClipPresentation', () => {
+  it('compares and validates clip plus content translation atomically', () => {
+    const clip = { x: 1, y: 2, width: 30, height: 40, radius: 5 };
+    const presentation = createClipPresentation(clip, -11, 17);
+
+    expect(isFiniteClipPresentation(presentation)).toBe(true);
+    expect(
+      clipPresentationEquals(
+        createClipPresentation({ ...clip }, -11, 17),
+        presentation
+      )
+    ).toBe(true);
+    expect(
+      isFiniteClipPresentation({
+        ...presentation,
+        contentTranslateY: Number.NaN,
+      })
+    ).toBe(false);
   });
 });

@@ -1,0 +1,345 @@
+#import <XCTest/XCTest.h>
+
+#import "SmoothClipView.h"
+#import "SmoothClipViewRegistry.h"
+
+#import <QuartzCore/QuartzCore.h>
+#import <react/renderer/core/LayoutMetrics.h>
+
+#include <cmath>
+
+@interface SmoothClipRegistryTests : XCTestCase
+@end
+
+@implementation SmoothClipRegistryTests
+
+static smoothclip::Presentation Presentation(
+    double x,
+    double y,
+    double width,
+    double height,
+    double radius,
+    double translateX = 0,
+    double translateY = 0) {
+  return {{x, y, width, height, radius}, translateX, translateY};
+}
+
+- (void)testRegistrationIsIdempotentAndCleanupMatchesTheExactView {
+  constexpr uint64_t driverId = 9001;
+  SmoothClipView *first = [[SmoothClipView alloc] initWithFrame:CGRectZero];
+  SmoothClipView *replacement =
+      [[SmoothClipView alloc] initWithFrame:CGRectZero];
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 100, 100, 12, -4, -8);
+
+  smoothclip::registerView(driverId, first, initial);
+  smoothclip::registerView(driverId, first, initial);
+  smoothclip::registerView(driverId, replacement, initial);
+  XCTAssertEqual(smoothclip::registeredViewCount(driverId), 2u);
+
+  smoothclip::unregisterView(driverId, first);
+  XCTAssertEqual(smoothclip::registeredViewCount(driverId), 1u);
+  smoothclip::unregisterView(driverId, first);
+  XCTAssertEqual(smoothclip::registeredViewCount(driverId), 1u);
+  smoothclip::unregisterView(driverId, replacement);
+  XCTAssertEqual(smoothclip::registeredViewCount(driverId), 0u);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testUnmountEndsARegisteredTransition {
+  constexpr uint64_t driverId = 9002;
+  SmoothClipView *view = [[SmoothClipView alloc] initWithFrame:CGRectZero];
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+
+  smoothclip::registerView(driverId, view, initial);
+  const int32_t animationId = smoothclip::animateTiming(
+      driverId, {true, initial}, target, timing);
+  XCTAssertGreaterThan(animationId, 0);
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+
+  smoothclip::unregisterView(driverId, view);
+  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testBeginInteractionCancelsTheActiveTransitionAndReturnsCanonicalGeometry {
+  constexpr uint64_t driverId = 9003;
+  SmoothClipView *view = [[SmoothClipView alloc]
+      initWithFrame:CGRectMake(0, 0, 120, 120)];
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+
+  smoothclip::registerView(driverId, view, initial);
+  smoothclip::animateTiming(driverId, {true, initial}, target, timing);
+  const smoothclip::Presentation current =
+      smoothclip::beginInteraction(driverId);
+
+  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+  XCTAssertTrue(std::isfinite(current.clip.width));
+  XCTAssertTrue(std::isfinite(current.clip.height));
+  XCTAssertTrue(std::isfinite(current.contentTranslateX));
+  XCTAssertTrue(std::isfinite(current.contentTranslateY));
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testAnimationWithoutViewsCompletesImmediately {
+  constexpr uint64_t driverId = 9004;
+  __block int32_t completedAnimation = 0;
+  __block BOOL completedFinished = NO;
+  smoothclip::setCompletionCallback(
+      self,
+      [&](uint64_t completedDriver, int32_t animationId, bool finished) {
+        if (completedDriver != driverId) return;
+        completedAnimation = animationId;
+        completedFinished = finished;
+      });
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+
+  const int32_t animationId = smoothclip::animateTiming(
+      driverId, {true, initial}, target, timing);
+
+  XCTAssertEqual(completedAnimation, animationId);
+  XCTAssertTrue(completedFinished);
+  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+  smoothclip::clearCompletionCallback(self);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testSevenScalarPresentationRoundTripsExactly {
+  constexpr uint64_t driverId = 9005;
+  SmoothClipView *view = [[SmoothClipView alloc]
+      initWithFrame:CGRectMake(0, 0, 120, 120)];
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation updated =
+      Presentation(0, 0, 80, 70, 14, -27, 19);
+  smoothclip::registerView(driverId, view, initial);
+  smoothclip::setPresentation(driverId, updated, true);
+  const smoothclip::Presentation current =
+      smoothclip::beginInteraction(driverId);
+  XCTAssertEqual(current.clip.width, updated.clip.width);
+  XCTAssertEqual(current.clip.height, updated.clip.height);
+  XCTAssertEqual(current.contentTranslateX, updated.contentTranslateX);
+  XCTAssertEqual(current.contentTranslateY, updated.contentTranslateY);
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testDestroyDriverCancelsAndErasesState {
+  constexpr uint64_t driverId = 9006;
+  SmoothClipView *view = [[SmoothClipView alloc]
+      initWithFrame:CGRectMake(0, 0, 120, 120)];
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+  smoothclip::registerView(driverId, view, initial);
+  smoothclip::animateTiming(driverId, {true, initial}, target, timing);
+
+  smoothclip::destroyDriver(driverId);
+
+  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+  XCTAssertEqual(smoothclip::registeredViewCount(driverId), 0u);
+}
+
+- (void)testJoinActiveAnimationReplaysForDeferredView {
+  constexpr uint64_t driverId = 9007;
+  SmoothClipView *canonical = [[SmoothClipView alloc]
+      initWithFrame:CGRectMake(0, 0, 120, 120)];
+  SmoothClipView *deferred = [[SmoothClipView alloc] initWithFrame:CGRectZero];
+  SmoothClipView *stray = [[SmoothClipView alloc] initWithFrame:CGRectZero];
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+
+  smoothclip::registerView(driverId, canonical, initial);
+  smoothclip::animateTiming(driverId, {true, initial}, target, timing);
+  smoothclip::registerView(driverId, deferred, initial);
+
+  XCTAssertTrue(smoothclip::joinActiveAnimation(driverId, deferred));
+  XCTAssertFalse(smoothclip::joinActiveAnimation(driverId, stray));
+
+  smoothclip::cancelAnimation(driverId, 0, false);
+  XCTAssertFalse(smoothclip::joinActiveAnimation(driverId, deferred));
+  smoothclip::unregisterView(driverId, canonical);
+  smoothclip::unregisterView(driverId, deferred);
+  smoothclip::destroyDriver(driverId);
+  XCTAssertFalse(smoothclip::joinActiveAnimation(driverId, deferred));
+}
+
+- (void)testUnregisteringLastParticipantReleasesNativeOwnership {
+  constexpr uint64_t driverId = 9008;
+  SmoothClipView *view = [[SmoothClipView alloc] initWithFrame:CGRectZero];
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::Presentation dragged = Presentation(4, 4, 60, 60, 10, 1, 2);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+
+  smoothclip::registerView(driverId, view, initial);
+  smoothclip::animateTiming(driverId, {true, initial}, target, timing);
+  smoothclip::unregisterView(driverId, view);
+
+  // Ownership must revert to interactive: a non-owning delivery applies.
+  smoothclip::setPresentation(driverId, dragged, false);
+  const smoothclip::Presentation current =
+      smoothclip::beginInteraction(driverId);
+  XCTAssertEqual(current.clip.x, dragged.clip.x);
+  XCTAssertEqual(current.clip.width, dragged.clip.width);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testDestroyKeepsATombstoneWhileViewsRemainRegistered {
+  constexpr uint64_t driverId = 9009;
+  SmoothClipView *view = [[SmoothClipView alloc] initWithFrame:CGRectZero];
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation stale = Presentation(1, 1, 50, 50, 9, 0, 0);
+  const smoothclip::Presentation revived = Presentation(2, 2, 70, 70, 7, 0, 0);
+
+  smoothclip::registerView(driverId, view, initial);
+  smoothclip::destroyDriver(driverId);
+  XCTAssertEqual(smoothclip::registeredViewCount(driverId), 1u);
+
+  // Stale non-owning deliveries are dropped on the tombstone...
+  smoothclip::setPresentation(driverId, stale, false);
+  // ...but the hook's authoritative re-seed revives it.
+  smoothclip::setPresentation(driverId, revived, true);
+  const smoothclip::Presentation current =
+      smoothclip::beginInteraction(driverId);
+  XCTAssertEqual(current.clip.x, revived.clip.x);
+
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::destroyDriver(driverId);
+  XCTAssertEqual(smoothclip::registeredViewCount(driverId), 0u);
+}
+
+- (void)testDestroyedDriverEntryPointsFailDefinedAndDoNotResurrect {
+  constexpr uint64_t driverId = 9012;
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+  SmoothClipView *view = [[SmoothClipView alloc] initWithFrame:CGRectZero];
+  smoothclip::registerView(driverId, view, initial);
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::destroyDriver(driverId);
+
+  XCTAssertEqual(
+      smoothclip::animateTiming(driverId, {true, initial}, target, timing), 0);
+  XCTAssertEqual(smoothclip::rejectAnimation(driverId), 0);
+  XCTAssertFalse(
+      std::isfinite(smoothclip::beginInteraction(driverId).clip.width));
+  smoothclip::setPresentation(driverId, target, false);
+  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+  XCTAssertEqual(smoothclip::registeredViewCount(driverId), 0u);
+}
+
+- (void)testOffMainCallsFailDefinedWithoutBlocking {
+  constexpr uint64_t driverId = 9010;
+  SmoothClipView *view = [[SmoothClipView alloc]
+      initWithFrame:CGRectMake(0, 0, 120, 120)];
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+  smoothclip::registerView(driverId, view, initial);
+
+  __block int32_t animationId = -1;
+  __block int32_t rejected = -1;
+  __block smoothclip::Presentation began = initial;
+  __block smoothclip::CancelResult cancel{true, initial};
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  dispatch_async(
+      dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        began = smoothclip::beginInteraction(driverId);
+        animationId = smoothclip::animateTiming(
+            driverId, {true, initial}, target, timing);
+        cancel = smoothclip::cancelAnimation(driverId, 0, false);
+        rejected = smoothclip::rejectAnimation(driverId);
+        dispatch_semaphore_signal(done);
+      });
+  const long timedOut = dispatch_semaphore_wait(
+      done, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
+
+  // The off-main path must fail defined instead of blocking (a synchronous
+  // main-queue hop can deadlock against the worklets UI-runtime mutex).
+  XCTAssertEqual(timedOut, 0);
+  XCTAssertFalse(std::isfinite(began.clip.width));
+  XCTAssertEqual(animationId, 0);
+  XCTAssertFalse(cancel.handled);
+  XCTAssertEqual(rejected, 0);
+  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testSpringInitialVelocityIsPassedNormalizedToEveryKeyPath {
+  constexpr uint64_t driverId = 9011;
+  SmoothClipView *view = [[SmoothClipView alloc]
+      initWithFrame:CGRectMake(0, 0, 120, 120)];
+  facebook::react::LayoutMetrics metrics;
+  metrics.frame = facebook::react::Rect{
+      facebook::react::Point{0, 0}, facebook::react::Size{120, 120}};
+  [view updateLayoutMetrics:metrics
+           oldLayoutMetrics:facebook::react::LayoutMetrics{}];
+  const smoothclip::Presentation initial = Presentation(0, 0, 40, 40, 8, 0, 0);
+  smoothclip::registerView(driverId, view, initial);
+
+  // reduceMotion 'never' so the spring installs even on CI machines.
+  const smoothclip::SpringAnimation spring{1, 180, 18, 3.5, false, 2};
+  const int32_t animationId = smoothclip::animateSpring(
+      driverId, {true, initial},
+      Presentation(0, 0, 100, 100, 12, -20, -30), spring);
+  XCTAssertGreaterThan(animationId, 0);
+
+  // CASpringAnimation.initialVelocity is normalized (its settlingDuration is
+  // independent of the from/to distance), so the projected scalar must reach
+  // every key path unchanged — not multiplied by per-property deltas.
+  UIView *container = [view valueForKey:@"clipContainer"];
+  CAAnimationGroup *group = (CAAnimationGroup *)[container.layer
+      animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(group);
+  XCTAssertEqual(group.animations.count, 7u);
+  for (CASpringAnimation *animation in group.animations) {
+    XCTAssertEqualWithAccuracy(animation.initialVelocity, 3.5, 1e-9);
+    // One settling solve is shared by the whole group; every spring's assigned
+    // duration must still equal its own settlingDuration.
+    XCTAssertEqualWithAccuracy(animation.duration, group.duration, 1e-6);
+    XCTAssertEqualWithAccuracy(
+        animation.duration, animation.settlingDuration, 1e-6);
+  }
+
+  smoothclip::cancelAnimation(driverId, 0, false);
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testNonOwningDeliveryNeverCreatesADriverEntry {
+  constexpr uint64_t driverId = 9013;
+  smoothclip::setPresentation(
+      driverId, Presentation(1, 2, 30, 40, 5, 0, 0), false);
+  XCTAssertEqual(smoothclip::registeredViewCount(driverId), 0u);
+  XCTAssertFalse(
+      std::isfinite(smoothclip::beginInteraction(driverId).clip.width));
+}
+
+@end

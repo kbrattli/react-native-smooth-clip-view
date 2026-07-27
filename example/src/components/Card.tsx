@@ -1,47 +1,41 @@
-import { StyleSheet, Text, View } from 'react-native';
-import Animated, {
-  interpolate,
-  type SharedValue,
-  useAnimatedStyle,
-} from 'react-native-reanimated';
+import { Image, StyleSheet, Text, View } from 'react-native';
+import { StressWorkload } from './StressWorkload';
+
+const stressBackground = require('../../assets/stress-background.jpg');
 
 type CardProps = {
-  collapsedScale: number;
-  progress: SharedValue<number>;
+  index: number;
+  maximumHeight: number;
+  maximumWidth: number;
 };
 
-export function Card({ collapsedScale, progress }: CardProps) {
-  const animatedContentStyle = useAnimatedStyle(() => ({
-    opacity: interpolate(progress.value, [0, 0.35, 1], [0, 0, 1]),
-    transform: [
-      {
-        scale: interpolate(progress.value, [0, 1], [collapsedScale, 1]),
-      },
-    ],
-  }));
-
+/** Static content keeps clip-driver traces free of unrelated worklets. */
+export function Card({ index, maximumHeight, maximumWidth }: CardProps) {
   return (
     <View style={styles.card}>
-      <View style={styles.glowLarge} />
-      <View style={styles.glowSmall} />
-      <Animated.View style={[styles.cardContent, animatedContentStyle]}>
-        <Text style={styles.cardKicker}>REVEAL WINDOW</Text>
-        <Text style={styles.cardTitle}>One atomic geometry update.</Text>
-        <Text style={styles.cardCopy}>
-          Position, size, and corner radius travel together on the UI runtime.
-        </Text>
-        <View style={styles.metricRow}>
-          <View style={styles.metricItem}>
-            <Text style={styles.metricValue}>60 fps</Text>
-            <Text style={styles.metricLabel}>layout-free target</Text>
-          </View>
-          <View style={styles.metricDivider} />
-          <View style={styles.metricItem}>
-            <Text style={styles.metricValue}>5 values</Text>
-            <Text style={styles.metricLabel}>one native command</Text>
+      <Image
+        resizeMode="cover"
+        source={stressBackground}
+        style={StyleSheet.absoluteFill}
+      />
+      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+        <StressWorkload
+          height={maximumHeight}
+          hostIndex={index}
+          width={maximumWidth}
+        />
+        <View style={styles.scrim} />
+        <View style={styles.glow} />
+        <View style={styles.cardContent}>
+          <Text style={styles.cardKicker}>STRESS HOST {index + 1}</Text>
+          <Text numberOfLines={2} style={styles.cardTitle}>
+            Atomic geometry under load.
+          </Text>
+          <View style={styles.metricBadge}>
+            <Text style={styles.metricText}>IMAGE + CONTENT</Text>
           </View>
         </View>
-      </Animated.View>
+      </View>
     </View>
   );
 }
@@ -49,84 +43,57 @@ export function Card({ collapsedScale, progress }: CardProps) {
 const styles = StyleSheet.create({
   card: {
     backgroundColor: '#112743',
-    borderRadius: 32,
+    borderRadius: 18,
     flex: 1,
     overflow: 'hidden',
   },
-  cardContent: {
-    flex: 1,
-    padding: 30,
-    paddingTop: 38,
+  scrim: {
+    backgroundColor: 'rgba(4, 15, 28, 0.48)',
+    bottom: 0,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
   },
-  glowLarge: {
+  glow: {
     backgroundColor: '#0CA7C7',
-    borderRadius: 120,
-    height: 240,
-    opacity: 0.38,
-    position: 'absolute',
-    right: -95,
-    top: -90,
-    width: 240,
-  },
-  glowSmall: {
-    backgroundColor: '#7357FF',
-    borderRadius: 75,
-    bottom: -35,
+    borderRadius: 80,
     height: 150,
-    left: -45,
-    opacity: 0.34,
+    opacity: 0.28,
     position: 'absolute',
+    right: -65,
+    top: -65,
     width: 150,
   },
+  cardContent: { flex: 1, padding: 14 },
   cardKicker: {
     color: '#7DE9FF',
-    fontSize: 11,
+    fontSize: 9,
     fontWeight: '800',
-    letterSpacing: 1.5,
+    letterSpacing: 1.1,
   },
   cardTitle: {
     color: '#FFFFFF',
-    flexShrink: 1,
-    fontSize: 28,
-    fontWeight: '800',
-    letterSpacing: -0.6,
-    lineHeight: 33,
-    marginTop: 16,
-    maxWidth: 250,
-  },
-  cardCopy: {
-    color: '#B9C9DC',
-    flexShrink: 1,
-    fontSize: 15,
-    lineHeight: 22,
-    marginTop: 16,
-    maxWidth: 255,
-  },
-  metricRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    marginTop: 'auto',
-  },
-  metricItem: {
-    flex: 1,
-    minWidth: 0,
-  },
-  metricValue: {
-    color: '#FFFFFF',
-    flexShrink: 1,
     fontSize: 17,
     fontWeight: '800',
+    letterSpacing: -0.3,
+    lineHeight: 20,
+    marginTop: 8,
   },
-  metricLabel: {
-    color: '#8397AF',
-    flexShrink: 1,
-    fontSize: 11,
-    marginTop: 3,
+  metricBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(7, 17, 31, 0.72)',
+    borderColor: 'rgba(125, 233, 255, 0.45)',
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    marginTop: 'auto',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
   },
-  metricDivider: {
-    backgroundColor: '#496078',
-    height: 34,
-    marginHorizontal: 18,
-    width: StyleSheet.hairlineWidth,
+  metricText: {
+    color: '#D6F8FF',
+    fontSize: 8,
+    fontWeight: '800',
+    letterSpacing: 0.7,
   },
 });

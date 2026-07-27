@@ -20,6 +20,7 @@
     "lib",
     "android",
     "ios",
+    "cpp",
     "SmoothClipView.podspec",
     "README.md",
     "LICENSE",
@@ -101,8 +102,9 @@
   },
   "peerDependencies": {
     "react": "*",
-    "react-native": ">=0.85.0",
-    "react-native-reanimated": ">=4.3.0"
+    "react-native": ">=0.86.0",
+    "react-native-reanimated": ">=4.5.0",
+    "react-native-worklets": ">=0.10.0"
   },
   "workspaces": [
     "example"
@@ -128,7 +130,7 @@
   },
   "codegenConfig": {
     "name": "SmoothClipViewSpec",
-    "type": "components",
+    "type": "all",
     "jsSrcsDir": "src",
     "android": {
       "javaPackageName": "com.smoothclipview"
@@ -138,6 +140,9 @@
         "SmoothClipView": {
           "className": "SmoothClipView"
         }
+      },
+      "modulesProvider": {
+        "NativeSmoothClipModule": "SmoothClipModuleProvider"
       }
     }
   },

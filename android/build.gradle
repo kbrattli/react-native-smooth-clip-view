@@ -28,17 +28,74 @@ apply plugin: "com.android.library"
 apply plugin: "kotlin-android"
 apply plugin: "com.facebook.react"
 
+def resolveReactNativeDirectory() {
+  def reactNativeLocation = rootProject.ext.has("REACT_NATIVE_NODE_MODULES_DIR")
+    ? rootProject.ext.get("REACT_NATIVE_NODE_MODULES_DIR")
+    : null
+  if (reactNativeLocation != null) {
+    return file(reactNativeLocation)
+  }
+
+  // Fallback to node resolver for custom directory structures like monorepos.
+  def reactNativePackage = file(
+    providers.exec {
+      workingDir(rootDir)
+      commandLine("node", "--print", "require.resolve('react-native/package.json')")
+    }.standardOutput.asText.get().trim()
+  )
+  if (reactNativePackage.exists()) {
+    return reactNativePackage.parentFile
+  }
+
+  throw new GradleException("[react-native-smooth-clip-view] Unable to resolve react-native in node_modules.")
+}
+
+def reactNativeRootDir = resolveReactNativeDirectory()
+
+def reactNativeArchitectures() {
+  def value = rootProject.findProperty("reactNativeArchitectures")
+  return value ? value.split(",") : ["armeabi-v7a", "x86", "x86_64", "arm64-v8a"]
+}
+
 android {
   namespace "com.smoothclipview"
   compileSdkVersion getExtOrDefault("compileSdkVersion")
 
-  defaultConfig {
-    minSdkVersion getExtOrDefault("minSdkVersion")
-    targetSdkVersion getExtOrDefault("targetSdkVersion")
+  if (rootProject.hasProperty("ndkPath")) {
+    ndkPath rootProject.ext.ndkPath
+  }
+  if (rootProject.hasProperty("ndkVersion")) {
+    ndkVersion rootProject.ext.ndkVersion
+  } else {
+    ndkVersion "27.1.12297006"
   }
 
   buildFeatures {
     buildConfig true
+    prefab true
+  }
+
+  defaultConfig {
+    minSdkVersion getExtOrDefault("minSdkVersion")
+    targetSdkVersion getExtOrDefault("targetSdkVersion")
+    // C++ resolves SmoothClipView by name and calls setClipPresentationDip via
+    // a cached jmethodID; consumer minification must not rename or strip them.
+    consumerProguardFiles "proguard-rules.pro"
+
+    externalNativeBuild {
+      cmake {
+        cppFlags "-O2", "-frtti", "-fexceptions", "-Wall", "-std=c++20"
+        arguments "-DANDROID_STL=c++_shared",
+                  "-DREACT_NATIVE_DIR=${reactNativeRootDir}"
+        abiFilters(*reactNativeArchitectures())
+      }
+    }
+  }
+
+  externalNativeBuild {
+    cmake {
+      path "CMakeLists.txt"
+    }
   }
 
   buildTypes {
@@ -54,6 +111,16 @@ android {
   compileOptions {
     sourceCompatibility JavaVersion.VERSION_1_8
     targetCompatibility JavaVersion.VERSION_1_8
+  }
+
+  packagingOptions {
+    // Provided by the host application at runtime.
+    excludes += [
+      "**/libc++_shared.so",
+      "**/libfbjni.so",
+      "**/libjsi.so",
+      "**/libreactnative.so",
+    ]
   }
 }
 

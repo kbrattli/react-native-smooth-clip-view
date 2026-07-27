@@ -11,6 +11,21 @@ export type ClipBounds = Readonly<{
   height: number;
 }>;
 
+export type SmoothClipPresentation = Readonly<{
+  clip: ClipGeometry;
+  contentTranslateX: number;
+  contentTranslateY: number;
+}>;
+
+export function createClipPresentation(
+  clip: ClipGeometry,
+  contentTranslateX = 0,
+  contentTranslateY = 0
+): SmoothClipPresentation {
+  'worklet';
+  return { clip, contentTranslateX, contentTranslateY };
+}
+
 export function isFiniteClipGeometry(geometry: ClipGeometry): boolean {
   'worklet';
   return (
@@ -34,6 +49,30 @@ export function clipGeometryEquals(
     first.width === second.width &&
     first.height === second.height &&
     first.radius === second.radius
+  );
+}
+
+export function isFiniteClipPresentation(
+  presentation: SmoothClipPresentation
+): boolean {
+  'worklet';
+  return (
+    isFiniteClipGeometry(presentation.clip) &&
+    Number.isFinite(presentation.contentTranslateX) &&
+    Number.isFinite(presentation.contentTranslateY)
+  );
+}
+
+export function clipPresentationEquals(
+  first: SmoothClipPresentation | null,
+  second: SmoothClipPresentation
+): boolean {
+  'worklet';
+  return (
+    first !== null &&
+    clipGeometryEquals(first.clip, second.clip) &&
+    first.contentTranslateX === second.contentTranslateX &&
+    first.contentTranslateY === second.contentTranslateY
   );
 }
 

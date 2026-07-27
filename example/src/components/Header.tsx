@@ -1,39 +1,44 @@
-import { StyleSheet, Text } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 
 export function Header() {
   return (
-    <>
+    <View style={styles.container}>
       <Text style={styles.eyebrow}>FABRIC + REANIMATED</Text>
-      <Text style={styles.title}>Smooth clip, fixed layout.</Text>
+      <Text style={styles.title}>Ten clips. One shared clock.</Text>
       <Text style={styles.description}>
-        Animate width and height without expensive layout calculations while
-        preserving a smooth border radius.
+        Compare fixed-layout native clipping with animated layout under the same
+        image-heavy workload.
       </Text>
-    </>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  container: {
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 20,
+  },
   eyebrow: {
     color: '#66E3FF',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '800',
-    letterSpacing: 1.8,
+    letterSpacing: 1.7,
   },
   title: {
     color: '#F7FAFF',
-    fontSize: 30,
+    fontSize: 26,
     fontWeight: '800',
-    letterSpacing: -0.8,
-    marginTop: 10,
+    letterSpacing: -0.7,
+    marginTop: 8,
     textAlign: 'center',
   },
   description: {
     color: '#9FB0C7',
-    fontSize: 15,
-    lineHeight: 22,
-    marginTop: 10,
-    maxWidth: 360,
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 7,
+    maxWidth: 370,
     textAlign: 'center',
   },
 });
