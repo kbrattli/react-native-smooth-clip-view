@@ -10,7 +10,7 @@ import {
 
 export default function App() {
   const [implementation, setImplementation] =
-    useState<StressImplementation>('direct');
+    useState<StressImplementation>('smooth-clip');
 
   return (
     <SafeAreaView style={styles.safeArea}>

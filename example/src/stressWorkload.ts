@@ -1,5 +1,4 @@
 export const STRESS_HOST_COUNT = 10;
-export const STRESS_MAX_HOST_COUNT = 20;
 export const STRESS_ROWS_PER_HOST = 12;
 export const STRESS_IMAGE_LAYER_COUNT = 6;
 export const STRESS_SVG_LAYER_COUNT = 3;
