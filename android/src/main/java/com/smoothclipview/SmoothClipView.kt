@@ -232,6 +232,16 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         }
     }
 
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (boundDriverId != 0.0) {
+            // A latched animation may only start once this view can produce a
+            // visible frame; window attach is that signal for views that
+            // registered from a detached subtree.
+            SmoothClipBindings.nativeViewBecameDisplayable(boundDriverId, this)
+        }
+    }
+
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         if (boundDriverId != 0.0) {

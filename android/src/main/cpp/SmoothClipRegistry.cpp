@@ -458,6 +458,36 @@ Presentation prepareAnimation(
   return resolvedStart;
 }
 
+// A view can only render the animation once it is attached to a window and
+// has pushed real host geometry; a clock started before that burns progress
+// no one can see (the transparentModal mount pattern).
+bool entryDisplayable(const ViewEntry &entry) {
+  return entry.hostWidthPx > 0 && entry.hostHeightPx > 0 &&
+      entry.view->isViewAttachedToWindow();
+}
+
+bool anyDisplayableView(const DriverState &state) {
+  for (const ViewEntry &entry : state.views) {
+    if (entryDisplayable(entry)) return true;
+  }
+  return false;
+}
+
+// Starts a latched animation: rebases the clock so no progress was burned
+// while no view could display, then joins the choreographer loop.
+void startLatchedAnimation(uint64_t driverId, DriverState &state) {
+  auto &animation = *state.animation;
+  animation.started = true;
+  animation.startedAtS = nowSeconds();
+  animation.lastFrameS = animation.startedAtS;
+  auto &active = animatingDrivers();
+  if (std::find(active.begin(), active.end(), driverId) == active.end()) {
+    active.push_back(driverId);
+  }
+  applyToViews(state, animation.start);
+  scheduleFrame();
+}
+
 int32_t startAnimation(
     uint64_t driverId,
     DriverState &state,
@@ -469,13 +499,14 @@ int32_t startAnimation(
   // visible all read animation->current, giving a never-rendered latch
   // freeze-at-start / replace-from-start semantics with no extra branches.
   animation.current = animation.start;
-  animation.started = !state.views.empty();
+  animation.started = anyDisplayableView(state);
   state.animation = std::move(animation);
   if (!state.animation->started) {
-    // Latch: no host view yet (animateTo raced the mount). The first
-    // registerViewAndroid rebases the clock, joins animatingDrivers() and
-    // schedules the frame loop. Non-zero id is still returned so the JS
-    // side does not treat this as rejection.
+    // Latch: no host view can display yet (animateTo raced the mount, or
+    // every host is detached/unsized). The first displayable registration,
+    // host-geometry push, or window attach rebases the clock, joins
+    // animatingDrivers() and schedules the frame loop. Non-zero id is still
+    // returned so the JS side does not treat this as rejection.
     return state.animation->id;
   }
   auto &active = animatingDrivers();
@@ -603,6 +634,15 @@ void setPresentation(
   if (!takeOwnership && state.ownership != Ownership::Interactive) return;
   if (takeOwnership) {
     state.destroyed = false;
+    // A held latch is strictly newer intent than this write: the latch was
+    // created after whatever value the caller read (the hook's seed replays
+    // a SharedValue that an earlier animateTo already advanced to its
+    // target). Cancelling it here would seed the target and turn the pending
+    // animation into a static jump. Callers that want to override a latch
+    // cancel it explicitly first.
+    if (state.animation.has_value() && !state.animation->started) {
+      return;
+    }
     finishActive(driverId, state, false);
   }
   state.latest = presentation;
@@ -795,6 +835,12 @@ void destroyDriver(uint64_t driverId) {
 
 // --- Android view lifecycle ----------------------------------------------
 
+bool JSmoothClipView::isViewAttachedToWindow() const {
+  static const auto method =
+      javaClassStatic()->getMethod<jboolean()>("isAttachedToWindow");
+  return method(self());
+}
+
 void JSmoothClipView::applyClip(const Presentation &presentation) const {
   static const auto method =
       javaClassStatic()
@@ -849,15 +895,16 @@ void registerViewAndroid(
       ? state.animation->current
       : state.latest;
   JNIEnv *env = facebook::jni::Environment::current();
-  // The existing-view branch below is unreachable while an animation is
-  // latched (a latch implies views was empty at animate time), so only the
-  // new-view path needs to start latches.
   for (auto &existing : state.views) {
     if (env->IsSameObject(existing.view.get(), view.get())) {
       existing.density = density;
       existing.hostWidthPx = hostWidthPx;
       existing.hostHeightPx = hostHeightPx;
       deliverToView(existing, visible);
+      if (state.animation.has_value() && !state.animation->started &&
+          entryDisplayable(existing)) {
+        startLatchedAnimation(driverId, state);
+      }
       return;
     }
   }
@@ -867,22 +914,17 @@ void registerViewAndroid(
   // registering view — the correct first frame for a latched animation.
   deliverToView(entry, visible);
   state.views.push_back(std::move(entry));
-  if (state.animation.has_value() && !state.animation->started) {
+  if (state.animation.has_value() && !state.animation->started &&
+      entryDisplayable(state.views.back())) {
     // Start the latched animation: rebase the clock so the first frame
-    // integrates from now, not from the pre-mount animateTo call.
+    // integrates from now, not from the pre-mount animateTo call. Gated on
+    // displayability — a mount-time registration from a detached subtree
+    // holds the latch until window attach / first host geometry.
     // Note this function has no isOnMainThread() guard (Kotlin calls it from
     // the view's main-thread attach path); scheduleFrame() is itself
     // main-thread-gated, so an off-main register cannot bind the
     // choreographer to the wrong thread.
-    auto &animation = *state.animation;
-    animation.started = true;
-    animation.startedAtS = nowSeconds();
-    animation.lastFrameS = animation.startedAtS;
-    auto &active = animatingDrivers();
-    if (std::find(active.begin(), active.end(), driverId) == active.end()) {
-      active.push_back(driverId);
-    }
-    scheduleFrame();
+    startLatchedAnimation(driverId, state);
   }
 }
 
@@ -908,6 +950,29 @@ void setViewHostGeometryAndroid(
           state.animation.has_value() ? state.animation->current
                                       : state.latest);
     }
+    if (state.animation.has_value() && !state.animation->started &&
+        entryDisplayable(entry)) {
+      // First real host geometry made this view displayable.
+      startLatchedAnimation(driverId, state);
+    }
+    return;
+  }
+}
+
+void viewBecameDisplayableAndroid(
+    uint64_t driverId,
+    alias_ref<JSmoothClipView> view) {
+  if (!isOnMainThread()) return;
+  auto iterator = registry().find(driverId);
+  if (iterator == registry().end()) return;
+  auto &state = iterator->second;
+  if (!state.animation.has_value() || state.animation->started) return;
+  JNIEnv *env = facebook::jni::Environment::current();
+  for (auto &entry : state.views) {
+    if (!env->IsSameObject(entry.view.get(), view.get())) continue;
+    if (entryDisplayable(entry)) {
+      startLatchedAnimation(driverId, state);
+    }
     return;
   }
 }
@@ -930,11 +995,59 @@ void unregisterViewAndroid(
   }
   if (removed && state.animation.has_value()) {
     state.animation->finished = false;
-    if (state.views.empty()) {
-      // The animation ends here; release ownership so a later remount's
-      // interactive updates are not dropped.
-      state.ownership = Ownership::Interactive;
-      finishActive(driverId, state, false);
+    if (state.views.empty() && !state.animation->started) {
+      // A held latch returns to its original zero-view state; the next
+      // displayable registration still starts it (or destroyDriver cancels
+      // it). Completing it here would betray the pending intent.
+    } else if (state.views.empty()) {
+      auto &animation = *state.animation;
+      const double elapsedS = nowSeconds() - animation.startedAtS;
+      const double remainingS = std::max(0.0, animation.durationS - elapsedS);
+      const bool canResume = !state.destroyed &&
+          (animation.kind == AnimationKind::Spring || remainingS > 0);
+      if (!canResume) {
+        // The animation ends here; release ownership so a later remount's
+        // interactive updates are not dropped.
+        state.ownership = Ownership::Interactive;
+        finishActive(driverId, state, false);
+      } else {
+        // The last rendering host left mid-flight (remount, screen swap).
+        // Completing here would leave `latest` at the target and statically
+        // snap any re-registering host straight to it. Re-latch instead:
+        // freeze the remaining animation at its current geometry so the
+        // next displayable host resumes it with the true remaining time.
+        // destroyDriver cancels a latch that never finds a host, so the
+        // completion cannot hang.
+        if (animation.kind == AnimationKind::Timing) {
+          animation.durationS = remainingS;
+        } else if (animation.kind == AnimationKind::Keyframes) {
+          const double progress = animation.durationS <= 0
+              ? 1.0
+              : clamp01(elapsedS / animation.durationS);
+          std::vector<Keyframe> remaining;
+          remaining.push_back({0, animation.current});
+          for (const Keyframe &frame : animation.keyframes) {
+            if (frame.offset <= progress) continue;
+            remaining.push_back(
+                {(frame.offset - progress) / (1 - progress),
+                 frame.presentation});
+          }
+          if (remaining.size() == 1) {
+            remaining.push_back({1, animation.target});
+          }
+          animation.keyframes = std::move(remaining);
+          animation.durationS = remainingS;
+        }
+        animation.start = animation.current;
+        animation.started = false;
+        // A held latch must not tick: leave animatingDrivers() without
+        // resetting the animation (the eager-removal rule the choreographer
+        // loop depends on).
+        auto &active = animatingDrivers();
+        active.erase(
+            std::remove(active.begin(), active.end(), driverId),
+            active.end());
+      }
     }
   }
   if (state.destroyed && state.views.empty()) {

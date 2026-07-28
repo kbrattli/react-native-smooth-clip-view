@@ -194,16 +194,22 @@ const gesture = Gesture.Pan()
   validated, monotonically increasing offsets from zero through one.
 - `cancel()` freezes visible presentation by default. Pass `'target'` as its
   behavior to jump to the requested endpoint.
-- `options.onAnimationComplete` fires once per animation with its ID and
-  `finished` state, including cancellation, replacement, participant unmount,
-  and native-side rejection (`animateTo` then returns `0` and one
-  `finished: false` completion is delivered).
-- An `animateTo` issued before any host view has registered (for example from
-  an effect in the same commit that mounts the host, or inside a modal route
-  that attaches late) is held pending and starts with its full duration when
-  the first view registers. If no view ever registers, the pending animation
-  survives until it is replaced, cancelled, overridden by a take-ownership
-  write, or the driver is destroyed — at which point its single
+- `options.onAnimationComplete` fires exactly once per animation with its ID
+  and `finished` state, including cancellation, replacement, and native-side
+  rejection (`animateTo` then returns `0` and one `finished: false` completion
+  is delivered). Unmounting the last host mid-flight does not complete the
+  animation: the remainder is re-latched and the next displayable host resumes
+  it, so the completion arrives when it finishes there — or unfinished on
+  replacement, cancellation, `beginInteraction()`, or driver destruction.
+- An `animateTo` issued before any host view can produce a visible frame (for
+  example from an effect in the same commit that mounts the host, or inside a
+  modal route whose subtree attaches to its window late) is held pending and
+  starts with its full duration at the first displayable registration or
+  window attach. A pending animation owns the driver: take-ownership writes
+  (`set`, `setScalars`, the hook's seed) are dropped while it is held —
+  replace it with another `animateTo`, or cancel it via `beginInteraction()`
+  or `cancel()`. If no view ever becomes displayable, it survives until it is
+  replaced, cancelled, or the driver is destroyed — at which point its single
   `finished: false` completion is delivered.
 
 Do not call `driver.ui` from React code — it throws on the React runtime; use
