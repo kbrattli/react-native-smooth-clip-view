@@ -24,6 +24,26 @@ static smoothclip::Presentation Presentation(
   return {{x, y, width, height, radius}, translateX, translateY};
 }
 
+// A view that can actually produce a frame: laid out AND attached to a
+// window. Since the displayability gate, latches only start (and CA installs
+// only happen) for such views — a mount-time registration from a detached
+// subtree holds the latch until window attach.
+static SmoothClipView *DisplayableView(UIWindow *window, CGRect frame) {
+  SmoothClipView *view = [[SmoothClipView alloc] initWithFrame:frame];
+  facebook::react::LayoutMetrics metrics;
+  metrics.frame = facebook::react::Rect{
+      facebook::react::Point{frame.origin.x, frame.origin.y},
+      facebook::react::Size{frame.size.width, frame.size.height}};
+  [view updateLayoutMetrics:metrics
+           oldLayoutMetrics:facebook::react::LayoutMetrics{}];
+  [window addSubview:view];
+  return view;
+}
+
+static UIWindow *TestWindow(void) {
+  return [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 400, 800)];
+}
+
 - (void)testRegistrationIsIdempotentAndCleanupMatchesTheExactView {
   constexpr uint64_t driverId = 9001;
   SmoothClipView *first = [[SmoothClipView alloc] initWithFrame:CGRectZero];
@@ -46,9 +66,24 @@ static smoothclip::Presentation Presentation(
   smoothclip::destroyDriver(driverId);
 }
 
-- (void)testUnmountEndsARegisteredTransition {
+// Unmounting the last rendering host mid-flight must NOT complete the
+// animation at the target (the pre-fix behavior statically snapped any
+// re-registering host to it). The remaining animation re-latches and a new
+// host resumes it; only destroyDriver delivers the unfinished completion.
+- (void)testUnmountRelatchesARegisteredTransition {
   constexpr uint64_t driverId = 9002;
-  SmoothClipView *view = [[SmoothClipView alloc] initWithFrame:CGRectZero];
+  int completionCount = 0;
+  BOOL completedFinished = YES;
+  smoothclip::setCompletionCallback(
+      (__bridge const void *)self,
+      [&](uint64_t completedDriver, int32_t animationId, bool finished) {
+        if (completedDriver != driverId) return;
+        completionCount += 1;
+        completedFinished = finished;
+      });
+  UIWindow *window = TestWindow();
+  SmoothClipView *view =
+      DisplayableView(window, CGRectMake(0, 0, 120, 120));
   const smoothclip::Presentation initial =
       Presentation(0, 0, 40, 40, 20, 5, 6);
   const smoothclip::Presentation target =
@@ -62,8 +97,25 @@ static smoothclip::Presentation Presentation(
   XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
 
   smoothclip::unregisterView(driverId, view);
-  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+  XCTAssertEqual(completionCount, 0);
+
+  // A new displayable host resumes the re-latched remainder.
+  SmoothClipView *remounted =
+      DisplayableView(window, CGRectMake(0, 0, 120, 120));
+  smoothclip::registerView(driverId, remounted, initial);
+  UIView *container = [remounted valueForKey:@"clipContainer"];
+  CAAnimationGroup *group = (CAAnimationGroup *)[container.layer
+      animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(group);
+  XCTAssertLessThanOrEqual(group.duration, 0.25 + 1e-3);
+  XCTAssertGreaterThan(group.duration, 0);
+
+  smoothclip::unregisterView(driverId, remounted);
   smoothclip::destroyDriver(driverId);
+  XCTAssertEqual(completionCount, 1);
+  XCTAssertFalse(completedFinished);
+  smoothclip::clearCompletionCallback((__bridge const void *)self);
 }
 
 - (void)testBeginInteractionCancelsTheActiveTransitionAndReturnsCanonicalGeometry {
@@ -97,18 +149,20 @@ static smoothclip::Presentation Presentation(
 // setPresentation(takeOwnership) mirrors here.
 - (void)testAnimateWithoutViewsLatchesUntilFirstRegistration {
   constexpr uint64_t driverId = 9004;
-  __block int completionCount = 0;
-  __block int32_t completedAnimation = 0;
-  __block BOOL completedFinished = YES;
+  int completionCount = 0;
+  int32_t completedAnimation = 0;
+  BOOL completedFinished = YES;
   smoothclip::setCompletionCallback(
-      self,
+      (__bridge const void *)self,
       [&](uint64_t completedDriver, int32_t animationId, bool finished) {
         if (completedDriver != driverId) return;
         completionCount += 1;
         completedAnimation = animationId;
         completedFinished = finished;
       });
-  SmoothClipView *view = [[SmoothClipView alloc] initWithFrame:CGRectZero];
+  UIWindow *window = TestWindow();
+  SmoothClipView *view =
+      DisplayableView(window, CGRectMake(0, 0, 120, 120));
   const smoothclip::Presentation initial =
       Presentation(0, 0, 40, 40, 20, 5, 6);
   const smoothclip::Presentation target =
@@ -122,22 +176,23 @@ static smoothclip::Presentation Presentation(
   XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
   XCTAssertEqual(completionCount, 0);
 
-  // First registration starts the latch — the animation stays active and
-  // still has not completed.
+  // First displayable registration starts the latch — the animation stays
+  // active and still has not completed.
   smoothclip::registerView(driverId, view, initial);
   XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
   XCTAssertEqual(completionCount, 0);
 
-  // The registration joined the view as a participant, so unmounting ends
-  // the animation through the normal path (exactly one unfinished
-  // completion) instead of orphaning it.
+  // Unmounting mid-flight re-latches the remainder instead of completing at
+  // the target; the single unfinished completion arrives at destroy.
   smoothclip::unregisterView(driverId, view);
+  XCTAssertEqual(completionCount, 0);
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+  smoothclip::destroyDriver(driverId);
   XCTAssertEqual(completionCount, 1);
   XCTAssertEqual(completedAnimation, animationId);
   XCTAssertFalse(completedFinished);
   XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
-  smoothclip::clearCompletionCallback(self);
-  smoothclip::destroyDriver(driverId);
+  smoothclip::clearCompletionCallback((__bridge const void *)self);
 }
 
 // A latched animation never rendered, so freezing it (cancel without target /
@@ -145,10 +200,10 @@ static smoothclip::Presentation Presentation(
 // target, and freezing there would jump the clip.
 - (void)testCancelingALatchedAnimationFreezesAtItsStart {
   constexpr uint64_t driverId = 9014;
-  __block int completionCount = 0;
-  __block BOOL completedFinished = YES;
+  int completionCount = 0;
+  BOOL completedFinished = YES;
   smoothclip::setCompletionCallback(
-      self,
+      (__bridge const void *)self,
       [&](uint64_t completedDriver, int32_t animationId, bool finished) {
         if (completedDriver != driverId) return;
         completionCount += 1;
@@ -173,7 +228,7 @@ static smoothclip::Presentation Presentation(
   XCTAssertEqual(completionCount, 1);
   XCTAssertFalse(completedFinished);
   XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
-  smoothclip::clearCompletionCallback(self);
+  smoothclip::clearCompletionCallback((__bridge const void *)self);
   smoothclip::destroyDriver(driverId);
 }
 
@@ -182,13 +237,9 @@ static smoothclip::Presentation Presentation(
 // animateTo call.
 - (void)testRegisterStartsLatchedAnimationFromItsStartWithFullDuration {
   constexpr uint64_t driverId = 9015;
-  SmoothClipView *view = [[SmoothClipView alloc]
-      initWithFrame:CGRectMake(0, 0, 120, 120)];
-  facebook::react::LayoutMetrics metrics;
-  metrics.frame = facebook::react::Rect{
-      facebook::react::Point{0, 0}, facebook::react::Size{120, 120}};
-  [view updateLayoutMetrics:metrics
-           oldLayoutMetrics:facebook::react::LayoutMetrics{}];
+  UIWindow *window = TestWindow();
+  SmoothClipView *view =
+      DisplayableView(window, CGRectMake(0, 0, 120, 120));
   const smoothclip::Presentation initial =
       Presentation(0, 0, 40, 40, 20, 5, 6);
   const smoothclip::Presentation target =
@@ -219,11 +270,11 @@ static smoothclip::Presentation Presentation(
 // latch's start — not from state.latest, which holds the first target.
 - (void)testReplacingALatchedAnimationStartsFromTheLatchStart {
   constexpr uint64_t driverId = 9016;
-  __block int completionCount = 0;
-  __block int32_t lastCompleted = 0;
-  __block BOOL lastFinished = YES;
+  int completionCount = 0;
+  int32_t lastCompleted = 0;
+  BOOL lastFinished = YES;
   smoothclip::setCompletionCallback(
-      self,
+      (__bridge const void *)self,
       [&](uint64_t completedDriver, int32_t animationId, bool finished) {
         if (completedDriver != driverId) return;
         completionCount += 1;
@@ -256,7 +307,7 @@ static smoothclip::Presentation Presentation(
   XCTAssertEqual(completionCount, 2);
   XCTAssertEqual(lastCompleted, second);
   XCTAssertFalse(lastFinished);
-  smoothclip::clearCompletionCallback(self);
+  smoothclip::clearCompletionCallback((__bridge const void *)self);
   smoothclip::destroyDriver(driverId);
 }
 
@@ -264,10 +315,10 @@ static smoothclip::Presentation Presentation(
 // and then delivers its single unfinished completion.
 - (void)testDestroyDriverCancelsALatchedAnimation {
   constexpr uint64_t driverId = 9017;
-  __block int completionCount = 0;
-  __block BOOL completedFinished = YES;
+  int completionCount = 0;
+  BOOL completedFinished = YES;
   smoothclip::setCompletionCallback(
-      self,
+      (__bridge const void *)self,
       [&](uint64_t completedDriver, int32_t animationId, bool finished) {
         if (completedDriver != driverId) return;
         completionCount += 1;
@@ -287,7 +338,7 @@ static smoothclip::Presentation Presentation(
   XCTAssertEqual(completionCount, 1);
   XCTAssertFalse(completedFinished);
   XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
-  smoothclip::clearCompletionCallback(self);
+  smoothclip::clearCompletionCallback((__bridge const void *)self);
 }
 
 - (void)testSevenScalarPresentationRoundTripsExactly {
@@ -325,13 +376,18 @@ static smoothclip::Presentation Presentation(
   smoothclip::destroyDriver(driverId);
 
   XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+  // The view is still registered, so destroy keeps a tombstone; the entry
+  // is erased when the last view leaves.
+  XCTAssertEqual(smoothclip::registeredViewCount(driverId), 1u);
+  smoothclip::unregisterView(driverId, view);
   XCTAssertEqual(smoothclip::registeredViewCount(driverId), 0u);
 }
 
 - (void)testJoinActiveAnimationReplaysForDeferredView {
   constexpr uint64_t driverId = 9007;
-  SmoothClipView *canonical = [[SmoothClipView alloc]
-      initWithFrame:CGRectMake(0, 0, 120, 120)];
+  UIWindow *window = TestWindow();
+  SmoothClipView *canonical =
+      DisplayableView(window, CGRectMake(0, 0, 120, 120));
   SmoothClipView *deferred = [[SmoothClipView alloc] initWithFrame:CGRectZero];
   SmoothClipView *stray = [[SmoothClipView alloc] initWithFrame:CGRectZero];
   const smoothclip::Presentation initial =
@@ -355,9 +411,11 @@ static smoothclip::Presentation Presentation(
   XCTAssertFalse(smoothclip::joinActiveAnimation(driverId, deferred));
 }
 
-- (void)testUnregisteringLastParticipantReleasesNativeOwnership {
+- (void)testInteractionAfterLastUnregisterFreesTheRelatchedAnimation {
   constexpr uint64_t driverId = 9008;
-  SmoothClipView *view = [[SmoothClipView alloc] initWithFrame:CGRectZero];
+  UIWindow *window = TestWindow();
+  SmoothClipView *view =
+      DisplayableView(window, CGRectMake(0, 0, 120, 120));
   const smoothclip::Presentation initial =
       Presentation(0, 0, 40, 40, 20, 5, 6);
   const smoothclip::Presentation target =
@@ -369,7 +427,17 @@ static smoothclip::Presentation Presentation(
   smoothclip::animateTiming(driverId, {true, initial}, target, timing);
   smoothclip::unregisterView(driverId, view);
 
-  // Ownership must revert to interactive: a non-owning delivery applies.
+  // The remainder re-latched (ownership stays Native — the pending animation
+  // owns rendering intent), so a bare interactive delivery is dropped…
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+  smoothclip::setPresentation(driverId, dragged, false);
+  // …and the interactive flow goes through beginInteraction, exactly as it
+  // would against a running animation: it frees the latch at a finite frozen
+  // geometry and releases ownership.
+  const smoothclip::Presentation frozen =
+      smoothclip::beginInteraction(driverId);
+  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+  XCTAssertTrue(std::isfinite(frozen.clip.width));
   smoothclip::setPresentation(driverId, dragged, false);
   const smoothclip::Presentation current =
       smoothclip::beginInteraction(driverId);
@@ -467,13 +535,9 @@ static smoothclip::Presentation Presentation(
 
 - (void)testSpringInitialVelocityIsPassedNormalizedToEveryKeyPath {
   constexpr uint64_t driverId = 9011;
-  SmoothClipView *view = [[SmoothClipView alloc]
-      initWithFrame:CGRectMake(0, 0, 120, 120)];
-  facebook::react::LayoutMetrics metrics;
-  metrics.frame = facebook::react::Rect{
-      facebook::react::Point{0, 0}, facebook::react::Size{120, 120}};
-  [view updateLayoutMetrics:metrics
-           oldLayoutMetrics:facebook::react::LayoutMetrics{}];
+  UIWindow *window = TestWindow();
+  SmoothClipView *view =
+      DisplayableView(window, CGRectMake(0, 0, 120, 120));
   const smoothclip::Presentation initial = Presentation(0, 0, 40, 40, 8, 0, 0);
   smoothclip::registerView(driverId, view, initial);
 
@@ -513,6 +577,254 @@ static smoothclip::Presentation Presentation(
   XCTAssertEqual(smoothclip::registeredViewCount(driverId), 0u);
   XCTAssertFalse(
       std::isfinite(smoothclip::beginInteraction(driverId).clip.width));
+}
+
+// A CA animation committed while the host's layer tree is detached (a
+// transparentModal subtree before UIKit presents its view controller) is
+// removed at the attach commit with finished=NO, snapping the layer to the
+// model values — the target. The latch therefore must stay held for a
+// registered-but-detached view and start inside the window-attach commit
+// with its full duration (the northernLights_new map-overlay bug).
+- (void)testLatchHeldForDetachedViewStartsAtWindowAttach {
+  constexpr uint64_t driverId = 9018;
+  SmoothClipView *view = [[SmoothClipView alloc]
+      initWithFrame:CGRectMake(0, 0, 120, 120)];
+  facebook::react::LayoutMetrics metrics;
+  metrics.frame = facebook::react::Rect{
+      facebook::react::Point{0, 0}, facebook::react::Size{120, 120}};
+  [view updateLayoutMetrics:metrics
+           oldLayoutMetrics:facebook::react::LayoutMetrics{}];
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+
+  smoothclip::setPresentation(driverId, initial, true);
+  smoothclip::animateTiming(driverId, {true, initial}, target, timing);
+  // Production sets the driverId ivar in updateProps before registering;
+  // didMoveToWindow's registry call is gated on it, so mirror that here.
+  [view setValue:@(driverId) forKey:@"driverId"];
+  // Laid out but not in a window: registration must keep the latch held and
+  // must not install any CA animation.
+  smoothclip::registerView(driverId, view, initial);
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+  UIView *container = [view valueForKey:@"clipContainer"];
+  XCTAssertNil([container.layer animationForKey:@"smoothClip.geometry"]);
+
+  // Window attach (didMoveToWindow → viewBecameDisplayable) starts the latch
+  // with the full duration, inside the attach commit.
+  UIWindow *window = TestWindow();
+  [window addSubview:view];
+  CAAnimationGroup *group = (CAAnimationGroup *)[container.layer
+      animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(group);
+  XCTAssertEqualWithAccuracy(group.duration, 0.25, 0.02);
+
+  smoothclip::cancelAnimation(driverId, 0, false);
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::destroyDriver(driverId);
+}
+
+// Reduce Motion is honored BEFORE the latch: an animateTo with no views and
+// reduceMotion=always instant-completes at the target with finished:true.
+// This is deliberate platform behavior (documented), not the latch bug.
+- (void)testReduceMotionInstantCompletesBeforeTheLatch {
+  constexpr uint64_t driverId = 9019;
+  int completionCount = 0;
+  BOOL completedFinished = NO;
+  smoothclip::setCompletionCallback(
+      (__bridge const void *)self,
+      [&](uint64_t completedDriver, int32_t animationId, bool finished) {
+        if (completedDriver != driverId) return;
+        completionCount += 1;
+        completedFinished = finished;
+      });
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  // reduceMotion 1 == always.
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 1};
+
+  smoothclip::setPresentation(driverId, initial, true);
+  const int32_t animationId = smoothclip::animateTiming(
+      driverId, {true, initial}, target, timing);
+  XCTAssertGreaterThan(animationId, 0);
+  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+  XCTAssertEqual(completionCount, 1);
+  XCTAssertTrue(completedFinished);
+  const smoothclip::Presentation current =
+      smoothclip::beginInteraction(driverId);
+  XCTAssertEqual(current.clip.width, target.clip.width);
+  smoothclip::clearCompletionCallback((__bridge const void *)self);
+  smoothclip::destroyDriver(driverId);
+}
+
+// The hook's take-ownership seed replays a SharedValue an earlier animateTo
+// already advanced to its target. A held latch is strictly newer intent, so
+// the seed must not cancel it (that would seed the target and turn the
+// pending animation into a static jump).
+- (void)testTakeOwnershipSeedDoesNotCancelAHeldLatch {
+  constexpr uint64_t driverId = 9020;
+  int completionCount = 0;
+  smoothclip::setCompletionCallback(
+      (__bridge const void *)self,
+      [&](uint64_t completedDriver, int32_t animationId, bool finished) {
+        if (completedDriver != driverId) return;
+        completionCount += 1;
+      });
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+
+  smoothclip::setPresentation(driverId, initial, true);
+  smoothclip::animateTiming(driverId, {true, initial}, target, timing);
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+
+  // A replayed seed carrying the (stale) target value must be a no-op.
+  smoothclip::setPresentation(driverId, target, true);
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+  XCTAssertEqual(completionCount, 0);
+
+  // The latch still resumes from its own start on the first displayable host.
+  UIWindow *window = TestWindow();
+  SmoothClipView *view =
+      DisplayableView(window, CGRectMake(0, 0, 120, 120));
+  smoothclip::registerView(driverId, view, initial);
+  UIView *container = [view valueForKey:@"clipContainer"];
+  XCTAssertNotNil([container.layer animationForKey:@"smoothClip.geometry"]);
+
+  smoothclip::cancelAnimation(driverId, 0, false);
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::clearCompletionCallback((__bridge const void *)self);
+  smoothclip::destroyDriver(driverId);
+}
+
+// beginInteraction while a registered-but-unlaid-out peer exists must not
+// adopt that peer's {0,0,0,0} as the canonical frozen geometry.
+- (void)testFrozenPresentationSkipsUnlaidOutViews {
+  constexpr uint64_t driverId = 9021;
+  UIWindow *window = TestWindow();
+  SmoothClipView *laidOut =
+      DisplayableView(window, CGRectMake(0, 0, 120, 120));
+  SmoothClipView *unlaidOut =
+      [[SmoothClipView alloc] initWithFrame:CGRectZero];
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+
+  // The unlaid-out peer registers first so it is the first freeze candidate;
+  // the joinable filter must skip past it to the laid-out view.
+  smoothclip::registerView(driverId, unlaidOut, initial);
+  smoothclip::registerView(driverId, laidOut, initial);
+  smoothclip::animateTiming(driverId, {true, initial}, target, timing);
+  const smoothclip::Presentation frozen =
+      smoothclip::beginInteraction(driverId);
+
+  XCTAssertGreaterThan(frozen.clip.width, 0.0);
+  XCTAssertGreaterThan(frozen.clip.height, 0.0);
+  smoothclip::unregisterView(driverId, laidOut);
+  smoothclip::unregisterView(driverId, unlaidOut);
+  smoothclip::destroyDriver(driverId);
+}
+
+// A view that joins a running animation while it cannot display defers its
+// install; window attach completes it through the registry join on the
+// ORIGINAL clock, so late joiners stay in sync with already-visible peers.
+- (void)testDeferredInstallCompletesAtWindowAttach {
+  constexpr uint64_t driverId = 9022;
+  UIWindow *window = TestWindow();
+  SmoothClipView *displayable =
+      DisplayableView(window, CGRectMake(0, 0, 120, 120));
+  SmoothClipView *deferred = [[SmoothClipView alloc]
+      initWithFrame:CGRectMake(0, 0, 120, 120)];
+  facebook::react::LayoutMetrics metrics;
+  metrics.frame = facebook::react::Rect{
+      facebook::react::Point{0, 0}, facebook::react::Size{120, 120}};
+  [deferred updateLayoutMetrics:metrics
+               oldLayoutMetrics:facebook::react::LayoutMetrics{}];
+  [deferred setValue:@(driverId) forKey:@"driverId"];
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+
+  smoothclip::registerView(driverId, displayable, initial);
+  smoothclip::registerView(driverId, deferred, initial);
+  smoothclip::animateTiming(driverId, {true, initial}, target, timing);
+
+  // The displayable peer installed immediately; the detached one deferred.
+  UIView *peerContainer = [displayable valueForKey:@"clipContainer"];
+  UIView *container = [deferred valueForKey:@"clipContainer"];
+  XCTAssertNotNil(
+      [peerContainer.layer animationForKey:@"smoothClip.geometry"]);
+  XCTAssertNil([container.layer animationForKey:@"smoothClip.geometry"]);
+
+  // Window attach (didMoveToWindow → viewBecameDisplayable) completes the
+  // deferred install with the animation's remaining time.
+  [window addSubview:deferred];
+  CAAnimationGroup *group = (CAAnimationGroup *)[container.layer
+      animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(group);
+  XCTAssertGreaterThan(group.duration, 0);
+  XCTAssertLessThanOrEqual(group.duration, 0.25 + 1e-3);
+
+  smoothclip::cancelAnimation(driverId, 0, false);
+  smoothclip::unregisterView(driverId, displayable);
+  smoothclip::unregisterView(driverId, deferred);
+  smoothclip::destroyDriver(driverId);
+}
+
+// A second layout pass while still detached (safe-area propagation inside an
+// un-presented transparentModal subtree) must NOT install: a CA animation
+// committed from a detached layer tree dies at the attach commit. The
+// deferral is kept and window attach completes it.
+- (void)testDetachedRelayoutKeepsTheDeferredInstall {
+  constexpr uint64_t driverId = 9023;
+  UIWindow *window = TestWindow();
+  SmoothClipView *displayable =
+      DisplayableView(window, CGRectMake(0, 0, 120, 120));
+  SmoothClipView *deferred = [[SmoothClipView alloc]
+      initWithFrame:CGRectMake(0, 0, 120, 120)];
+  facebook::react::LayoutMetrics metrics;
+  metrics.frame = facebook::react::Rect{
+      facebook::react::Point{0, 0}, facebook::react::Size{120, 120}};
+  [deferred updateLayoutMetrics:metrics
+               oldLayoutMetrics:facebook::react::LayoutMetrics{}];
+  [deferred setValue:@(driverId) forKey:@"driverId"];
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+
+  smoothclip::registerView(driverId, displayable, initial);
+  smoothclip::registerView(driverId, deferred, initial);
+  smoothclip::animateTiming(driverId, {true, initial}, target, timing);
+  UIView *container = [deferred valueForKey:@"clipContainer"];
+  XCTAssertNil([container.layer animationForKey:@"smoothClip.geometry"]);
+
+  // Second layout while detached: the install must stay deferred.
+  facebook::react::LayoutMetrics resized;
+  resized.frame = facebook::react::Rect{
+      facebook::react::Point{0, 0}, facebook::react::Size{140, 140}};
+  [deferred updateLayoutMetrics:resized oldLayoutMetrics:metrics];
+  XCTAssertNil([container.layer animationForKey:@"smoothClip.geometry"]);
+
+  // The deferral survived, so the attach still completes the install.
+  [window addSubview:deferred];
+  XCTAssertNotNil([container.layer animationForKey:@"smoothClip.geometry"]);
+
+  smoothclip::cancelAnimation(driverId, 0, false);
+  smoothclip::unregisterView(driverId, displayable);
+  smoothclip::unregisterView(driverId, deferred);
+  smoothclip::destroyDriver(driverId);
 }
 
 @end

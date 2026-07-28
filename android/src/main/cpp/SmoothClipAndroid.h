@@ -22,6 +22,7 @@ struct JSmoothClipView : facebook::jni::JavaClass<JSmoothClipView> {
       const NormalizedClip &clip,
       double contentTranslateXPx,
       double contentTranslateYPx) const;
+  bool isViewAttachedToWindow() const;
 };
 
 // Called from Kotlin (SmoothClipViewManager) on the UI thread when a Fabric
@@ -42,6 +43,13 @@ void setViewHostGeometryAndroid(
     double hostWidthPx,
     double hostHeightPx);
 void unregisterViewAndroid(
+    uint64_t driverId,
+    facebook::jni::alias_ref<JSmoothClipView> view);
+// Called from Kotlin when a registered view attaches to a window. A latched
+// animation may only start once a registered view can actually produce a
+// visible frame (attached AND has host geometry); otherwise its clock would
+// burn progress no one can see.
+void viewBecameDisplayableAndroid(
     uint64_t driverId,
     facebook::jni::alias_ref<JSmoothClipView> view);
 

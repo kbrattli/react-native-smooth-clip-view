@@ -16,6 +16,14 @@ void unregisterView(uint64_t driverId, SmoothClipView *view);
 // install was deferred because it had no layout yet. Returns false when the
 // driver or its active animation no longer exists.
 bool joinActiveAnimation(uint64_t driverId, SmoothClipView *view);
+// Called when a registered view first becomes able to produce a visible
+// frame (has layout AND is attached to a window). Starts a latched animation
+// — rebasing its clock so no progress is burned while the view was
+// detached — or completes a deferred install for an already-running one.
+// A CA animation committed while the host's layer tree is detached (e.g. a
+// transparentModal subtree before its view controller is presented) does not
+// survive the attach commit; installs must therefore wait for this signal.
+void viewBecameDisplayable(uint64_t driverId, SmoothClipView *view);
 void viewAnimationDidStop(
     uint64_t driverId,
     int32_t animationId,

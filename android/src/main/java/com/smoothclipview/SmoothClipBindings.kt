@@ -48,6 +48,13 @@ internal object SmoothClipBindings {
     external fun nativeUnregisterView(driverId: Double, view: SmoothClipView)
 
     /**
+     * Notifies the registry that a registered view attached to a window; a
+     * latched animation may only start once a view can produce a visible
+     * frame (attached and with real host geometry).
+     */
+    external fun nativeViewBecameDisplayable(driverId: Double, view: SmoothClipView)
+
+    /**
      * Releases runtime-bound listener state during host teardown; must run
      * while the JS runtime is still alive (module invalidate).
      */

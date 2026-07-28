@@ -167,6 +167,13 @@ using namespace facebook::react;
   }
 }
 
+- (void)didMoveToWindow {
+  [super didMoveToWindow];
+  if (_driverId != 0 && [self smoothClipCanDisplay]) {
+    smoothclip::viewBecameDisplayable(_driverId, self);
+  }
+}
+
 - (void)mountChildComponentView:(UIView<RCTComponentViewProtocol> *)childComponentView
                           index:(NSInteger)index {
   NSAssert(childComponentView.superview == nil,
@@ -401,6 +408,17 @@ using namespace facebook::react;
   // A view without layout reports zero geometry from
   // smoothClipCurrentPresentation and must not be used as a join reference.
   return _hasLayout;
+}
+
+- (BOOL)smoothClipCanDisplay {
+  // A CA animation committed while this view's layer tree is detached from
+  // the render tree does not survive the later attach commit; installs and
+  // latch starts must wait until a frame can actually be produced.
+  return _hasLayout && self.window != nil;
+}
+
+- (BOOL)smoothClipHasPendingInstall {
+  return _pendingAnimationInstall;
 }
 
 - (smoothclip::Presentation)smoothClipFreezePresentation {
@@ -647,7 +665,7 @@ using namespace facebook::react;
 }
 
 - (void)startAnimationToRequestedGeometryWithDuration:(CFTimeInterval)duration {
-  if (!_hasLayout) {
+  if (![self smoothClipCanDisplay]) {
     _pendingAnimationInstall = YES;
     return;
   }
@@ -720,7 +738,7 @@ using namespace facebook::react;
   [self storeRequestedPresentation:presentation];
   _activeAnimationKind = 3;
   _activeAnimationId = animationId;
-  if (!_hasLayout) {
+  if (![self smoothClipCanDisplay]) {
     _pendingAnimationInstall = YES;
     return;
   }
@@ -937,8 +955,14 @@ using namespace facebook::react;
     // the true remaining duration instead of jumping to the target.
     [super updateLayoutMetrics:layoutMetrics oldLayoutMetrics:oldLayoutMetrics];
     _hasLayout = YES;
-    _pendingAnimationInstall = NO;
     [self layoutContentContainer];
+    if (self.window == nil) {
+      // Still detached (transparentModal subtree before presentation): an
+      // install here would not survive the attach commit. Keep the install
+      // pending; didMoveToWindow completes it.
+      return;
+    }
+    _pendingAnimationInstall = NO;
     if (!smoothclip::joinActiveAnimation(_driverId, self)) {
       // The animation finished or was cancelled while awaiting layout.
       _activeAnimationId = 0;
@@ -984,6 +1008,14 @@ using namespace facebook::react;
       [self writeLayerRect:paused.rect radius:paused.radius];
     }
   } else if (wasAnimating) {
+    if (![self smoothClipCanDisplay]) {
+      // Relayout while detached, with an animation dispatched to this view
+      // (a transparentModal subtree resized before presentation): an install
+      // from this commit would not survive the attach commit. Keep the
+      // install deferred; didMoveToWindow completes it via the registry join.
+      _pendingAnimationInstall = YES;
+      return;
+    }
     const int32_t animationId = _activeAnimationId;
     const NSInteger animationKind = _activeAnimationKind;
     [self stopLayerAnimationWithoutCallback];

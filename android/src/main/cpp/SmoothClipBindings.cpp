@@ -406,6 +406,15 @@ void nativeUnregisterView(
   smoothclip::unregisterViewAndroid(static_cast<uint64_t>(driverId), view);
 }
 
+void nativeViewBecameDisplayable(
+    jni::alias_ref<jni::JObject>,
+    jdouble driverId,
+    jni::alias_ref<smoothclip::JSmoothClipView> view) {
+  if (driverId <= 0 || !std::isfinite(driverId)) return;
+  smoothclip::viewBecameDisplayableAndroid(
+      static_cast<uint64_t>(driverId), view);
+}
+
 void nativeInvalidate(jni::alias_ref<jni::JObject>) {
   smoothclip::invalidateBindings();
 }
@@ -422,6 +431,8 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) {
             makeNativeMethod(
                 "nativeSetViewHostGeometry", nativeSetViewHostGeometry),
             makeNativeMethod("nativeUnregisterView", nativeUnregisterView),
+            makeNativeMethod(
+                "nativeViewBecameDisplayable", nativeViewBecameDisplayable),
             makeNativeMethod("nativeInvalidate", nativeInvalidate),
         });
   });

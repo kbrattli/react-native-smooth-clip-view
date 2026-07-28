@@ -10,6 +10,81 @@ longer thrown away. It is held un-started, and the first view registration
 starts it with the clock rebased to that instant — the earliest moment at
 which a running animation can produce a visible frame.
 
+## Addendum (2026-07-28, evening): the latch is gated on displayability
+
+The 0.2.1 latch started at the first `registerView`. Live diagnosis in a
+consumer app (map overlay in a `transparentModal` route) proved that is
+still too early: **a Core Animation animation committed while the host's
+layer tree is detached from the render tree does not survive the later
+attach commit.** RNScreens presents the modal's view controller
+asynchronously (even with `animation: 'none'`), so registration — and the
+CA install — happened while the subtree had no window; ~one frame after the
+window attach, CA removed the animation (`animationDidStop finished:NO`) and
+the layer snapped to its model values, which are the target. Symptom:
+byte-identical to the pre-latch bug.
+
+The fix generalizes the latch's own principle. "The earliest moment a
+running animation can produce a visible frame" is not registration — it is
+**displayability**: the view has layout AND is attached to a window
+(`smoothClipCanDisplay`). Concretely:
+
+- `animateTiming/Spring/Keyframes` latch unless at least one registered view
+  is displayable (`anyDisplayableView`), not merely present.
+- `registerView` starts a held latch only for a displayable view; a detached
+  registration applies the latch's start rect and keeps holding.
+- `SmoothClipView` overrides `didMoveToWindow` and calls
+  `viewBecameDisplayable`, which starts a held latch (clock rebased to the
+  attach) or completes a deferred install for a running animation. The
+  install rides the attach commit — the same transaction that first makes
+  the view visible — so the property "starts inside the transaction that
+  makes it renderable" now holds for detached-subtree mounts too.
+- The per-view install deferral (`_pendingAnimationInstall`) triggers on
+  `!smoothClipCanDisplay`, not just missing layout, and first-layout joins
+  wait for the window when there is none. A relayout while still detached
+  re-arms the deferral instead of reinstalling (that install would die at the
+  attach commit), and the keyframes install path uses the same gate.
+- Android mirrors the gate (`entryDisplayable`: attached to window + real
+  host geometry; `nativeViewBecameDisplayable` from `onAttachedToWindow`).
+  Android has no CA-removal failure mode — its integrator applies values
+  every frame — so there the gate only prevents burning clock time while
+  nothing can be drawn.
+
+Three registry holes found during the same diagnosis were fixed alongside:
+
+1. **Last unregister mid-flight re-latches instead of completing.**
+   Unmounting the last rendering host used to destroy the animation while
+   `latest` already held the target, so a re-registering host statically
+   snapped to it. Now the remainder is re-latched (start = the departing
+   view's visible geometry, duration = remaining time, keyframes pruned) and
+   the next displayable host resumes it. `destroyDriver` still cancels a
+   latch that never finds a host, so the completion cannot hang. An
+   un-started latch whose last view unregisters simply returns to its
+   zero-view held state.
+2. **A take-ownership write no longer cancels a held latch.** The hook's
+   seed replays a SharedValue that an earlier `animateTo` already advanced
+   to its target; cancelling the latch would seed the target and turn the
+   pending animation into a static jump. A held latch is strictly newer
+   intent than any value the seeder read, so the write is dropped. (This
+   supersedes the "take-ownership write cancels the latch" completion
+   trigger listed below; `beginInteraction`, replacement, cancel and destroy
+   still do.)
+3. **`canonicalFrozenPresentation` skips unlaid-out views** (the same
+   `smoothClipIsJoinable` filter the join paths use) so freezing while a
+   zero-geometry peer is registered can no longer collapse the clip to
+   `{0,0,0,0}`.
+
+Coverage note: the iOS gate, re-latch, seed-drop and freeze-filter behaviors
+are pinned by `ios/tests/SmoothClipRegistryTests.mm`, including the deferred
+install completing at window attach and the detached-relayout deferral. The
+Android mirror has no JVM coverage (Robolectric is deliberately absent from
+this repo), so it is exercised by the C++ compile gate and live verification.
+
+One ordering fact worth knowing: the Reduce Motion check runs **before** the
+latch, so an `animateTo` under Reduce Motion instant-completes at the target
+with `finished: true` even with zero views. That is deliberate platform
+behaviour, and it visually resembles this bug — check the setting before
+debugging a "skipped" transition.
+
 ## The race
 
 One JS commit produces two independent work items that both end on the main
@@ -161,8 +236,11 @@ Two consequences worth knowing:
   does not record them either. Before 0.2.1 the instant-complete flipped
   ownership back to Interactive, so such writes were accepted. In practice
   the paths that matter take ownership explicitly: `beginInteraction`
-  cancels the latch and returns its start, and the `setScalars` hot write is
-  authoritative and cancels it too.
+  cancels the latch and returns its start. (Since the 2026-07-28 addendum,
+  plain take-ownership *writes* — the hook's seed, `set`, `setScalars` — no
+  longer cancel a held latch; they are dropped, because the latch is newer
+  intent than any value those callers read. Cancel a latch explicitly via
+  `beginInteraction`/`cancel` when overriding it is intended.)
 - **A latch is unbounded in time.** If a host never mounts, the pending
   animation lives until the driver is destroyed (or replaced/cancelled).
   That is a deliberate trade: the alternative — expiring it after N ms —
