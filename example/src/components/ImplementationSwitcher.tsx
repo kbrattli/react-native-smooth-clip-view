@@ -10,11 +10,8 @@ const OPTIONS: readonly {
   label: string;
   value: StressImplementation;
 }[] = [
-  { label: 'Legacy', value: 'legacy' },
-  { label: 'Direct', value: 'direct' },
-  { label: 'Scalars', value: 'scalar' },
-  { label: 'Native CA', value: 'native' },
-  { label: 'Layout', value: 'animated-layout' },
+  { label: 'SmoothClipView', value: 'smooth-clip' },
+  { label: 'Width/Height', value: 'animated-layout' },
 ];
 
 export function ImplementationSwitcher({
