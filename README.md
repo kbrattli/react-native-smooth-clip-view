@@ -198,6 +198,13 @@ const gesture = Gesture.Pan()
   `finished` state, including cancellation, replacement, participant unmount,
   and native-side rejection (`animateTo` then returns `0` and one
   `finished: false` completion is delivered).
+- An `animateTo` issued before any host view has registered (for example from
+  an effect in the same commit that mounts the host, or inside a modal route
+  that attaches late) is held pending and starts with its full duration when
+  the first view registers. If no view ever registers, the pending animation
+  survives until it is replaced, cancelled, overridden by a take-ownership
+  write, or the driver is destroyed — at which point its single
+  `finished: false` completion is delivered.
 
 Do not call `driver.ui` from React code — it throws on the React runtime; use
 `driver.react` there. During a native transition, `driver.presentation.value`

@@ -58,6 +58,10 @@ struct ActiveAnimation {
   std::vector<Keyframe> keyframes;
   double durationMs = 0;
   CFTimeInterval startedAt = 0;
+  // False while the animation is latched: built before any host view
+  // registered, held un-rendered until the first registerView rebases
+  // startedAt and starts it. startedAt is only meaningful once started.
+  bool started = false;
 };
 
 struct DriverState {
@@ -170,7 +174,12 @@ int32_t allocateAnimationId(DriverState &state) {
 }
 
 Presentation canonicalFrozenPresentation(DriverState &state) {
-  Presentation canonical = state.latest;
+  // A latched animation never rendered, so state.latest already holds its
+  // target; freezing there would jump the clip. Freeze at the start instead.
+  Presentation canonical =
+      state.animation.has_value() && !state.animation->started
+      ? state.animation->start
+      : state.latest;
   bool hasCanonical = false;
   for (const ViewKey key : state.views) {
     const Presentation frozen = [viewForKey(key) smoothClipFreezePresentation];
@@ -224,9 +233,16 @@ void prepareAnimation(
 Presentation resolvedAnimationStart(
     const DriverState &state,
     const AnimationStart &start) {
-  return start.hasInteractiveStart && state.ownership == Ownership::Interactive
-      ? start.interactiveStart
-      : state.latest;
+  if (start.hasInteractiveStart && state.ownership == Ownership::Interactive) {
+    return start.interactiveStart;
+  }
+  // Replacing a latched animation (e.g. open→close before the host mounted):
+  // it never rendered, and state.latest is its target — start from where the
+  // clip actually is, the latch's own start.
+  if (state.animation.has_value() && !state.animation->started) {
+    return state.animation->start;
+  }
+  return state.latest;
 }
 
 // Installs the remaining part of the active animation on a view that joins
@@ -303,8 +319,10 @@ void registerView(
     state.latest = initialPresentation;
     state.hasLatest = true;
   }
+  const bool hasAnimation = state.animation.has_value();
+  const bool startsLatch = hasAnimation && !state.animation->started;
   const bool shouldReplay =
-      state.animation.has_value() && !state.views.empty();
+      hasAnimation && state.animation->started && !state.views.empty();
   Presentation visible = state.latest;
   if (shouldReplay) {
     // A registered peer that never laid out reports zero geometry; joining
@@ -321,6 +339,10 @@ void registerView(
     visible = reference != nil
         ? [reference smoothClipCurrentPresentation]
         : state.animation->start;
+  } else if (startsLatch) {
+    // state.latest already holds the latch's TARGET; applying it here is
+    // exactly the jump this path exists to avoid.
+    visible = state.animation->start;
   }
   const ViewKey key = keyForView(view);
   if (std::find(state.views.begin(), state.views.end(), key) ==
@@ -328,8 +350,16 @@ void registerView(
     state.views.push_back(key);
   }
   [view smoothClipApplyPresentation:visible];
-  if (!shouldReplay || !state.animation.has_value()) return;
+  if (startsLatch) {
+    // Start the latched animation: rebase the join clock before any elapsed
+    // math runs (dispatch below and the first-layout joinActiveAnimation).
+    state.animation->startedAt = CACurrentMediaTime();
+    state.animation->started = true;
+  }
+  if (!(shouldReplay || startsLatch)) return;
 
+  // The participant insert inside the join is also what keeps unregisterView
+  // orphan-safe for a mount-then-unmount before first layout.
   dispatchActiveAnimationJoin(state, view, key, visible);
 }
 
@@ -339,6 +369,10 @@ bool joinActiveAnimation(uint64_t driverId, SmoothClipView *view) {
   if (iterator == registry().end()) return false;
   auto &state = iterator->second;
   if (!state.animation.has_value() || state.views.empty()) return false;
+  // Unreachable in the normal flow (a pending install implies the animation
+  // was dispatched, which implies started), but a join must never compute
+  // elapsed time against an un-rebased latch clock.
+  if (!state.animation->started) return false;
   const ViewKey key = keyForView(view);
   if (std::find(state.views.begin(), state.views.end(), key) ==
       state.views.end()) {
@@ -500,10 +534,13 @@ int32_t animateTiming(
   active.durationMs = animation.durationMs;
   active.startedAt = CACurrentMediaTime();
   active.participants.insert(state.views.begin(), state.views.end());
+  active.started = !state.views.empty();
   state.animation = std::move(active);
-  if (state.views.empty()) {
-    state.ownership = Ownership::Interactive;
-    emitCompletion(driverId, state, animationId, true);
+  if (!state.animation->started) {
+    // Latch: no host view yet (animateTo raced the mount). Ownership stays
+    // Native — the pending animation owns rendering intent — and the first
+    // registerView rebases startedAt and starts it. The non-zero id is still
+    // returned synchronously so the JS side does not treat this as rejection.
     return animationId;
   }
 #if defined(SMOOTH_CLIP_ENABLE_SIGNPOSTS) && SMOOTH_CLIP_ENABLE_SIGNPOSTS
@@ -549,10 +586,10 @@ int32_t animateSpring(
   active.spring = animation;
   active.startedAt = CACurrentMediaTime();
   active.participants.insert(state.views.begin(), state.views.end());
+  active.started = !state.views.empty();
   state.animation = std::move(active);
-  if (state.views.empty()) {
-    state.ownership = Ownership::Interactive;
-    emitCompletion(driverId, state, animationId, true);
+  if (!state.animation->started) {
+    // Latched until the first registerView — see animateTiming.
     return animationId;
   }
 #if defined(SMOOTH_CLIP_ENABLE_SIGNPOSTS) && SMOOTH_CLIP_ENABLE_SIGNPOSTS
@@ -600,10 +637,10 @@ int32_t animateKeyframes(
   active.durationMs = durationMs;
   active.startedAt = CACurrentMediaTime();
   active.participants.insert(state.views.begin(), state.views.end());
+  active.started = !state.views.empty();
   state.animation = std::move(active);
-  if (state.views.empty()) {
-    state.ownership = Ownership::Interactive;
-    emitCompletion(driverId, state, animationId, true);
+  if (!state.animation->started) {
+    // Latched until the first registerView — see animateTiming.
     return animationId;
   }
   for (const ViewKey key : state.views) {

@@ -47,6 +47,10 @@ struct ActiveAnimation {
   std::array<double, 7> springVelocity{};
   double lastFrameS = 0;
   bool finished = true;
+  // False while the animation is latched: built before any host view
+  // registered, held un-rendered (and out of animatingDrivers()) until the
+  // first registerViewAndroid rebases the clock and starts it.
+  bool started = false;
 };
 
 // Per-view fanout state. Density and host metrics are pushed from Kotlin at
@@ -457,17 +461,23 @@ Presentation prepareAnimation(
 int32_t startAnimation(
     uint64_t driverId,
     DriverState &state,
-    ActiveAnimation animation,
-    const Presentation &target) {
-  if (state.views.empty()) {
-    applyPresentation(state, target);
-    emitCompletion(driverId, animation.id, true);
-    return animation.id;
-  }
+    ActiveAnimation animation) {
   animation.startedAtS = nowSeconds();
   animation.lastFrameS = animation.startedAtS;
+  // current = start even while latched is load-bearing: cancelAnimation,
+  // beginInteraction, prepareAnimation's visibleBefore and registerView's
+  // visible all read animation->current, giving a never-rendered latch
+  // freeze-at-start / replace-from-start semantics with no extra branches.
   animation.current = animation.start;
+  animation.started = !state.views.empty();
   state.animation = std::move(animation);
+  if (!state.animation->started) {
+    // Latch: no host view yet (animateTo raced the mount). The first
+    // registerViewAndroid rebases the clock, joins animatingDrivers() and
+    // schedules the frame loop. Non-zero id is still returned so the JS
+    // side does not treat this as rejection.
+    return state.animation->id;
+  }
   auto &active = animatingDrivers();
   if (std::find(active.begin(), active.end(), driverId) == active.end()) {
     active.push_back(driverId);
@@ -652,7 +662,7 @@ int32_t animateTiming(
   active.start = resolvedStart;
   active.target = presentation;
   active.durationS = animation.durationMs / 1000.0;
-  return startAnimation(driverId, state, std::move(active), presentation);
+  return startAnimation(driverId, state, std::move(active));
 }
 
 int32_t animateSpring(
@@ -695,7 +705,7 @@ int32_t animateSpring(
     active.springVelocity[index] =
         velocity * (targetChannels[index] - startChannels[index]);
   }
-  return startAnimation(driverId, state, std::move(active), presentation);
+  return startAnimation(driverId, state, std::move(active));
 }
 
 int32_t animateKeyframes(
@@ -726,7 +736,7 @@ int32_t animateKeyframes(
   active.start = resolvedStart;
   active.target = presentation;
   active.durationS = durationMs / 1000.0;
-  return startAnimation(driverId, state, std::move(active), presentation);
+  return startAnimation(driverId, state, std::move(active));
 }
 
 int32_t rejectAnimation(uint64_t driverId) {
@@ -839,6 +849,9 @@ void registerViewAndroid(
       ? state.animation->current
       : state.latest;
   JNIEnv *env = facebook::jni::Environment::current();
+  // The existing-view branch below is unreachable while an animation is
+  // latched (a latch implies views was empty at animate time), so only the
+  // new-view path needs to start latches.
   for (auto &existing : state.views) {
     if (env->IsSameObject(existing.view.get(), view.get())) {
       existing.density = density;
@@ -850,8 +863,27 @@ void registerViewAndroid(
   }
   ViewEntry entry{
       facebook::jni::make_global(view), density, hostWidthPx, hostHeightPx};
+  // `visible` above already delivered animation->current (= start) to the
+  // registering view — the correct first frame for a latched animation.
   deliverToView(entry, visible);
   state.views.push_back(std::move(entry));
+  if (state.animation.has_value() && !state.animation->started) {
+    // Start the latched animation: rebase the clock so the first frame
+    // integrates from now, not from the pre-mount animateTo call.
+    // Note this function has no isOnMainThread() guard (Kotlin calls it from
+    // the view's main-thread attach path); scheduleFrame() is itself
+    // main-thread-gated, so an off-main register cannot bind the
+    // choreographer to the wrong thread.
+    auto &animation = *state.animation;
+    animation.started = true;
+    animation.startedAtS = nowSeconds();
+    animation.lastFrameS = animation.startedAtS;
+    auto &active = animatingDrivers();
+    if (std::find(active.begin(), active.end(), driverId) == active.end()) {
+      active.push_back(driverId);
+    }
+    scheduleFrame();
+  }
 }
 
 void setViewHostGeometryAndroid(
