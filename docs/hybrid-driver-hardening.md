@@ -233,6 +233,22 @@ lifetime.
 
 ## Known limitations / deliberately deferred
 
+- ~~An `animateTo` issued while the registry had zero registered views
+  instant-completed at the target (`finished: true`), so a host mounting one
+  frame later — e.g. inside a transparentModal route whose Fabric mount runs
+  after the consumer's effect — statically applied the target and the clip
+  jumped.~~ **Fixed in 0.2.1**: the built animation is now latched
+  (`started = false`, held out of the render/frame path) and the first view
+  registration rebases its clock and starts it with the full duration.
+  Freeze-style cancellation of a never-started animation uses its start
+  presentation (iOS: `canonicalFrozenPresentation`; Android falls out of
+  `current = start`), and replacing a latch resolves the new start from the
+  latch's start rather than `latest` (iOS: `resolvedAnimationStart` latch
+  branch). A latch whose host never mounts completes `finished: false` on
+  replacement, cancel, take-ownership write, or driver destruction. Full
+  write-up — the race, the frame-by-frame behaviour on both platforms, the
+  cost analysis, and the comparison with Reanimated's entering animations —
+  in [`pending-animation-latch.md`](./pending-animation-latch.md).
 - Spring joins for late-mounting views restart with the original launch
   velocity (visual-only, brief).
 - The registry join clock is not rebased after long backgrounding (a

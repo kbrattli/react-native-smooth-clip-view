@@ -90,15 +90,68 @@ static smoothclip::Presentation Presentation(
   smoothclip::destroyDriver(driverId);
 }
 
-- (void)testAnimationWithoutViewsCompletesImmediately {
+// An animateTo issued before any host view registers must latch (held
+// un-rendered) instead of instant-completing at the target — the pre-0.2.1
+// behavior made a host that mounted one frame later jump straight to the
+// target. The driver entry is created by the hook's authoritative seed, which
+// setPresentation(takeOwnership) mirrors here.
+- (void)testAnimateWithoutViewsLatchesUntilFirstRegistration {
   constexpr uint64_t driverId = 9004;
+  __block int completionCount = 0;
   __block int32_t completedAnimation = 0;
-  __block BOOL completedFinished = NO;
+  __block BOOL completedFinished = YES;
   smoothclip::setCompletionCallback(
       self,
       [&](uint64_t completedDriver, int32_t animationId, bool finished) {
         if (completedDriver != driverId) return;
+        completionCount += 1;
         completedAnimation = animationId;
+        completedFinished = finished;
+      });
+  SmoothClipView *view = [[SmoothClipView alloc] initWithFrame:CGRectZero];
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+
+  smoothclip::setPresentation(driverId, initial, true);
+  const int32_t animationId = smoothclip::animateTiming(
+      driverId, {true, initial}, target, timing);
+  XCTAssertGreaterThan(animationId, 0);
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+  XCTAssertEqual(completionCount, 0);
+
+  // First registration starts the latch — the animation stays active and
+  // still has not completed.
+  smoothclip::registerView(driverId, view, initial);
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+  XCTAssertEqual(completionCount, 0);
+
+  // The registration joined the view as a participant, so unmounting ends
+  // the animation through the normal path (exactly one unfinished
+  // completion) instead of orphaning it.
+  smoothclip::unregisterView(driverId, view);
+  XCTAssertEqual(completionCount, 1);
+  XCTAssertEqual(completedAnimation, animationId);
+  XCTAssertFalse(completedFinished);
+  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+  smoothclip::clearCompletionCallback(self);
+  smoothclip::destroyDriver(driverId);
+}
+
+// A latched animation never rendered, so freezing it (cancel without target /
+// beginInteraction) must return its start — state.latest already holds the
+// target, and freezing there would jump the clip.
+- (void)testCancelingALatchedAnimationFreezesAtItsStart {
+  constexpr uint64_t driverId = 9014;
+  __block int completionCount = 0;
+  __block BOOL completedFinished = YES;
+  smoothclip::setCompletionCallback(
+      self,
+      [&](uint64_t completedDriver, int32_t animationId, bool finished) {
+        if (completedDriver != driverId) return;
+        completionCount += 1;
         completedFinished = finished;
       });
   const smoothclip::Presentation initial =
@@ -107,14 +160,134 @@ static smoothclip::Presentation Presentation(
       Presentation(0, 0, 100, 100, 12, -20, -30);
   const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
 
-  const int32_t animationId = smoothclip::animateTiming(
-      driverId, {true, initial}, target, timing);
+  smoothclip::setPresentation(driverId, initial, true);
+  smoothclip::animateTiming(driverId, {true, initial}, target, timing);
+  const smoothclip::CancelResult cancel =
+      smoothclip::cancelAnimation(driverId, 0, false);
 
-  XCTAssertEqual(completedAnimation, animationId);
-  XCTAssertTrue(completedFinished);
+  XCTAssertTrue(cancel.handled);
+  XCTAssertEqual(cancel.presentation.clip.x, initial.clip.x);
+  XCTAssertEqual(cancel.presentation.clip.width, initial.clip.width);
+  XCTAssertEqual(
+      cancel.presentation.contentTranslateX, initial.contentTranslateX);
+  XCTAssertEqual(completionCount, 1);
+  XCTAssertFalse(completedFinished);
   XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
   smoothclip::clearCompletionCallback(self);
   smoothclip::destroyDriver(driverId);
+}
+
+// The first registration rebases the latch clock: the installed transition
+// must run its full duration, not the remainder measured from the pre-mount
+// animateTo call.
+- (void)testRegisterStartsLatchedAnimationFromItsStartWithFullDuration {
+  constexpr uint64_t driverId = 9015;
+  SmoothClipView *view = [[SmoothClipView alloc]
+      initWithFrame:CGRectMake(0, 0, 120, 120)];
+  facebook::react::LayoutMetrics metrics;
+  metrics.frame = facebook::react::Rect{
+      facebook::react::Point{0, 0}, facebook::react::Size{120, 120}};
+  [view updateLayoutMetrics:metrics
+           oldLayoutMetrics:facebook::react::LayoutMetrics{}];
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+
+  smoothclip::setPresentation(driverId, initial, true);
+  const int32_t animationId = smoothclip::animateTiming(
+      driverId, {true, initial}, target, timing);
+  XCTAssertGreaterThan(animationId, 0);
+  smoothclip::registerView(driverId, view, initial);
+
+  UIView *container = [view valueForKey:@"clipContainer"];
+  CAAnimationGroup *group = (CAAnimationGroup *)[container.layer
+      animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(group);
+  // Register happens microseconds after animateTiming; without the rebase the
+  // remaining duration would already be visibly short of 250 ms.
+  XCTAssertEqualWithAccuracy(group.duration, 0.25, 0.02);
+
+  smoothclip::cancelAnimation(driverId, 0, false);
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::destroyDriver(driverId);
+}
+
+// Replacing a latched animation (open then close before the host mounted)
+// must cancel the first latch unfinished and start the second from the first
+// latch's start — not from state.latest, which holds the first target.
+- (void)testReplacingALatchedAnimationStartsFromTheLatchStart {
+  constexpr uint64_t driverId = 9016;
+  __block int completionCount = 0;
+  __block int32_t lastCompleted = 0;
+  __block BOOL lastFinished = YES;
+  smoothclip::setCompletionCallback(
+      self,
+      [&](uint64_t completedDriver, int32_t animationId, bool finished) {
+        if (completedDriver != driverId) return;
+        completionCount += 1;
+        lastCompleted = animationId;
+        lastFinished = finished;
+      });
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation targetA =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::Presentation targetB =
+      Presentation(2, 2, 60, 60, 8, -1, -2);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+
+  smoothclip::setPresentation(driverId, initial, true);
+  const int32_t first = smoothclip::animateTiming(
+      driverId, {true, initial}, targetA, timing);
+  const int32_t second = smoothclip::animateTiming(
+      driverId, {false, initial}, targetB, timing);
+  XCTAssertGreaterThan(second, first);
+  XCTAssertEqual(completionCount, 1);
+  XCTAssertEqual(lastCompleted, first);
+  XCTAssertFalse(lastFinished);
+
+  // The replacement latched with the first latch's start; freezing proves it.
+  const smoothclip::Presentation frozen =
+      smoothclip::beginInteraction(driverId);
+  XCTAssertEqual(frozen.clip.width, initial.clip.width);
+  XCTAssertEqual(frozen.contentTranslateY, initial.contentTranslateY);
+  XCTAssertEqual(completionCount, 2);
+  XCTAssertEqual(lastCompleted, second);
+  XCTAssertFalse(lastFinished);
+  smoothclip::clearCompletionCallback(self);
+  smoothclip::destroyDriver(driverId);
+}
+
+// A latch on a host that never mounts survives until the driver is destroyed
+// and then delivers its single unfinished completion.
+- (void)testDestroyDriverCancelsALatchedAnimation {
+  constexpr uint64_t driverId = 9017;
+  __block int completionCount = 0;
+  __block BOOL completedFinished = YES;
+  smoothclip::setCompletionCallback(
+      self,
+      [&](uint64_t completedDriver, int32_t animationId, bool finished) {
+        if (completedDriver != driverId) return;
+        completionCount += 1;
+        completedFinished = finished;
+      });
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+
+  smoothclip::setPresentation(driverId, initial, true);
+  smoothclip::animateTiming(driverId, {true, initial}, target, timing);
+  XCTAssertEqual(completionCount, 0);
+
+  smoothclip::destroyDriver(driverId);
+  XCTAssertEqual(completionCount, 1);
+  XCTAssertFalse(completedFinished);
+  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+  smoothclip::clearCompletionCallback(self);
 }
 
 - (void)testSevenScalarPresentationRoundTripsExactly {
