@@ -203,7 +203,12 @@ no frame is scheduled, so the `AChoreographer` loop never runs for it. On
 the first `registerViewAndroid`: the start presentation is delivered to the
 new view synchronously, then the clock is rebased (`startedAtS`,
 `lastFrameS`), the driver joins `animatingDrivers()` and `scheduleFrame()`
-posts the vsync callback.
+posts the vsync callback. The rebased stamp is a wall-clock
+(`steady_clock`) value taken mid-frame; the first `advance()` translates it
+onto the choreographer frame-time axis, preserving the real elapsed time
+(`frameClockAnchored`), because the vsync timestamp handed to the callback
+precedes any mid-frame stamp and would otherwise clamp the first fraction
+to zero.
 
 One Android detail matters for the first visible frame. Registration happens
 in `onAfterUpdateTransaction`, before the platform layout pass, so the view
@@ -213,7 +218,8 @@ clip. The real metrics arrive from `onSizeChanged` →
 the start, because the choreographer has not run yet — with correct host
 geometry, in the same traversal, before the frame is drawn. The first
 *drawn* frame therefore shows the start, and the first *integrated* frame is
-the next vsync.
+the next vsync — advanced by the true wall time elapsed since the start
+stamp, thanks to the frame-time anchor above.
 
 ## Semantics that changed
 
@@ -288,9 +294,14 @@ sits idle waiting for permission to animate. On iOS the animation is
 installed in the same mount transaction (directly, or via the pending
 install at first layout inside that transaction), so the layer tree and the
 animation reach the render server together. On Android the first *drawn*
-frame is the start presentation and integration begins at the next vsync —
-which is also the earliest frame that could differ from the start, so
-nothing is skipped and nothing idles.
+frame is the start presentation and integration begins at the next vsync,
+where the frame-time anchor credits the animation with the true wall time
+elapsed since the start stamp — so the first integrated frame already
+advances instead of re-rendering the start. (Before the anchor this claim
+was subtly false for mid-frame starts: the callback's vsync timestamp
+precedes a mid-frame `nowSeconds()` stamp, the first fraction clamped to
+zero, and the start was drawn twice — invisible at a mount, but a visible
+1–2 frame hitch when an interactive drag handed off to `animateTo`.)
 
 **2. Does it make the UI thread heavier?** No — it is net lighter. A latch
 costs nothing per frame, the start costs a branch, and the steady state is
