@@ -13,6 +13,7 @@ export type {
   SpringClipAnimation,
   TimingClipAnimation,
 } from './driverTypes';
+export { ClipEasings } from './easings';
 export { normalizeClipGeometry } from './geometry';
 export { createClipPresentation } from './geometry';
 export type {

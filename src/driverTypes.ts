@@ -3,10 +3,8 @@ import type { SmoothClipPresentation } from './geometry';
 
 export type ClipReduceMotion = 'system' | 'always' | 'never';
 
-export type TimingClipAnimation = Readonly<{
-  type: 'timing';
-  duration: number;
-  controlPoints: readonly [number, number, number, number];
+/** Options shared by every animation kind. */
+type ClipAnimationBase = Readonly<{
   /**
    * Explicit start: fuses a `setScalars(from…)` take-ownership hot write
    * immediately before the animation, so native starts from exactly this
@@ -19,6 +17,10 @@ export type TimingClipAnimation = Readonly<{
    * until success sets it to the target). Against a held pending-animation
    * latch the seed is dropped by design — latch intent wins.
    *
+   * Keyframes interpolate absolutely, so pass `frames[0].presentation` —
+   * the seed renders it before the first animation frame, making the
+   * handoff continuous.
+   *
    * iOS note: keyframes start exactly at `from` (frame 0 travels in-band);
    * timing/spring sample their Core Animation from-value off the
    * presentation layer — the last committed frame, at most one frame behind
@@ -27,30 +29,31 @@ export type TimingClipAnimation = Readonly<{
   from?: SmoothClipPresentation;
 }>;
 
-export type SpringClipAnimation = Readonly<{
-  type: 'spring';
-  mass?: number;
-  stiffness?: number;
-  damping?: number;
-  initialVelocity?: number | 'inherit';
-  /** Explicit start; see `TimingClipAnimation.from`. */
-  from?: SmoothClipPresentation;
-}>;
+export type TimingClipAnimation = ClipAnimationBase &
+  Readonly<{
+    type: 'timing';
+    duration: number;
+    controlPoints: readonly [number, number, number, number];
+  }>;
 
-export type KeyframedClipAnimation = Readonly<{
-  type: 'keyframes';
-  duration: number;
-  frames: readonly Readonly<{
-    offset: number;
-    presentation: SmoothClipPresentation;
-  }>[];
-  /**
-   * Explicit start; see `TimingClipAnimation.from`. Keyframes interpolate
-   * absolutely, so pass `frames[0].presentation` here — the seed renders it
-   * before the first animation frame, making the handoff continuous.
-   */
-  from?: SmoothClipPresentation;
-}>;
+export type SpringClipAnimation = ClipAnimationBase &
+  Readonly<{
+    type: 'spring';
+    mass?: number;
+    stiffness?: number;
+    damping?: number;
+    initialVelocity?: number | 'inherit';
+  }>;
+
+export type KeyframedClipAnimation = ClipAnimationBase &
+  Readonly<{
+    type: 'keyframes';
+    duration: number;
+    frames: readonly Readonly<{
+      offset: number;
+      presentation: SmoothClipPresentation;
+    }>[];
+  }>;
 
 export type SmoothClipAnimation =
   TimingClipAnimation | SpringClipAnimation | KeyframedClipAnimation;
