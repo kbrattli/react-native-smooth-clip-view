@@ -16,6 +16,10 @@ file(GLOB smoothclip_SOURCES CONFIGURE_DEPENDS
 
 add_library(smoothclipview SHARED ${smoothclip_SOURCES})
 
+# 16 KB page-size support for NDKs where ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES
+# is unavailable (< r26.3) or ignored.
+target_link_options(smoothclipview PRIVATE "-Wl,-z,max-page-size=16384")
+
 # C++20, RTTI, exceptions and React Native macros.
 include("${REACT_NATIVE_DIR}/ReactCommon/cmake-utils/react-native-flags.cmake")
 target_compile_reactnative_options(smoothclipview PUBLIC)

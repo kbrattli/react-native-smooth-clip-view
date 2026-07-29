@@ -86,6 +86,7 @@ android {
       cmake {
         cppFlags "-O2", "-frtti", "-fexceptions", "-Wall", "-std=c++20"
         arguments "-DANDROID_STL=c++_shared",
+                  "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
                   "-DREACT_NATIVE_DIR=${reactNativeRootDir}"
         abiFilters(*reactNativeArchitectures())
       }
