@@ -3,6 +3,8 @@
 #import "SmoothClipGeometry.h"
 #import "SmoothClipViewRegistry.h"
 
+#include "SmoothClipVelocityTracker.h"
+
 #import <QuartzCore/QuartzCore.h>
 #import <React/RCTConversions.h>
 #import <React/RCTFabricComponentsPlugins.h>
@@ -48,6 +50,17 @@ using namespace facebook::react;
                                        finished:(BOOL)finished;
 @end
 
+static std::array<double, 7> SmoothClipVelocityChannels(
+    CGRect rect, CGFloat radius, CGPoint contentTranslation) {
+  return {CGRectGetMinX(rect),
+          CGRectGetMinY(rect),
+          CGRectGetWidth(rect),
+          CGRectGetHeight(rect),
+          radius,
+          contentTranslation.x,
+          contentTranslation.y};
+}
+
 @implementation SmoothClipView {
   SmoothClipContainerView *_clipContainer;
   SmoothClipContainerView *_contentContainer;
@@ -82,16 +95,10 @@ using namespace facebook::react;
   CGPoint _pausedContentTranslation;
   CFTimeInterval _pausedRemaining;
 
-  BOOL _hasPreviousInteractiveSample;
-  BOOL _hasInteractiveSample;
-  CGRect _previousInteractiveRect;
-  CGRect _interactiveRect;
-  CGFloat _previousInteractiveRadius;
-  CGFloat _interactiveRadius;
-  CGPoint _previousInteractiveContentTranslation;
-  CGPoint _interactiveContentTranslation;
-  CFTimeInterval _previousInteractiveTime;
-  CFTimeInterval _interactiveTime;
+  // 'inherit' velocity samples (normalized geometry, per view); recording/
+  // coalescing/projection live in the shared cpp/SmoothClipVelocityTracker.h
+  // (behavior-paired with Android's per-driver history).
+  smoothclip::VelocitySampleHistory _velocitySamples;
 }
 
 + (ComponentDescriptorProvider)componentDescriptorProvider {
@@ -144,8 +151,7 @@ using namespace facebook::react;
     _activeAnimationKind = 0;
     _pendingAnimationInstall = NO;
     _animationPaused = NO;
-    _hasPreviousInteractiveSample = NO;
-    _hasInteractiveSample = NO;
+    smoothclip::clearVelocitySamples(_velocitySamples);
     [[NSNotificationCenter defaultCenter]
         addObserver:self
            selector:@selector(applicationWillResignActive)
@@ -305,71 +311,24 @@ using namespace facebook::react;
 - (void)recordInteractiveRect:(CGRect)rect
                        radius:(CGFloat)radius
            contentTranslation:(CGPoint)contentTranslation {
-  if (_hasInteractiveSample &&
-      CGRectEqualToRect(_interactiveRect, rect) &&
-      _interactiveRadius == radius &&
-      CGPointEqualToPoint(
-          _interactiveContentTranslation, contentTranslation)) {
-    return;
-  }
-  if (_hasInteractiveSample) {
-    _hasPreviousInteractiveSample = YES;
-    _previousInteractiveRect = _interactiveRect;
-    _previousInteractiveRadius = _interactiveRadius;
-    _previousInteractiveContentTranslation =
-        _interactiveContentTranslation;
-    _previousInteractiveTime = _interactiveTime;
-  }
-  _hasInteractiveSample = YES;
-  _interactiveRect = rect;
-  _interactiveRadius = radius;
-  _interactiveContentTranslation = contentTranslation;
-  _interactiveTime = CACurrentMediaTime();
+  // Identical-value dedupe and same-frame coalescing live in the shared
+  // tracker; coalescing keeps a distinct re-record issued sub-frame after
+  // the last one (e.g. a fused animateTo `from` seed at gesture release)
+  // from exploding the inherited velocity.
+  smoothclip::recordVelocitySample(
+      _velocitySamples,
+      SmoothClipVelocityChannels(rect, radius, contentTranslation),
+      CACurrentMediaTime());
 }
 
 - (CGFloat)inheritedVelocityToRect:(CGRect)target
                             radius:(CGFloat)targetRadius
                 contentTranslation:(CGPoint)targetContentTranslation {
-  if (!_hasPreviousInteractiveSample || !_hasInteractiveSample) return 0;
-  const CFTimeInterval elapsed =
-      _interactiveTime - _previousInteractiveTime;
-  if (elapsed <= 0 || CACurrentMediaTime() - _interactiveTime > 0.1) return 0;
-
-  const CGFloat current[] = {
-      CGRectGetMinX(_interactiveRect),
-      CGRectGetMinY(_interactiveRect),
-      CGRectGetWidth(_interactiveRect),
-      CGRectGetHeight(_interactiveRect),
-      _interactiveRadius,
-      _interactiveContentTranslation.x,
-      _interactiveContentTranslation.y};
-  const CGFloat previous[] = {
-      CGRectGetMinX(_previousInteractiveRect),
-      CGRectGetMinY(_previousInteractiveRect),
-      CGRectGetWidth(_previousInteractiveRect),
-      CGRectGetHeight(_previousInteractiveRect),
-      _previousInteractiveRadius,
-      _previousInteractiveContentTranslation.x,
-      _previousInteractiveContentTranslation.y};
-  const CGFloat destination[] = {
-      CGRectGetMinX(target),
-      CGRectGetMinY(target),
-      CGRectGetWidth(target),
-      CGRectGetHeight(target),
-      targetRadius,
-      targetContentTranslation.x,
-      targetContentTranslation.y};
-  double numerator = 0;
-  double denominator = 0;
-  for (NSUInteger index = 0; index < 7; index += 1) {
-    const double velocity = (current[index] - previous[index]) / elapsed;
-    const double displacement = destination[index] - current[index];
-    numerator += velocity * displacement;
-    denominator += displacement * displacement;
-  }
-  if (denominator <= DBL_EPSILON) return 0;
-  const double result = numerator / denominator;
-  return isfinite(result) ? result : 0;
+  return smoothclip::inheritedVelocity(
+      _velocitySamples,
+      SmoothClipVelocityChannels(
+          target, targetRadius, targetContentTranslation),
+      CACurrentMediaTime());
 }
 
 - (void)smoothClipApplyPresentation:(smoothclip::Presentation)presentation {
@@ -1113,8 +1072,7 @@ using namespace facebook::react;
   [self stopLayerAnimationWithoutCallback];
   _pendingAnimationInstall = NO;
   _animationPaused = NO;
-  _hasPreviousInteractiveSample = NO;
-  _hasInteractiveSample = NO;
+  smoothclip::clearVelocitySamples(_velocitySamples);
   [super prepareForRecycle];
   _requestedClip = CGRectZero;
   _normalizedClip = CGRectZero;
