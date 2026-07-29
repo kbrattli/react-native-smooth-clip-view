@@ -75,3 +75,9 @@ android/generated
 
 # React Native Nitro Modules
 nitrogen/
+
+# npm pack artifact (app installs the tarball while npm publish is pending)
+*.tgz
+
+# argent screen recordings
+.argent/
