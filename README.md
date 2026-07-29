@@ -206,7 +206,12 @@ const gesture = Gesture.Pan()
   exactly that value (pass `frames[0].presentation` for keyframes, which
   interpolate absolutely). A non-finite `from` rejects the whole call; against
   a held pending-animation latch the seed is dropped — the latch is newer
-  intent, and nothing is displayable yet anyway.
+  intent, and nothing is displayable yet anyway. `from` behaves the same on
+  both platforms (it is driver-layer, not native): on iOS the seed stops any
+  running Core Animation and writes the model layer first; keyframes then
+  start exactly at `from`, while timing/spring sample their from-value off
+  the presentation layer — the last committed frame, at most one frame
+  behind `from` — identical to the explicit two-call pattern.
 - `cancel()` freezes visible presentation by default. Pass `'target'` as its
   behavior to jump to the requested endpoint.
 - `options.onAnimationComplete` fires exactly once per animation with its ID

@@ -18,6 +18,11 @@ export type TimingClipAnimation = Readonly<{
    * `driver.presentation.value` is not written from `from` (it stays stale
    * until success sets it to the target). Against a held pending-animation
    * latch the seed is dropped by design — latch intent wins.
+   *
+   * iOS note: keyframes start exactly at `from` (frame 0 travels in-band);
+   * timing/spring sample their Core Animation from-value off the
+   * presentation layer — the last committed frame, at most one frame behind
+   * `from` — identical to the two-call pattern this option desugars to.
    */
   from?: SmoothClipPresentation;
 }>;
