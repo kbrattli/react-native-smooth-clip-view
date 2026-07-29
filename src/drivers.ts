@@ -55,6 +55,12 @@ function toReanimatedReduceMotion(value: ClipReduceMotion): ReduceMotion {
 
 function animationIsFinite(animation: SmoothClipAnimation): boolean {
   'worklet';
+  if (
+    animation.from !== undefined &&
+    !isFiniteClipPresentation(animation.from)
+  ) {
+    return false;
+  }
   if (animation.type === 'timing') {
     return (
       Number.isFinite(animation.duration) &&
@@ -213,6 +219,11 @@ export function useSmoothClipDriver(
         return animationId;
       }
 
+      if (animation.from !== undefined) {
+        // Fused explicit start: on the fallback driver the setScalars hot
+        // path is a plain presentation write, so the desugar is the same.
+        presentation.value = animation.from;
+      }
       activeAnimationId.value = animationId;
       animationStart.value = presentation.value;
       latestTarget.value = next;

@@ -141,10 +141,16 @@ const gesture = Gesture.Pan()
     // bookkeeping. Assigning driver.presentation.value also works.
     driver.ui.setScalars(clip.x, clip.y, clip.width, clip.height, clip.radius, 0, 0);
   })
-  .onEnd(() => {
+  .onEnd((event) => {
+    // The release event is fresher than the last onUpdate (on Android,
+    // ACTION_UP carries a position no MOVE ever delivered). Pass the final
+    // geometry as `from` so the animation starts from exactly that value —
+    // it fuses a setScalars hot write with the handoff in one call.
+    const clip = geometryForDrag(dragStart.value, event.translationY);
     driver.ui.animateTo(createClipPresentation(expandedClip), {
       type: 'spring',
       initialVelocity: 'inherit',
+      from: createClipPresentation(clip),
     });
   });
 ```
@@ -175,8 +181,11 @@ const gesture = Gesture.Pan()
   streams such as gestures. `driver.presentation.value` is stale after hot
   writes by design; `beginInteraction()` remains the source of truth for
   visible geometry, and `animateTo()` after hot writes starts from the native
-  registry's latest value rather than the stale SharedValue. Do not interleave
-  `setScalars` with `presentation.value` writes on the same driver.
+  registry's latest value rather than the stale SharedValue. To start from a
+  value fresher than the last hot write (a gesture's release sample), pass it
+  as `animation.from` — `animateTo` then performs the hot write and the
+  handoff in one call. Do not interleave `setScalars` with
+  `presentation.value` writes on the same driver.
 - Spring `initialVelocity` is one normalized scalar along the current-to-target
   trajectory, in units of the remaining distance per second (`1` covers the
   remaining distance in one second). Every geometry channel continues with the
@@ -191,7 +200,13 @@ const gesture = Gesture.Pan()
 - `animateTo()` transfers ownership to native animation. Timing uses
   cubic Bézier control points; springs accept mass, stiffness, damping, and an
   explicit normalized velocity or `'inherit'` (the default). Keyframes accept
-  validated, monotonically increasing offsets from zero through one.
+  validated, monotonically increasing offsets from zero through one. Every
+  kind accepts an optional `from` presentation — a fused take-ownership hot
+  write issued immediately before the handoff, so the animation starts from
+  exactly that value (pass `frames[0].presentation` for keyframes, which
+  interpolate absolutely). A non-finite `from` rejects the whole call; against
+  a held pending-animation latch the seed is dropped — the latch is newer
+  intent, and nothing is displayable yet anyway.
 - `cancel()` freezes visible presentation by default. Pass `'target'` as its
   behavior to jump to the requested endpoint.
 - `options.onAnimationComplete` fires exactly once per animation with its ID

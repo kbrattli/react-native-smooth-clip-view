@@ -153,7 +153,9 @@ keyframes animation interpolates its supplied frames *absolutely* — so frame 0
 should equal what is actually on screen. Two gesture-runtime details make that
 easy to get subtly wrong on Android: `ACTION_UP` carries a fresher position
 than the last `onUpdate`, and a same-batch final `onUpdate` may never flush
-through a gated `useAnimatedReaction`. The robust release pattern is: adopt the
-release sample in `onEnd`, push it once through `driver.ui.setScalars`, then
-call `animateTo` — making rendered value, native start, and keyframe 0
-identical by construction.
+through a gated `useAnimatedReaction`. The robust release pattern is one call:
+adopt the release sample in `onEnd` and pass it as `animation.from` to
+`animateTo` — internally a fused `setScalars` take-ownership hot write — making
+rendered value, native start, and keyframe 0 identical by construction. (The
+explicit two-call form, `setScalars(...)` then `animateTo(...)`, remains valid
+and is exactly what `from` desugars to.)

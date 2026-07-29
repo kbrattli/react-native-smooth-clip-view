@@ -102,6 +102,12 @@ const timing = {
   controlPoints: [0.42, 0, 0.58, 1] as const,
 };
 
+const fromPresentation: SmoothClipPresentation = {
+  clip: { x: 2, y: 4, width: 60, height: 50, radius: 8 },
+  contentTranslateX: 1,
+  contentTranslateY: 3,
+};
+
 describe('hybrid iOS driver', () => {
   beforeEach(() => {
     mockRNRuntime = false;
@@ -379,6 +385,137 @@ describe('hybrid iOS driver', () => {
     const fresh = useSmoothClipDriver(initial);
     fresh.ui.animateTo(target, timing);
     expect(mockNative.animateTiming.mock.calls[0]?.[1]).toBe(true);
+  });
+
+  it('fused from performs the hot write before animating', () => {
+    const driver = useSmoothClipDriver(initial);
+    jest.clearAllMocks();
+    mockNative.animateTiming.mockReturnValue(7);
+
+    const animationId = driver.ui.animateTo(target, {
+      ...timing,
+      from: fromPresentation,
+    });
+
+    expect(animationId).toBe(7);
+    expect(mockNative.setClipPresentation).toHaveBeenCalledTimes(1);
+    expect(mockNative.setClipPresentation).toHaveBeenCalledWith(
+      expect.any(Number),
+      2,
+      4,
+      60,
+      50,
+      8,
+      1,
+      3,
+      true
+    );
+    const seedOrder =
+      mockNative.setClipPresentation.mock.invocationCallOrder[0] ?? 0;
+    const animateOrder =
+      mockNative.animateTiming.mock.invocationCallOrder[0] ?? 1;
+    expect(seedOrder).toBeLessThan(animateOrder);
+    // The fused hot write marks scalars stale, so native starts from its
+    // own latest value (== from) instead of the stale SharedValue.
+    expect(mockNative.animateTiming.mock.calls[0]?.[1]).toBe(false);
+    expect(driver.presentation.value).toBe(target);
+  });
+
+  it('fused from on keyframes seeds frame zero before the handoff', () => {
+    const driver = useSmoothClipDriver(initial);
+    jest.clearAllMocks();
+    mockNative.animateKeyframes.mockReturnValue(9);
+
+    driver.ui.animateTo(target, {
+      type: 'keyframes',
+      duration: 300,
+      frames: [
+        { offset: 0, presentation: fromPresentation },
+        { offset: 1, presentation: target },
+      ],
+      from: fromPresentation,
+    });
+
+    expect(mockNative.setClipPresentation).toHaveBeenCalledWith(
+      expect.any(Number),
+      2,
+      4,
+      60,
+      50,
+      8,
+      1,
+      3,
+      true
+    );
+    expect(mockNative.animateKeyframes.mock.calls[0]?.[1]).toBe(false);
+  });
+
+  it('animateTo without from performs no hot write', () => {
+    const driver = useSmoothClipDriver(initial);
+    jest.clearAllMocks();
+    mockNative.animateTiming.mockReturnValue(7);
+
+    driver.ui.animateTo(target, timing);
+
+    expect(mockNative.setClipPresentation).not.toHaveBeenCalled();
+    expect(mockNative.animateTiming.mock.calls[0]?.[1]).toBe(true);
+  });
+
+  it('rejects a non-finite from without touching native', () => {
+    const driver = useSmoothClipDriver(initial);
+    jest.clearAllMocks();
+    mockNative.rejectAnimation.mockReturnValue(99);
+
+    const animationId = driver.ui.animateTo(target, {
+      ...timing,
+      from: {
+        clip: { x: Number.NaN, y: 0, width: 1, height: 1, radius: 0 },
+        contentTranslateX: 0,
+        contentTranslateY: 0,
+      },
+    });
+
+    expect(animationId).toBe(99);
+    expect(mockNative.rejectAnimation).toHaveBeenCalled();
+    expect(mockNative.setClipPresentation).not.toHaveBeenCalled();
+    expect(mockNative.animateTiming).not.toHaveBeenCalled();
+  });
+
+  it('fused from rolls back on rejection and re-grabs a running animation', () => {
+    const driver = useSmoothClipDriver(initial);
+
+    // (a) Native rejection of a fused call restores the post-hot-write
+    // state: presentation untouched, scalars stale again.
+    jest.clearAllMocks();
+    mockNative.animateTiming.mockReturnValueOnce(0);
+    mockNative.rejectAnimation.mockReturnValue(99);
+    const rejected = driver.ui.animateTo(target, {
+      ...timing,
+      from: fromPresentation,
+    });
+    expect(rejected).toBe(99);
+    expect(driver.presentation.value).toBe(initial);
+    mockNative.animateTiming.mockReturnValue(7);
+    driver.ui.animateTo(target, timing);
+    expect(mockNative.animateTiming.mock.calls[1]?.[1]).toBe(false);
+
+    // (b) A fused call interrupting the now-running animation still seeds
+    // from — the implicit interactive-start path would have skipped it.
+    jest.clearAllMocks();
+    mockNative.animateTiming.mockReturnValue(7);
+    driver.ui.animateTo(target, { ...timing, from: fromPresentation });
+    expect(mockNative.setClipPresentation).toHaveBeenCalledWith(
+      expect.any(Number),
+      2,
+      4,
+      60,
+      50,
+      8,
+      1,
+      3,
+      true
+    );
+    expect(mockNative.animateTiming.mock.calls[0]?.[1]).toBe(false);
   });
 
   it('flattens keyframes with an eight-scalar stride for native', () => {
