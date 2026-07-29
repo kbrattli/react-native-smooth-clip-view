@@ -51,6 +51,10 @@ struct ActiveAnimation {
   // registered, held un-rendered (and out of animatingDrivers()) until the
   // first registerViewAndroid rebases the clock and starts it.
   bool started = false;
+  // False until the first advance() translates the wall-clock start stamp
+  // onto the choreographer frame-time axis (elapsed-preserving). Every
+  // startedAtS stamp clears it so a re-latched resume re-anchors too.
+  bool frameClockAnchored = false;
 };
 
 // Per-view fanout state. Density and host metrics are pushed from Kotlin at
@@ -480,6 +484,10 @@ void startLatchedAnimation(uint64_t driverId, DriverState &state) {
   animation.started = true;
   animation.startedAtS = nowSeconds();
   animation.lastFrameS = animation.startedAtS;
+  // Load-bearing for re-latch resumes: unregisterViewAndroid rewrites this
+  // ActiveAnimation in place, so a stale anchor would replay the fraction-0
+  // first frame the anchor exists to remove.
+  animation.frameClockAnchored = false;
   auto &active = animatingDrivers();
   if (std::find(active.begin(), active.end(), driverId) == active.end()) {
     active.push_back(driverId);
@@ -494,6 +502,7 @@ int32_t startAnimation(
     ActiveAnimation animation) {
   animation.startedAtS = nowSeconds();
   animation.lastFrameS = animation.startedAtS;
+  animation.frameClockAnchored = false;
   // current = start even while latched is load-bearing: cancelAnimation,
   // beginInteraction, prepareAnimation's visibleBefore and registerView's
   // visible all read animation->current, giving a never-rendered latch
@@ -520,6 +529,22 @@ int32_t startAnimation(
 
 void advance(uint64_t driverId, DriverState &state, double now) {
   ActiveAnimation &animation = *state.animation;
+
+  if (!animation.frameClockAnchored) {
+    // startedAtS/lastFrameS hold nowSeconds() sampled mid-frame at the
+    // animateTo call / latch attach, but `now` is the frame's vsync
+    // timestamp — the same CLOCK_MONOTONIC timebase at an earlier sampling
+    // point. Un-anchored, the first fraction clamps to 0 and re-renders the
+    // start (1-2 duplicated frames at every interactive→animateTo handoff).
+    // Re-anchor onto the frame-time axis keeping the real elapsed time, so
+    // the first rendered frame advances honestly and later frames pace on
+    // vsync. On the 32-bit path `now` is itself nowSeconds() → ~identity.
+    const double wallElapsedS =
+        std::max(0.0, nowSeconds() - animation.startedAtS);
+    animation.startedAtS = now - wallElapsedS;
+    animation.lastFrameS = animation.startedAtS;
+    animation.frameClockAnchored = true;
+  }
 
   bool done = false;
   if (animation.kind == AnimationKind::Spring) {
