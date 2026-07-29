@@ -118,7 +118,15 @@ platform's shape, not a design shortcut.
    (time lost) to "freeze, then land at the honest position" (time preserved,
    CoreAnimation-equivalent semantics). Nothing can paint pixels while the
    thread is blocked; app-level stalls are the remaining jank budget on
-   Android.
+   Android. A **run-ahead guard** completes the semantics: the anchor's
+   one-time shift bakes the first callback's dispatch latency into the frame
+   axis, and if later choreographer stamps catch up to real time the
+   animation would lead wall time by that latency and complete early —
+   `advance()` re-anchors forward whenever frame-axis elapsed exceeds wall
+   elapsed by more than one vsync of slack (`kMaxFrameLeadS`). The condition
+   is unreachable on calm frames (it requires the first callback to have run
+   more than a vsync later, relative to its stamp, than the current one), so
+   the hot path is unchanged.
 2. **Integer outline quantization — platform-forced, negligible.**
    `Outline.setRoundRect` takes an int rect (float `setPath` outlines cannot
    clip), so motion quantizes to whole pixels and sub-pixel frames are skipped.
@@ -142,7 +150,10 @@ platform's shape, not a design shortcut.
   ergonomics to mitigate a stall class that is app-caused anyway.
 - **Catch-up clamping** (cap the post-stall jump for continuity). Diverges
   from CoreAnimation semantics and makes the platforms feel different.
-  Revisit only if a teleport-after-stall ever reads badly on hardware.
+  Revisit only if a teleport-after-stall ever reads badly on hardware. (The
+  run-ahead guard above is a different thing: it never caps the honest
+  catch-up frame — it only stops the frame axis from *leading* wall time on
+  the frames after it.)
 - **`postVsyncCallback` frame timelines** (API 33+). Marginal pacing
   refinement, not worth the API gating today.
 
@@ -159,6 +170,15 @@ adopt the release sample in `onEnd` and pass it as `animation.from` to
 rendered value, native start, and keyframe 0 identical by construction. (The
 explicit two-call form, `setScalars(...)` then `animateTo(...)`, remains valid
 and is exactly what `from` desugars to.)
+
+The native velocity tracker makes this pattern safe with
+`initialVelocity: 'inherit'` as well: a release-sample seed recorded in the
+same frame as the last drag write **coalesces** into one observation, and an
+**identical** seed is deduplicated (keeping the last real motion aging through
+the 100 ms staleness guard), so the inherited velocity stays honest instead of
+zeroing (dead spring) or dividing sub-frame displacement by microseconds
+(wild overshoot). The logic is shared verbatim by both platforms in
+`cpp/SmoothClipVelocityTracker.h`.
 
 ## Does 0.2.3 affect iOS?
 
@@ -179,10 +199,12 @@ The two changes have different blast radii, both deliberate:
   `from`** (frame 0 travels in-band as the CAKeyframeAnimation's first
   value), while **timing/spring source their CA from-value from the
   presentation layer** (`smoothClipCurrentPresentation`), i.e. the last
-  committed frame — at most one frame behind `from`, imperceptible in
-  practice because iOS input batches are tiny. If that skew ever matters, the
-  refinement is to source the from-rect from the registry's resolved start
-  when an explicit `from` is present; the public API would not change.
+  committed frame — at most one frame behind `from`. This is intended
+  behavior, not a pending refinement: the presentation layer is what the eye
+  last saw, so sourcing the CA from-value there is the visually continuous
+  choice — an "exact `from`" would start the transition from a value that
+  never rendered, reintroducing a one-frame discontinuity to fix a skew no
+  one can see.
 
 In short: iOS needs neither fix — the anchor's bug cannot occur there, and
 the fresher-release-sample gap `from` closes is an order of magnitude smaller
