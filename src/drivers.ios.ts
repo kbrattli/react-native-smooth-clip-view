@@ -77,6 +77,14 @@ function animationIsFinite(
   animation: SmoothClipAnimation
 ): boolean {
   'worklet';
+  if (
+    animation.from !== undefined &&
+    !isFiniteClipPresentation(animation.from)
+  ) {
+    // Silently dropping an invalid explicit start would re-open the exact
+    // stale-start handoff `from` exists to close — reject the whole call.
+    return false;
+  }
   if (animation.type === 'timing') {
     return (
       Number.isFinite(animation.duration) &&
@@ -279,6 +287,24 @@ export function useSmoothClipDriver(
         !animationIsFinite(target, animation)
       ) {
         return rejectAnimationHostFunction(driverId);
+      }
+
+      const from = animation.from;
+      if (from !== undefined) {
+        // Fused hot write: exactly setScalars(from…) issued immediately
+        // before the handoff, so native's latest value — the animation
+        // start below — is the caller's explicit presentation. Also
+        // re-grabs from a running animation, which the implicit
+        // interactive-start path would silently skip.
+        setScalarsOnUI(
+          from.clip.x,
+          from.clip.y,
+          from.clip.width,
+          from.clip.height,
+          from.clip.radius,
+          from.contentTranslateX,
+          from.contentTranslateY
+        );
       }
 
       // After a setScalars hot write the SharedValue no longer matches what
