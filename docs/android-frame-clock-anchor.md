@@ -159,3 +159,32 @@ adopt the release sample in `onEnd` and pass it as `animation.from` to
 rendered value, native start, and keyframe 0 identical by construction. (The
 explicit two-call form, `setScalars(...)` then `animateTo(...)`, remains valid
 and is exactly what `from` desugars to.)
+
+## Does 0.2.3 affect iOS?
+
+The two changes have different blast radii, both deliberate:
+
+- **The frame-time anchor does not touch iOS at all.** It lives entirely in
+  `android/src/main/cpp/SmoothClipRegistry.cpp`; no file under `ios/` changed,
+  and the defect it fixes is structurally impossible there (the render server
+  interpolates committed CAAnimations — there is no first-frame fraction to
+  compute, so there is nothing to anchor). iOS pixels in 0.2.3 are
+  bit-identical to 0.2.2 for existing code.
+- **`animation.from` is available on iOS and safe to adopt** — it is
+  driver-layer TypeScript shared by both platforms, desugaring to the same
+  take-ownership hot write everywhere. On iOS the seed stops any running
+  Core Animation and writes the model layer, so `from` re-grabs a running
+  transition on iOS exactly as it does on Android. One nuance, unchanged
+  from the two-call pattern it replaces: **keyframes start exactly at
+  `from`** (frame 0 travels in-band as the CAKeyframeAnimation's first
+  value), while **timing/spring source their CA from-value from the
+  presentation layer** (`smoothClipCurrentPresentation`), i.e. the last
+  committed frame — at most one frame behind `from`, imperceptible in
+  practice because iOS input batches are tiny. If that skew ever matters, the
+  refinement is to source the from-rect from the registry's resolved start
+  when an explicit `from` is present; the public API would not change.
+
+In short: iOS needs neither fix — the anchor's bug cannot occur there, and
+the fresher-release-sample gap `from` closes is an order of magnitude smaller
+on iOS — but `from` is cross-platform by design so one release code path
+serves both, and adopting it on iOS is strictly neutral-to-better.
