@@ -192,13 +192,19 @@ const gesture = Gesture.Pan()
   same normalized rate, so grab/release preserves the felt direction and
   speed. `'inherit'` (the default) estimates the scalar from the last two
   interactive samples on iOS and Android; samples older than 100 ms — and the
-  web fallback — fall back to zero.
+  web fallback — fall back to zero. Two writes landing inside the same frame
+  (< 4 ms apart, e.g. a release-sample `from` seed right after the last drag
+  write) coalesce into one sample, and an identical re-write is ignored, so a
+  fused handoff can neither zero nor inflate the inherited velocity.
 - `driver.react` exposes `beginInteraction`, `set`, `animateTo`, and `cancel`
   as Promises (`setScalars` is UI-worklet-only). React code never blocks
   waiting for main/UI-thread work. An immediate animation request resolves
   before its completion callback is delivered.
 - `animateTo()` transfers ownership to native animation. Timing uses
-  cubic Bézier control points; springs accept mass, stiffness, damping, and an
+  cubic Bézier control points — `ClipEasings` exports exact-form presets
+  (`easeOutCubic` = `Easing.out(Easing.cubic)` etc.) so a parallel Reanimated
+  animation can run the identical curve without hand-deriving it; springs
+  accept mass, stiffness, damping, and an
   explicit normalized velocity or `'inherit'` (the default). Keyframes accept
   validated, monotonically increasing offsets from zero through one. Every
   kind accepts an optional `from` presentation — a fused take-ownership hot
@@ -216,8 +222,11 @@ const gesture = Gesture.Pan()
   behavior to jump to the requested endpoint.
 - `options.onAnimationComplete` fires exactly once per animation with its ID
   and `finished` state, including cancellation, replacement, and native-side
-  rejection (`animateTo` then returns `0` and one `finished: false` completion
-  is delivered). Unmounting the last host mid-flight does not complete the
+  rejection (`animateTo` then returns a fresh non-zero id whose single
+  `finished: false` completion follows — key completion handling by the
+  returned id, never by `0`). `animateTo` returns `0` — and delivers no
+  completion — only when the driver entry no longer exists (destroyed) or the
+  call ran off the main thread. Unmounting the last host mid-flight does not complete the
   animation: the remainder is re-latched and the next displayable host resumes
   it, so the completion arrives when it finishes there — or unfinished on
   replacement, cancellation, `beginInteraction()`, or driver destruction.
