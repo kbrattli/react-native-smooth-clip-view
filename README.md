@@ -2,14 +2,13 @@
 
 [![npm version](https://img.shields.io/npm/v/react-native-smooth-clip-view.svg)](https://www.npmjs.com/package/react-native-smooth-clip-view)
 
-Layout-free animated rounded clipping for React Native Fabric.
+## High-performance geometry animations for React Native
 
-`SmoothClipView` keeps a fixed maximum Yoga footprint while a reusable driver
-updates only the native clipping layer. It is
-useful for expanding cards, sheets, maps, media, zoom transitions, and other reveals where
-animating layout width and height cause lag because of yoga/fabric calculating layout every frame.
+`react-native-smooth-clip-view` lets you animate `x`, `y`, `width`, `height`, and `borderRadius` with Reanimated without triggering expensive layout work on every frame.
 
-In other words, it makes animating width height on Reanimated a cheap operation.
+Instead of resizing the Yoga layout, `SmoothClipView` keeps a fixed footprint and updates only the native clipping layer. This makes geometry-heavy animations smooth and inexpensive—even for shared-element transitions, zoom transitions, expanding cards, reveals, sheets, maps, and media.
+
+Use it for transitions that previously struggled with performance when animating layout dimensions directly.
 
 ## Requirements
 
