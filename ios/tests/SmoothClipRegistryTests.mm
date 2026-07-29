@@ -7,6 +7,7 @@
 #import <react/renderer/core/LayoutMetrics.h>
 
 #include <cmath>
+#include <unistd.h>
 
 @interface SmoothClipRegistryTests : XCTestCase
 @end
@@ -824,6 +825,56 @@ static UIWindow *TestWindow(void) {
   smoothclip::cancelAnimation(driverId, 0, false);
   smoothclip::unregisterView(driverId, displayable);
   smoothclip::unregisterView(driverId, deferred);
+  smoothclip::destroyDriver(driverId);
+}
+
+// The fused animateTo `from` handoff desugars to a take-ownership write
+// issued sub-millisecond after the last drag write. The velocity tracker
+// coalesces that same-frame pair, so an inherited spring launches with an
+// honest, bounded initialVelocity — not zero (identical seed) and not the
+// sub-frame displacement divided by microseconds (distinct seed).
+- (void)testSeededSpringHandoffInstallsBoundedInitialVelocity {
+  constexpr uint64_t driverId = 9017;
+  UIWindow *window = TestWindow();
+  SmoothClipView *view =
+      DisplayableView(window, CGRectMake(0, 0, 120, 120));
+  const smoothclip::Presentation initial = Presentation(0, 0, 40, 40, 8, 0, 0);
+  smoothclip::registerView(driverId, view, initial);
+
+  // Drag frame, one real frame apart, then the release seed in the same
+  // input batch (exactly what animateTo's `from` fusion issues).
+  smoothclip::setPresentation(driverId, Presentation(0, 1, 40, 40, 8), true);
+  usleep(16000);
+  smoothclip::setPresentation(driverId, Presentation(0, 4, 40, 40, 8), true);
+  smoothclip::setPresentation(driverId, Presentation(0, 5, 40, 40, 8), true);
+
+  // reduceMotion 'never' so the spring installs even on CI machines;
+  // inheritVelocity = true.
+  const smoothclip::SpringAnimation spring{1, 180, 18, 0, true, 2};
+  const int32_t animationId = smoothclip::animateSpring(
+      driverId, {false, initial},
+      Presentation(0, 0, 100, 100, 12, -20, -30), spring);
+  XCTAssertGreaterThan(animationId, 0);
+
+  UIView *container = [view valueForKey:@"clipContainer"];
+  CAAnimationGroup *group = (CAAnimationGroup *)[container.layer
+      animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(group);
+  XCTAssertEqual(group.animations.count, 7u);
+  // Honest bound: 4-5 DIP of drag over >= 16 ms projected onto a remaining
+  // distance of ~115 DIP is well under 1 in normalized units. The pre-fix
+  // rotation measured 1 DIP over the sub-millisecond seed gap instead —
+  // tens of units. Every key path carries the same scalar.
+  const double first =
+      ((CASpringAnimation *)group.animations.firstObject).initialVelocity;
+  for (CASpringAnimation *animation in group.animations) {
+    XCTAssertTrue(std::isfinite(animation.initialVelocity));
+    XCTAssertEqualWithAccuracy(animation.initialVelocity, first, 1e-9);
+    XCTAssertLessThan(std::fabs(animation.initialVelocity), 1.0);
+  }
+
+  smoothclip::cancelAnimation(driverId, 0, false);
+  smoothclip::unregisterView(driverId, view);
   smoothclip::destroyDriver(driverId);
 }
 

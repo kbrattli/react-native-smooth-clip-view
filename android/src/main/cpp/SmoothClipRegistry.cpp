@@ -1,4 +1,5 @@
 #include "SmoothClipAndroid.h"
+#include "SmoothClipVelocityTracker.h"
 
 #include <android/choreographer.h>
 #include <fbjni/fbjni.h>
@@ -42,6 +43,11 @@ struct ActiveAnimation {
   std::vector<Keyframe> keyframes;
   double durationS = 0;
   double startedAtS = 0;
+  // Wall-clock twin of startedAtS: stamped together with it, NEVER rebased
+  // by the frame-clock anchor. Readers that need honest wall elapsed (the
+  // unregister re-latch remainder, the run-ahead guard) use this; the
+  // animation curve itself paces on the anchored startedAtS frame axis.
+  double wallStartedAtS = 0;
   // Integrated spring state (channels: x, y, width, height, radius, tx, ty).
   std::array<double, 7> springPosition{};
   std::array<double, 7> springVelocity{};
@@ -79,12 +85,9 @@ struct DriverState {
   // last view leaves and revived by a take-ownership setPresentation.
   bool destroyed = false;
 
-  bool hasPreviousSample = false;
-  bool hasLatestSample = false;
-  Presentation previousSample{{0, 0, 0, 0, 0}, 0, 0};
-  Presentation latestSample{{0, 0, 0, 0, 0}, 0, 0};
-  double previousSampleTimeS = 0;
-  double latestSampleTimeS = 0;
+  // 'inherit' velocity samples; recording/coalescing/projection live in the
+  // shared cpp/SmoothClipVelocityTracker.h (behavior-paired with iOS).
+  VelocitySampleHistory samples;
 };
 
 struct CompletionSink {
@@ -225,6 +228,10 @@ constexpr double kSpringSettleVelocity = 1.0;
 // Settle-based termination is backed by a hard cap so a pathological
 // configuration cannot run the frame loop forever.
 constexpr double kSpringMaxDurationS = 10.0;
+// One vsync of slack for the post-stall run-ahead guard in advance():
+// frame-axis elapsed may lead wall elapsed by at most this much before the
+// animation is re-anchored onto honest wall time.
+constexpr double kMaxFrameLeadS = 0.017;
 
 // Semi-implicit Euler per channel, substepped: one frame-sized step is only
 // stable for omega*dt < 2, and accepted stiffness/mass ratios exceed that at
@@ -371,46 +378,6 @@ void applyToViews(DriverState &state, const Presentation &presentation) {
   }
 }
 
-void recordInteractiveSample(DriverState &state, const Presentation &presentation) {
-  state.hasPreviousSample = state.hasLatestSample;
-  state.previousSample = state.latestSample;
-  state.previousSampleTimeS = state.latestSampleTimeS;
-  state.hasLatestSample = true;
-  state.latestSample = presentation;
-  state.latestSampleTimeS = nowSeconds();
-}
-
-double inheritedVelocity(DriverState &state, const Presentation &target) {
-  if (!state.hasPreviousSample || !state.hasLatestSample) return 0;
-  const double elapsed = state.latestSampleTimeS - state.previousSampleTimeS;
-  if (elapsed <= 0 || nowSeconds() - state.latestSampleTimeS > 0.1) return 0;
-  const double sample[7] = {
-      state.latestSample.clip.x - state.previousSample.clip.x,
-      state.latestSample.clip.y - state.previousSample.clip.y,
-      state.latestSample.clip.width - state.previousSample.clip.width,
-      state.latestSample.clip.height - state.previousSample.clip.height,
-      state.latestSample.clip.radius - state.previousSample.clip.radius,
-      state.latestSample.contentTranslateX - state.previousSample.contentTranslateX,
-      state.latestSample.contentTranslateY - state.previousSample.contentTranslateY};
-  const double destination[7] = {
-      target.clip.x - state.latestSample.clip.x,
-      target.clip.y - state.latestSample.clip.y,
-      target.clip.width - state.latestSample.clip.width,
-      target.clip.height - state.latestSample.clip.height,
-      target.clip.radius - state.latestSample.clip.radius,
-      target.contentTranslateX - state.latestSample.contentTranslateX,
-      target.contentTranslateY - state.latestSample.contentTranslateY};
-  double numerator = 0;
-  double denominator = 0;
-  for (int index = 0; index < 7; index += 1) {
-    numerator += sample[index] * destination[index];
-    denominator += destination[index] * destination[index];
-  }
-  if (denominator <= 1e-12) return 0;
-  const double result = numerator / elapsed / denominator;
-  return std::isfinite(result) ? result : 0;
-}
-
 void applyPresentation(DriverState &state, const Presentation &presentation) {
   state.latest = presentation;
   state.hasLatest = true;
@@ -484,6 +451,7 @@ void startLatchedAnimation(uint64_t driverId, DriverState &state) {
   animation.started = true;
   animation.startedAtS = nowSeconds();
   animation.lastFrameS = animation.startedAtS;
+  animation.wallStartedAtS = animation.startedAtS;
   // Load-bearing for re-latch resumes: unregisterViewAndroid rewrites this
   // ActiveAnimation in place, so a stale anchor would replay the fraction-0
   // first frame the anchor exists to remove.
@@ -502,6 +470,7 @@ int32_t startAnimation(
     ActiveAnimation animation) {
   animation.startedAtS = nowSeconds();
   animation.lastFrameS = animation.startedAtS;
+  animation.wallStartedAtS = animation.startedAtS;
   animation.frameClockAnchored = false;
   // current = start even while latched is load-bearing: cancelAnimation,
   // beginInteraction, prepareAnimation's visibleBefore and registerView's
@@ -544,6 +513,22 @@ void advance(uint64_t driverId, DriverState &state, double now) {
     animation.startedAtS = now - wallElapsedS;
     animation.lastFrameS = animation.startedAtS;
     animation.frameClockAnchored = true;
+    // wallStartedAtS deliberately keeps the wall axis through this rebase.
+  }
+
+  // Run-ahead guard: the anchor's one-time shift bakes the first callback's
+  // dispatch latency into the frame axis. If a stalled handoff anchored
+  // against a stale frame stamp and later stamps catch up to real time, the
+  // frame axis leads wall time by up to the stall length and the animation
+  // completes early. Re-anchor forward when the lead exceeds one vsync of
+  // slack; on calm frames the condition (first callback's latency exceeding
+  // this frame's by > 17 ms) cannot hold, so the hot path is unchanged, and
+  // the 32-bit path (frame axis == wall axis) never fires it. lastFrameS is
+  // deliberately untouched: springs pace on dt, already clamped to 64 ms.
+  const double wallElapsedNowS =
+      std::max(0.0, nowSeconds() - animation.wallStartedAtS);
+  if (now - animation.startedAtS > wallElapsedNowS + kMaxFrameLeadS) {
+    animation.startedAtS = now - wallElapsedNowS;
   }
 
   bool done = false;
@@ -673,7 +658,7 @@ void setPresentation(
   state.latest = presentation;
   state.hasLatest = true;
   state.ownership = Ownership::Interactive;
-  recordInteractiveSample(state, presentation);
+  recordVelocitySample(state.samples, toChannels(presentation), nowSeconds());
   applyToViews(state, presentation);
 }
 
@@ -693,10 +678,7 @@ Presentation beginInteraction(uint64_t driverId) {
   state.latest = current;
   state.hasLatest = true;
   state.ownership = Ownership::Interactive;
-  state.hasPreviousSample = false;
-  state.hasLatestSample = true;
-  state.latestSample = current;
-  state.latestSampleTimeS = nowSeconds();
+  resetVelocitySamples(state.samples, toChannels(current), nowSeconds());
   applyToViews(state, current);
   emitCompletion(driverId, animationId, false);
   return current;
@@ -745,7 +727,7 @@ int32_t animateSpring(
   // seeded with velocity·displacement to match the iOS CASpringAnimation
   // per-keypath behavior.
   const double velocity = animation.inheritVelocity
-      ? inheritedVelocity(state, presentation)
+      ? inheritedVelocity(state.samples, toChannels(presentation), nowSeconds())
       : animation.initialVelocity;
   const Presentation resolvedStart =
       prepareAnimation(driverId, state, start, presentation);
@@ -1026,7 +1008,11 @@ void unregisterViewAndroid(
       // it). Completing it here would betray the pending intent.
     } else if (state.views.empty()) {
       auto &animation = *state.animation;
-      const double elapsedS = nowSeconds() - animation.startedAtS;
+      // wallStartedAtS, not startedAtS: post-anchor the latter lives on the
+      // shifted frame axis and would overstate elapsed by the first
+      // callback's dispatch latency, shortening the resumed remainder and
+      // advancing the keyframe rebase past the rendered position.
+      const double elapsedS = nowSeconds() - animation.wallStartedAtS;
       const double remainingS = std::max(0.0, animation.durationS - elapsedS);
       const bool canResume = !state.destroyed &&
           (animation.kind == AnimationKind::Spring || remainingS > 0);
