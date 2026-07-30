@@ -1,10 +1,8 @@
 # Publishing checklist
 
-Current state (2026-07-29): tag `v0.2.3` exists and is pushed, but **npm has
-only 0.2.2** — the tag↔npm invariant is broken until 0.2.3 (or a superseding
-release) is published. Consumers on a `^0.2.2` range that use `animation.from`
-silently lose the fused release handoff on a clean `npm ci` (object spreads
-bypass TypeScript excess-property checks, so nothing fails at compile time).
+Current state (2026-07-30): resolved — **0.2.4 is published to npm as
+`latest`**. Tag `v0.2.3` remains permanently npm-less (superseded by 0.2.4
+before it was ever published); every other tag matches a registry version.
 
 ## Publish an existing tag as-is (e.g. 0.2.3)
 

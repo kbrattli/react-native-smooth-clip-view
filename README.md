@@ -209,7 +209,10 @@ const gesture = Gesture.Pan()
   animation can run the identical curve without hand-deriving it; springs
   accept mass, stiffness, damping, and an
   explicit normalized velocity or `'inherit'` (the default). Keyframes accept
-  validated, monotonically increasing offsets from zero through one. Every
+  validated, monotonically increasing offsets from zero through one; there is
+  deliberately no keyframe easing field — playback is linear between offsets
+  and the frames encode the curve, which also expresses per-channel-nonlinear
+  paths that no single time-warp could reproduce. Every
   kind accepts an optional `from` presentation — a fused take-ownership hot
   write issued immediately before the handoff, so the animation starts from
   exactly that value (pass `frames[0].presentation` for keyframes, which
@@ -233,6 +236,9 @@ const gesture = Gesture.Pan()
   animation: the remainder is re-latched and the next displayable host resumes
   it, so the completion arrives when it finishes there — or unfinished on
   replacement, cancellation, `beginInteraction()`, or driver destruction.
+  With multiple hosts on one driver, unregistering any participant mid-flight
+  makes the eventual completion `finished: false` — `finished: true` means
+  every participant ran the animation to its end.
 - An `animateTo` issued before any host view can produce a visible frame (for
   example from an effect in the same commit that mounts the host, or inside a
   modal route whose subtree attaches to its window late) is held pending and

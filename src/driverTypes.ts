@@ -13,9 +13,11 @@ type ClipAnimationBase = Readonly<{
    * reached native — a gated per-frame reaction may not have flushed it.
    * Also re-grabs from a running animation (which an implicit interactive
    * start would silently skip). Non-finite `from` rejects the whole call.
-   * `driver.presentation.value` is not written from `from` (it stays stale
-   * until success sets it to the target). Against a held pending-animation
-   * latch the seed is dropped by design — latch intent wins.
+   * On the native drivers `driver.presentation.value` is not written from
+   * `from` (it stays stale until success sets it to the target); the web
+   * fallback does write it — its presentation SharedValue is the render
+   * channel itself. Against a held pending-animation latch the seed is
+   * dropped by design — latch intent wins.
    *
    * Keyframes interpolate absolutely, so pass `frames[0].presentation` —
    * the seed renders it before the first animation frame, making the
