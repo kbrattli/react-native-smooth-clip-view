@@ -86,8 +86,9 @@ static std::array<double, 7> Channels(double x, double y) {
 
 - (void)testSingleObservationInheritsZeroVelocity {
   smoothclip::VelocitySampleHistory history;
-  // beginInteraction semantics: history restarts from one fresh sample.
-  smoothclip::resetVelocitySamples(history, Channels(0, 0), 0.0);
+  // A fresh history (view init / prepareForRecycle) holds at most one
+  // observation after the first write.
+  smoothclip::recordVelocitySample(history, Channels(0, 0), 0.0);
   // An instant release seed lands inside the coalesce window and merges into
   // the same single observation — still no pair, still zero velocity (the
   // pre-fix rotation formed a sub-ms pair here and exploded).
@@ -95,6 +96,28 @@ static std::array<double, 7> Channels(double x, double y) {
   XCTAssertFalse(history.hasPrevious);
   XCTAssertEqual(
       smoothclip::inheritedVelocity(history, Channels(0, 100), 0.003), 0.0);
+}
+
+// beginInteraction on both platforms records the frozen presentation as a
+// plain sample (Android used to reset the history here, launching an
+// instant grab-and-refling dead). The frozen value pairs with the last real
+// sample: bounded momentum continuity, diluted over the true elapsed time.
+- (void)testGrabRecordPairsFrozenValueWithLastRealSample {
+  smoothclip::VelocitySampleHistory history;
+  smoothclip::recordVelocitySample(history, Channels(0, 0), 0.0);
+  smoothclip::recordVelocitySample(history, Channels(0, 8), 0.016);
+  // A native animation runs for 60 ms; the grab freezes mid-flight at y=30
+  // and records it — identical call on iOS (freeze) and Android
+  // (beginInteraction).
+  smoothclip::recordVelocitySample(history, Channels(0, 30), 0.076);
+  XCTAssertTrue(history.hasPrevious);
+  XCTAssertEqual(history.previousTimeS, 0.016);
+
+  // Instant refling: 22 DIP since the last real sample over 60 ms projected
+  // onto the remaining 70 DIP — bounded, not zero, no explosion.
+  const double velocity =
+      smoothclip::inheritedVelocity(history, Channels(0, 100), 0.077);
+  XCTAssertEqualWithAccuracy(velocity, 22.0 / 0.06 / 70.0, 1e-9);
 }
 
 - (void)testProjectionMatchesReferenceVectorsAndGuardsZeroDenominator {

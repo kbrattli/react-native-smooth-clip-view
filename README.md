@@ -195,6 +195,10 @@ const gesture = Gesture.Pan()
   (< 4 ms apart, e.g. a release-sample `from` seed right after the last drag
   write) coalesce into one sample, and an identical re-write is ignored, so a
   fused handoff can neither zero nor inflate the inherited velocity.
+  `beginInteraction()` records the frozen presentation as a plain sample on
+  both platforms, so a grab-and-instant-refling inherits bounded recent
+  motion (the staleness guard still zeroes a stale pair) instead of
+  launching dead.
 - `driver.react` exposes `beginInteraction`, `set`, `animateTo`, and `cancel`
   as Promises (`setScalars` is UI-worklet-only). React code never blocks
   waiting for main/UI-thread work. An immediate animation request resolves
