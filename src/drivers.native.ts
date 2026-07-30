@@ -405,10 +405,12 @@ export function useSmoothClipDriver(
         );
       }
       if (animationId === 0) {
-        // Native rejected the transition after ownership was transferred.
-        // Restore interactive ownership and the pre-animation value, then
-        // emit a standalone finished:false completion so completion-driven
-        // state machines observe exactly one result per animateTo call.
+        // The 0 sentinel: the driver entry no longer exists (destroyed) or
+        // the call ran off the main thread — validation failures never get
+        // here (they reject before any side effect with a fresh id and one
+        // finished:false completion). Restore the two-call-desugar state and
+        // forward the registry's rejection result, which is 0 again in both
+        // reachable cases, with no completion — exactly the README contract.
         ownership.value = INTERACTIVE;
         presentation.value = start;
         if (scalarsWereStale) scalarsStale.value = 1;

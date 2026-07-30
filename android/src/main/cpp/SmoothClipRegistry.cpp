@@ -228,9 +228,12 @@ constexpr double kSpringSettleVelocity = 1.0;
 // Settle-based termination is backed by a hard cap so a pathological
 // configuration cannot run the frame loop forever.
 constexpr double kSpringMaxDurationS = 10.0;
-// One vsync of slack for the post-stall run-ahead guard in advance():
-// frame-axis elapsed may lead wall elapsed by at most this much before the
-// animation is re-anchored onto honest wall time.
+// Fixed slack for the post-stall run-ahead guard in advance(). The lead it
+// bounds is a latency DIFFERENTIAL — the anchor frame's dispatch latency
+// minus the current frame's — so the constant is refresh-rate independent
+// (it is not one vsync period; at 120 Hz it spans two). 17 ms keeps the
+// guard silent through normal callback jitter while capping post-stall
+// run-ahead at one 60 Hz frame of curve time.
 constexpr double kMaxFrameLeadS = 0.017;
 
 // Semi-implicit Euler per channel, substepped: one frame-sized step is only
