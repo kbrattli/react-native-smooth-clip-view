@@ -42,10 +42,10 @@ struct ActiveAnimation {
   std::vector<Keyframe> keyframes;
   double durationS = 0;
   double startedAtS = 0;
-  // Wall-clock twin of startedAtS: stamped together with it, NEVER rebased
-  // by the frame-clock anchor. Readers that need honest wall elapsed (the
-  // unregister re-latch remainder, the run-ahead guard) use this; the
-  // animation curve itself paces on the anchored startedAtS frame axis.
+  // Wall-clock twin of startedAtS: stamped together with it, NEVER moved by
+  // the frame-clock anchor. The unregister re-latch remainder needs honest
+  // wall elapsed and reads this; the animation curve itself paces on the
+  // anchored startedAtS frame axis.
   double wallStartedAtS = 0;
   // Integrated spring state (channels: x, y, width, height, radius, tx, ty).
   std::array<double, 7> springPosition{};
@@ -163,6 +163,12 @@ bool isOnMainThread() {
 // content. Posting into the same doFrame pass as Reanimated makes every
 // advance precede the draw by construction. It also retires the 32-bit
 // truncated-timestamp fallback: Java frameTimeNanos is a jlong everywhere.
+//
+// doCallbacks() extracts by wall-now rather than by frame time, so a post
+// issued from an earlier phase of a frame already in flight (CALLBACK_INPUT —
+// a gesture end that starts an animation) runs in that same doFrame instead
+// of the next one. Harmless (the fraction is ~0 and the write dedupes in
+// Kotlin) and one frame cheaper at the handoff than the NDK path allowed.
 struct JSmoothClipBindings : facebook::jni::JavaClass<JSmoothClipBindings> {
   static constexpr auto kJavaDescriptor =
       "Lcom/smoothclipview/SmoothClipBindings;";
@@ -237,13 +243,6 @@ constexpr double kSpringSettleVelocity = 1.0;
 // Settle-based termination is backed by a hard cap so a pathological
 // configuration cannot run the frame loop forever.
 constexpr double kSpringMaxDurationS = 10.0;
-// Fixed slack for the post-stall run-ahead guard in advance(). The lead it
-// bounds is a latency DIFFERENTIAL — the anchor frame's dispatch latency
-// minus the current frame's — so the constant is refresh-rate independent
-// (it is not one vsync period; at 120 Hz it spans two). 17 ms keeps the
-// guard silent through normal callback jitter while capping post-stall
-// run-ahead at one 60 Hz frame of curve time.
-constexpr double kMaxFrameLeadS = 0.017;
 
 // Semi-implicit Euler per channel, substepped: one frame-sized step is only
 // stable for omega*dt < 2, and accepted stiffness/mass ratios exceed that at
@@ -515,32 +514,29 @@ void advance(uint64_t driverId, DriverState &state, double now) {
     // startedAtS/lastFrameS hold nowSeconds() sampled mid-frame at the
     // animateTo call / latch attach, but `now` is the frame's vsync
     // timestamp — the same CLOCK_MONOTONIC timebase at an earlier sampling
-    // point. Un-anchored, the first fraction clamps to 0 and re-renders the
-    // start (1-2 duplicated frames at every interactive→animateTo handoff).
-    // Re-anchor onto the frame-time axis keeping the real elapsed time, so
-    // the first rendered frame advances honestly and later frames pace on
-    // vsync. On the 32-bit path `now` is itself nowSeconds() → ~identity.
-    const double wallElapsedS =
-        std::max(0.0, nowSeconds() - animation.startedAtS);
-    animation.startedAtS = now - wallElapsedS;
+    // point. Reanimated stamps a parallel withTiming with
+    // `global.__frameTimestamp || wallNow` and then paces it on frame stamps,
+    // so min() reproduces both of its branches exactly and the two curves
+    // stay phase-identical: a call issued between frames keeps its wall stamp
+    // (the frame that dispatches us is later, so the first fraction is
+    // already positive — no duplicated start frame), and a call issued inside
+    // the very frame that dispatches us adopts that frame's stamp instead of
+    // clamping to 0.
+    //
+    // Deliberately NOT a wall-elapsed rebase (`now - (nowSeconds() -
+    // startedAtS)`): that bakes THIS frame's dispatch latency into the curve
+    // for the animation's whole duration, de-phasing the clip from parallel
+    // Reanimated content by however much main-thread work happened to run
+    // before us on frame one — worst on the first frame of a heavy
+    // transition, which is exactly when it is sampled. Catching up after a
+    // stall needs no help here either: Choreographer#doFrame snaps a late
+    // frameTimeNanos forward to within one frame interval of now (jitter
+    // correction), for every CALLBACK_ANIMATION client at once, so the clip
+    // and the content stall and catch up together.
+    animation.startedAtS = std::min(animation.startedAtS, now);
     animation.lastFrameS = animation.startedAtS;
     animation.frameClockAnchored = true;
-    // wallStartedAtS deliberately keeps the wall axis through this rebase.
-  }
-
-  // Run-ahead guard: the anchor's one-time shift bakes the first callback's
-  // dispatch latency into the frame axis. If a stalled handoff anchored
-  // against a stale frame stamp and later stamps catch up to real time, the
-  // frame axis leads wall time by up to the stall length and the animation
-  // completes early. Re-anchor forward when the lead exceeds one vsync of
-  // slack; on calm frames the condition (first callback's latency exceeding
-  // this frame's by > 17 ms) cannot hold, so the hot path is unchanged, and
-  // the 32-bit path (frame axis == wall axis) never fires it. lastFrameS is
-  // deliberately untouched: springs pace on dt, already clamped to 64 ms.
-  const double wallElapsedNowS =
-      std::max(0.0, nowSeconds() - animation.wallStartedAtS);
-  if (now - animation.startedAtS > wallElapsedNowS + kMaxFrameLeadS) {
-    animation.startedAtS = now - wallElapsedNowS;
+    // wallStartedAtS deliberately keeps the wall axis (re-latch remainder).
   }
 
   bool done = false;

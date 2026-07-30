@@ -204,11 +204,11 @@ the first `registerViewAndroid`: the start presentation is delivered to the
 new view synchronously, then the clock is rebased (`startedAtS`,
 `lastFrameS`), the driver joins `animatingDrivers()` and `scheduleFrame()`
 posts the vsync callback. The rebased stamp is a wall-clock
-(`steady_clock`) value taken mid-frame; the first `advance()` translates it
-onto the choreographer frame-time axis, preserving the real elapsed time
-(`frameClockAnchored`), because the vsync timestamp handed to the callback
-precedes any mid-frame stamp and would otherwise clamp the first fraction
-to zero.
+(`steady_clock`) value taken mid-frame; the first `advance()` moves it onto
+the choreographer frame-time axis (`frameClockAnchored`) by taking the earlier
+of the two stamps, so a vsync timestamp that precedes the mid-frame stamp
+cannot clamp the first fraction to zero — the same rule Reanimated stamps its
+own animations with, see `docs/android-frame-clock-anchor.md`.
 
 One Android detail matters for the first visible frame. Registration happens
 in `onAfterUpdateTransaction`, before the platform layout pass, so the view

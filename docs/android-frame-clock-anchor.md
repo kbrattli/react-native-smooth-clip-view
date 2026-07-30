@@ -54,19 +54,43 @@ runs. In the 124 ms case it would have replayed the whole 400 ms curve from
 
 ## The fix
 
-`ActiveAnimation.frameClockAnchored`. On the first `advance()`, the wall-clock
-start stamp is translated onto the choreographer frame-time axis, preserving
-real elapsed time:
+`ActiveAnimation.frameClockAnchored`. On the first `advance()` the start stamp
+is moved onto the frame-time axis by taking the *earlier* of the two stamps:
 
 ```cpp
-const double wallElapsedS = std::max(0.0, nowSeconds() - animation.startedAtS);
-animation.startedAtS = now - wallElapsedS;
+animation.startedAtS = std::min(animation.startedAtS, now);
 animation.lastFrameS = animation.startedAtS;
 animation.frameClockAnchored = true;
 ```
 
-The first rendered frame advances by honest elapsed time; later frames pace on
-the vsync axis. The spring path gets a correct first `dt` for free.
+That is not an arbitrary reconciliation — it is precisely the rule Reanimated
+uses, so a parallel `withTiming` and the native clip run the *same* curve at
+the *same* phase. `valueSetter.ts` stamps an animation's `startTime` with
+`global.__frameTimestamp || _getAnimationTimestamp()` and then paces it on
+frame stamps, and `min()` reproduces both branches:
+
+- **Call issued between frames** — the common one: `ACTION_UP` is unbatched, so
+  a gesture `onEnd` runs outside `doFrame`, where Reanimated's
+  `__frameTimestamp` is unset and it takes the wall clock too. The frame that
+  dispatches us is later than the call, so the wall stamp survives the `min()`
+  and the first fraction is already positive: no duplicated start frame, which
+  was the whole point of anchoring. Both engines are then on `(F − W_call)/D`
+  — identical, frame for frame.
+- **Call issued from inside the frame that dispatches us** — a Reanimated
+  mapper or animation callback in the same `CALLBACK_ANIMATION` phase, where
+  `__frameTimestamp` *is* this frame's stamp. `min()` adopts the same stamp
+  instead of letting `clamp01` pin the fraction to 0. (The narrow variant is a
+  start from `CALLBACK_INPUT` — batched moves — where Reanimated still takes
+  the wall clock while we adopt the frame stamp, leaving us ahead by that
+  callback's offset into the frame. Sub-frame, bounded, and strictly smaller
+  than what the wall-elapsed rebase below imposed on *every* start.)
+
+What this deliberately is *not* is a wall-elapsed rebase (`startedAtS = now −
+(nowSeconds() − startedAtS)`). That is what the anchor originally did, and it
+was right for the `AChoreographer` loop this engine used to run on — see "The
+second defect" below for why the move to the Java Choreographer retired it.
+
+The spring path gets its first `dt` on the same axis for free.
 
 Two details are load-bearing:
 
@@ -104,19 +128,49 @@ back to the registry. Plain `postFrameCallback` lands in `CALLBACK_ANIMATION`,
 so every advance now runs in the same `doFrame` pass as Reanimated —
 deterministically before the draw — and the clip and its content land in the
 same frame by construction. The timestamp is the same `CLOCK_MONOTONIC` vsync
-stamp the NDK delivered, so the anchor and the run-ahead guard carry over
-unchanged. A side effect retired the 32-bit fallback: Java delivers
-`frameTimeNanos` as a `jlong` on every ABI, so the truncation path (which
-sampled `nowSeconds()` mid-callback, inheriting dispatch-latency jitter into
-the animation's position) is gone.
+stamp the NDK delivered. A side effect retired the 32-bit fallback: Java
+delivers `frameTimeNanos` as a `jlong` on every ABI, so the truncation path
+(which sampled `nowSeconds()` mid-callback, inheriting dispatch-latency jitter
+into the animation's position) is gone.
 
-The same pass closed a presentation gap in the Kotlin view:
-`invalidateOutline()` stages the RenderNode outline but schedules no
-traversal, so a frame that changed only the clip rect presented whenever
-something *else* happened to invalidate — usually a parallel Reanimated
-animation, i.e. by accident. `applyNormalizedClipPx` now calls `invalidate()`
-after `invalidateOutline()`, scoped by the existing dedupe to frames whose
-geometry actually changed.
+Moving frame sources also retired the anchor's wall-elapsed rebase and the
+run-ahead guard that propped it up, because both were shaped by
+`AChoreographer` behavior the Java Choreographer does not have:
+
+- **The stall case is now the platform's job.** The device table above (124 ms
+  of real time, 12.3 ms credited) is a stale-vsync artifact: SF delivers the
+  one requested vsync, it waits in the socket while the thread is blocked, and
+  the NDK dispatcher hands over that original stamp. `Choreographer#doFrame`
+  measures the same lateness as `jitterNanos` and **snaps `frameTimeNanos`
+  forward** to within one frame interval of now before running any callback.
+  It does that once, for every `CALLBACK_ANIMATION` client at the same time —
+  so after a stall the clip and the Reanimated content resume at the same
+  honest position, together, with no per-engine catch-up logic.
+- **Rebasing by wall elapsed became actively harmful.** `startedAtS = now −
+  (nowSeconds() − startedAtS)` is algebraically `W_call − L₁`, where `L₁` is
+  the *first frame's* intra-frame dispatch latency — a one-time sample that
+  shifts the entire curve. Under the NDK loop that ran in the Looper's fd
+  phase, `L₁` was sub-millisecond. Posting into `CALLBACK_ANIMATION` puts the
+  advance behind RN's dispatcher (Fabric mounts, then Reanimated's batch, FIFO
+  by post order), so `L₁` becomes "however much main-thread work ran before us
+  on frame one" — sampled on the heaviest frame of a transition and then
+  frozen into the phase for its whole duration, leading the content it clips.
+- **The run-ahead guard went with it.** Its condition reduces to `L₁ − Lₖ >
+  17 ms`; with `L` now equal to main-thread load, "heavy first frame, lighter
+  after" — the exact profile of a close — could trip it and snap the clip
+  *backwards* mid-flight. `min()` cannot lead wall time in the first place
+  (frame stamps are monotonic and never exceed now), so there is nothing left
+  to guard.
+
+One Kotlin-side non-change is worth recording, because it looks like a gap and
+is not: `invalidateOutline()` **does** schedule the redraw. It ends in
+`invalidateViewProperty()`, which (hardware-accelerated, display list present)
+calls `damageInParent()` → `ViewGroup.onDescendantInvalidated` →
+`ViewRootImpl.onDescendantInvalidated` → `scheduleTraversals()`; the
+non-accelerated branch calls `invalidate(false)`, also a traversal. Adding a
+plain `invalidate()` after it — briefly committed, never released — only sets
+`PFLAG_INVALIDATED`, forcing a display-list re-record every changed frame to
+restage an outline the RenderNode applies as a property. It was reverted.
 
 ## Why iOS never had this
 
@@ -156,31 +210,26 @@ platform's shape, not a design shortcut.
    through stalls; Android cannot, for this class of animation. The anchor
    changed the failure mode from "freeze, then replay the curve from zero"
    (time lost) to "freeze, then land at the honest position" (time preserved,
-   CoreAnimation-equivalent semantics). Nothing can paint pixels while the
-   thread is blocked; app-level stalls are the remaining jank budget on
-   Android. A **run-ahead guard** completes the semantics: the anchor's
-   one-time shift bakes the first callback's dispatch latency into the frame
-   axis, and if later choreographer stamps catch up to real time the
-   animation would lead wall time by that latency and complete early —
-   `advance()` re-anchors forward whenever frame-axis elapsed exceeds wall
-   elapsed by more than a fixed slack (`kMaxFrameLeadS`, 17 ms — a latency
-   *differential*, so refresh-rate independent). The condition is unreachable
-   on calm frames (it requires the anchor frame's dispatch latency to have
-   exceeded the current frame's by more than the slack), so the hot path is
-   unchanged.
+   CoreAnimation-equivalent semantics), and since the loop moved onto the Java
+   Choreographer that catch-up is the platform's `jitterNanos` correction
+   rather than ours — which means the clip and any parallel Reanimated
+   animation resume at the same position, together. Nothing can paint pixels
+   while the thread is blocked; app-level stalls are the remaining jank budget
+   on Android.
 2. **Integer outline quantization — platform-forced, negligible.**
    `Outline.setRoundRect` takes an int rect (float `setPath` outlines cannot
    clip), so motion quantizes to whole pixels and sub-pixel frames are skipped.
    Max error 0.5 px; iOS animates floats.
 3. **Per-frame cost — already at the floor.** Integrate 7 scalars, normalize,
-   one JNI call, two property stores, `invalidateOutline` + `invalidate`.
-   Allocation-free, no layout.
+   one JNI call, two property stores, `invalidateOutline`. Allocation-free, no
+   layout.
 4. **One structural advantage over iOS.** Consumers often run Reanimated
-   content animations in parallel with the native clip. On Android both now
-   tick inside the same `Choreographer#doFrame` animation phase (see "The
-   second defect" above), so they advance in the same frame, stall together,
-   and catch up together — coherence by construction, not by luck. On iOS a
-   main-thread stall lets CA keep moving the clip while Reanimated's content
+   content animations in parallel with the native clip. On Android the two are
+   coherent in both dimensions that matter: they advance in the same
+   `Choreographer#doFrame` animation phase (same *frame*), and they stamp `t0`
+   by the same rule and pace on the same frame stamps (same *phase*). They
+   stall together and catch up together — by construction, not by luck. On iOS
+   a main-thread stall lets CA keep moving the clip while Reanimated's content
    freezes — a desync Android cannot have.
 
 ## Options considered and rejected
@@ -192,11 +241,10 @@ platform's shape, not a design shortcut.
   (z-order, input routing, sibling synchronization). A rewrite with worse
   ergonomics to mitigate a stall class that is app-caused anyway.
 - **Catch-up clamping** (cap the post-stall jump for continuity). Diverges
-  from CoreAnimation semantics and makes the platforms feel different.
-  Revisit only if a teleport-after-stall ever reads badly on hardware. (The
-  run-ahead guard above is a different thing: it never caps the honest
-  catch-up frame — it only stops the frame axis from *leading* wall time on
-  the frames after it.)
+  from CoreAnimation semantics and makes the platforms feel different — and
+  it would now also de-phase the clip from a parallel Reanimated animation,
+  which takes the platform's uncapped catch-up. Revisit only if a
+  teleport-after-stall ever reads badly on hardware.
 - **`postVsyncCallback` frame timelines** (API 33+). Marginal pacing
   refinement, not worth the API gating today.
 
