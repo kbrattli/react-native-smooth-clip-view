@@ -29,8 +29,8 @@ UI-runtime SharedValue listener            driver.ui.animateTo / react.animateTo
   → fanout to registered host views                 CASpringAnimation /
   → direct CALayer writes (iOS)                     CAKeyframeAnimation in the
     / outline invalidation (Android)                CA render tree
-                                             → Android: AChoreographer C++
-No Fabric commands, no ShadowTree                   frame loop integrating
+                                             → Android: Choreographer-driven
+No Fabric commands, no ShadowTree                   C++ frame loop integrating
 commits, no Yoga work on any frame.                 bezier/spring/keyframes
                                              → zero JS/JSI work per frame;
                                                one completion event at the end

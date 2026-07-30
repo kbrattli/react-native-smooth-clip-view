@@ -199,7 +199,7 @@ Android needed no equivalent of `resolvedAnimationStart` or
 replace-from-start fall out of one assignment instead of four branches.
 
 A latched driver is deliberately *not* pushed into `animatingDrivers()` and
-no frame is scheduled, so the `AChoreographer` loop never runs for it. On
+no frame is scheduled, so the choreographer loop never runs for it. On
 the first `registerViewAndroid`: the start presentation is delivered to the
 new view synchronously, then the clock is rebased (`startedAtS`,
 `lastFrameS`), the driver joins `animatingDrivers()` and `scheduleFrame()`

@@ -36,7 +36,6 @@ target_include_directories(
 
 target_link_libraries(
   smoothclipview
-  android
   log
   fbjni::fbjni
   ReactAndroid::jsi

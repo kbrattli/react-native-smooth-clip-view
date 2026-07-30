@@ -53,6 +53,11 @@ void viewBecameDisplayableAndroid(
     uint64_t driverId,
     facebook::jni::alias_ref<JSmoothClipView> view);
 
+// Advances the registry frame loop. Called from Kotlin (SmoothClipBindings)
+// inside Choreographer#doFrame with the frame's vsync timestamp converted to
+// seconds; never lets a failure unwind back into doFrame.
+void onFrameAndroid(double frameTimeS);
+
 // Installs `global.__SmoothClipView` (worklet-callable host functions) into the
 // JS runtime and wires native animation completion delivery through the
 // CallInvoker. Invoked by the TurboModule BindingsInstaller.
