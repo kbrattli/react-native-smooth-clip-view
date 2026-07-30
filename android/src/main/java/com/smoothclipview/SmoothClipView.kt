@@ -206,13 +206,13 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
             if (isEmpty) acceptingTouchStream = false
         }
 
+        // Schedules the traversal too: invalidateOutline() ends in
+        // invalidateViewProperty(), which damages this view in its parent up
+        // to ViewRootImpl.scheduleTraversals(). A plain invalidate() on top
+        // would only add PFLAG_INVALIDATED, forcing a display-list re-record
+        // every frame to restage an outline the RenderNode applies as a
+        // property.
         invalidateOutline()
-        // invalidateOutline() stages the RenderNode outline but schedules no
-        // traversal, so a frame that changes only the clip rect (content
-        // translation unchanged) would present whenever something else
-        // happens to invalidate. The early return above already scopes this
-        // to frames whose geometry actually changed.
-        invalidate()
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
