@@ -67,7 +67,7 @@ jest.mock('../smoothClipNative', () => ({
   },
 }));
 
-import { useSmoothClipDriver } from '../drivers.ios';
+import { useSmoothClipDriver } from '../drivers.native';
 import mockNativeModule from '../smoothClipNative';
 
 type MockNative = {
@@ -108,7 +108,7 @@ const fromPresentation: SmoothClipPresentation = {
   contentTranslateY: 3,
 };
 
-describe('hybrid iOS driver', () => {
+describe('hybrid native driver (iOS + Android)', () => {
   beforeEach(() => {
     mockRNRuntime = false;
     mockEffects.length = 0;
