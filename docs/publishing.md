@@ -4,7 +4,10 @@ Current state (2026-07-30): resolved — **0.2.5 is published to npm as
 `latest`**. Tag `v0.2.3` remains permanently npm-less (superseded by 0.2.4
 before it was ever published); every other tag matches a registry version.
 Pending on main: the Java-Choreographer frame-loop migration and the
-outline-redraw fix ship as **0.2.6** (run the "new release" flow below).
+frame-clock anchor's `min()` rebase (Reanimated phase parity) ship as
+**0.2.6** (run the "new release" flow below). The outline-redraw commit that
+briefly sat on main was reverted — `invalidateOutline()` already schedules the
+traversal; see `docs/android-frame-clock-anchor.md`.
 
 ## Publish an existing tag as-is (e.g. 0.2.3)
 
