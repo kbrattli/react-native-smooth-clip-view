@@ -207,6 +207,12 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         }
 
         invalidateOutline()
+        // invalidateOutline() stages the RenderNode outline but schedules no
+        // traversal, so a frame that changes only the clip rect (content
+        // translation unchanged) would present whenever something else
+        // happens to invalidate. The early return above already scopes this
+        // to frames whose geometry actually changed.
+        invalidate()
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
