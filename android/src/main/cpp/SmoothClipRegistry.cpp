@@ -1,7 +1,6 @@
 #include "SmoothClipAndroid.h"
 #include "SmoothClipVelocityTracker.h"
 
-#include <android/choreographer.h>
 #include <fbjni/fbjni.h>
 
 #include <algorithm>
@@ -131,7 +130,7 @@ struct JLooper : facebook::jni::JavaClass<JLooper> {
 std::atomic<pid_t> gMainThreadId{0};
 
 // The registry, the frame loop, and every view mutation are main-thread only:
-// AChoreographer_getInstance is per-thread, and binding the loop to the JS
+// Choreographer.getInstance() is per-thread, and binding the loop to the JS
 // thread would race Fabric mounting and mutate views off-main. The worklets
 // UI runtime executes on the main thread, so supported usage always passes;
 // direct off-main calls fail defined instead of racing.
@@ -155,24 +154,34 @@ bool isOnMainThread() {
 
 // --- Frame loop -----------------------------------------------------------
 
+// fbjni handle for the Kotlin frame-loop bridge. The loop posts through the
+// Java Choreographer (CALLBACK_ANIMATION) rather than the NDK AChoreographer:
+// the NDK instance is a separate frame source on the main Looper whose
+// ordering against the Java Choreographer's traversal (draw) phase is
+// undefined, so advances landing after the traversal presented one vsync
+// late — a randomly flipping ±1-frame phase between the clip and Reanimated
+// content. Posting into the same doFrame pass as Reanimated makes every
+// advance precede the draw by construction. It also retires the 32-bit
+// truncated-timestamp fallback: Java frameTimeNanos is a jlong everywhere.
+struct JSmoothClipBindings : facebook::jni::JavaClass<JSmoothClipBindings> {
+  static constexpr auto kJavaDescriptor =
+      "Lcom/smoothclipview/SmoothClipBindings;";
+};
+
 bool gFrameScheduled = false;
 void onFrameImpl(double now);
-void onFrameLegacy(long frameTimeNanos, void *data);
 
 void scheduleFrame() {
   if (gFrameScheduled) return;
   // Defensive: never bind the per-thread choreographer to a non-main thread.
   if (!isOnMainThread()) return;
-  AChoreographer *choreographer = AChoreographer_getInstance();
-  if (choreographer == nullptr) return;
+  static const auto scheduleMethod =
+      JSmoothClipBindings::javaClassStatic()->getStaticMethod<void()>(
+          "scheduleFrame");
+  scheduleMethod(JSmoothClipBindings::javaClassStatic());
+  // Set only after a successful post: if the up-call ever threw with the flag
+  // already true, the loop would be dead until process restart.
   gFrameScheduled = true;
-  // AChoreographer_postFrameCallback64 (API 29+) only matters on 32-bit ABIs,
-  // where `long` truncates the timestamp; onFrameLegacy falls back to the
-  // clock there, so the legacy entry point covers every case.
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-  AChoreographer_postFrameCallback(choreographer, &onFrameLegacy, nullptr);
-#pragma clang diagnostic pop
 }
 
 // --- Math (ported from SmoothClipRegistry.kt so both platforms match) -----
@@ -593,25 +602,26 @@ void onFrameImpl(double now) {
   if (!animatingDrivers().empty()) scheduleFrame();
 }
 
-void onFrameLegacy(long frameTimeNanos, void * /*data*/) {
-  // An fbjni exception must not unwind out of a C callback (std::terminate).
-  // Clear it, keep the loop scheduled, and let the next frame re-scan.
+} // namespace
+
+// Advances the frame loop; reached from SmoothClipBindings.nativeOnFrame
+// inside Choreographer#doFrame. Nothing may unwind back into doFrame — fbjni
+// would rethrow it as a Java exception and take down the main thread. Clear
+// any pending JNI exception, keep the loop scheduled, and let the next frame
+// re-scan.
+void onFrameAndroid(double frameTimeS) {
   try {
-#if defined(__LP64__) || (defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ == 8)
-    onFrameImpl(static_cast<double>(frameTimeNanos) / 1e9);
-#else
-    // 32-bit `long` truncates the nanosecond timestamp; fall back to the
-    // clock.
-    onFrameImpl(nowSeconds());
-#endif
+    onFrameImpl(frameTimeS);
   } catch (...) {
     JNIEnv *env = facebook::jni::Environment::current();
     if (env != nullptr && env->ExceptionCheck()) env->ExceptionClear();
-    scheduleFrame();
+    try {
+      scheduleFrame();
+    } catch (...) {
+      // gFrameScheduled stays false; the next animation start re-schedules.
+    }
   }
 }
-
-} // namespace
 
 // --- Public smoothclip:: interface (shared with iOS via SmoothClipRegistry.h)
 

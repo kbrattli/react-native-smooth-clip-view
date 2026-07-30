@@ -27,8 +27,9 @@ processing). `advance()` then computed
 fraction = clamp01((now − startedAtS) / durationS)
 ```
 
-where `now` is the AChoreographer callback's `frameTimeNanos`: the **vsync
-timestamp of the frame being produced**, which *precedes* any mid-frame stamp.
+where `now` is the choreographer frame callback's `frameTimeNanos`: the
+**vsync timestamp of the frame being produced**, which *precedes* any
+mid-frame stamp.
 Same `CLOCK_MONOTONIC` timebase, earlier sampling point. First callback:
 elapsed ≤ 0, `clamp01` pins the fraction to 0, and the engine re-renders the
 value the drag already had on screen. The next callback was often still
@@ -65,8 +66,7 @@ animation.frameClockAnchored = true;
 ```
 
 The first rendered frame advances by honest elapsed time; later frames pace on
-the vsync axis. The spring path gets a correct first `dt` for free, and on the
-32-bit fallback (where `now` is already `nowSeconds()`) the anchor is ~identity.
+the vsync axis. The spring path gets a correct first `dt` for free.
 
 Two details are load-bearing:
 
@@ -77,6 +77,46 @@ Two details are load-bearing:
 - **A `-1` sentinel instead of the bool was rejected** because re-latch reads
   `startedAtS` before the first advance can run — the field must always hold a
   valid timestamp.
+
+## The second defect: two frame sources on one thread
+
+The anchor fixed the handoff; a subtler pacing defect remained for the whole
+duration of every animation. The loop originally ran on the **NDK
+`AChoreographer`** — not a handle to the Java `Choreographer` but a *separate*
+native instance with its own `DisplayEventReceiver` fd on the main Looper.
+Reanimated's prop updates run inside the Java `Choreographer#doFrame` pass, in
+`CALLBACK_ANIMATION`, deterministically **before** `CALLBACK_TRAVERSAL`
+(measure/layout/draw). The NDK callback had no such ordering: its position
+relative to `doFrame` was whatever the Looper's fd poll order gave, and it
+could flip frame to frame.
+
+Whenever the clip advance landed *after* the traversal, its write presented
+one vsync late (its own invalidation could only schedule the next frame's
+traversal). A randomly flipping ±1-frame phase between the clip window and
+the content inside it reads as judder for the entire animation — while the
+interactive drag path, which writes `setScalars` from inside Reanimated's own
+callback, never suffers it. Exactly "drag smooth, animation rough".
+
+The fix moves the loop onto the Java Choreographer through a minimal Kotlin
+bridge: `SmoothClipBindings.scheduleFrame` posts a retained
+`Choreographer.FrameCallback`, whose `nativeOnFrame` hands `frameTimeNanos`
+back to the registry. Plain `postFrameCallback` lands in `CALLBACK_ANIMATION`,
+so every advance now runs in the same `doFrame` pass as Reanimated —
+deterministically before the draw — and the clip and its content land in the
+same frame by construction. The timestamp is the same `CLOCK_MONOTONIC` vsync
+stamp the NDK delivered, so the anchor and the run-ahead guard carry over
+unchanged. A side effect retired the 32-bit fallback: Java delivers
+`frameTimeNanos` as a `jlong` on every ABI, so the truncation path (which
+sampled `nowSeconds()` mid-callback, inheriting dispatch-latency jitter into
+the animation's position) is gone.
+
+The same pass closed a presentation gap in the Kotlin view:
+`invalidateOutline()` stages the RenderNode outline but schedules no
+traversal, so a frame that changed only the clip rect presented whenever
+something *else* happened to invalidate — usually a parallel Reanimated
+animation, i.e. by accident. `applyNormalizedClipPx` now calls `invalidate()`
+after `invalidateOutline()`, scoped by the existing dedupe to frames whose
+geometry actually changed.
 
 ## Why iOS never had this
 
@@ -123,22 +163,25 @@ platform's shape, not a design shortcut.
    axis, and if later choreographer stamps catch up to real time the
    animation would lead wall time by that latency and complete early —
    `advance()` re-anchors forward whenever frame-axis elapsed exceeds wall
-   elapsed by more than one vsync of slack (`kMaxFrameLeadS`). The condition
-   is unreachable on calm frames (it requires the first callback to have run
-   more than a vsync later, relative to its stamp, than the current one), so
-   the hot path is unchanged.
+   elapsed by more than a fixed slack (`kMaxFrameLeadS`, 17 ms — a latency
+   *differential*, so refresh-rate independent). The condition is unreachable
+   on calm frames (it requires the anchor frame's dispatch latency to have
+   exceeded the current frame's by more than the slack), so the hot path is
+   unchanged.
 2. **Integer outline quantization — platform-forced, negligible.**
    `Outline.setRoundRect` takes an int rect (float `setPath` outlines cannot
    clip), so motion quantizes to whole pixels and sub-pixel frames are skipped.
    Max error 0.5 px; iOS animates floats.
 3. **Per-frame cost — already at the floor.** Integrate 7 scalars, normalize,
-   one JNI call, two property stores, `invalidateOutline`. Allocation-free, no
-   layout.
+   one JNI call, two property stores, `invalidateOutline` + `invalidate`.
+   Allocation-free, no layout.
 4. **One structural advantage over iOS.** Consumers often run Reanimated
-   content animations in parallel with the native clip. On Android both tick
-   on the same thread and clock family: they stall together and catch up
-   together, staying coherent. On iOS a main-thread stall lets CA keep moving
-   the clip while Reanimated's content freezes — a desync Android cannot have.
+   content animations in parallel with the native clip. On Android both now
+   tick inside the same `Choreographer#doFrame` animation phase (see "The
+   second defect" above), so they advance in the same frame, stall together,
+   and catch up together — coherence by construction, not by luck. On iOS a
+   main-thread stall lets CA keep moving the clip while Reanimated's content
+   freezes — a desync Android cannot have.
 
 ## Options considered and rejected
 

@@ -419,6 +419,10 @@ void nativeInvalidate(jni::alias_ref<jni::JObject>) {
   smoothclip::invalidateBindings();
 }
 
+void nativeOnFrame(jni::alias_ref<jni::JObject>, jlong frameTimeNanos) {
+  smoothclip::onFrameAndroid(static_cast<double>(frameTimeNanos) / 1e9);
+}
+
 } // namespace
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) {
@@ -434,6 +438,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) {
             makeNativeMethod(
                 "nativeViewBecameDisplayable", nativeViewBecameDisplayable),
             makeNativeMethod("nativeInvalidate", nativeInvalidate),
+            makeNativeMethod("nativeOnFrame", nativeOnFrame),
         });
   });
 }
