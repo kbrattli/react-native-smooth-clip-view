@@ -678,7 +678,12 @@ Presentation beginInteraction(uint64_t driverId) {
   state.latest = current;
   state.hasLatest = true;
   state.ownership = Ownership::Interactive;
-  resetVelocitySamples(state.samples, toChannels(current), nowSeconds());
+  // Plain record, not a reset — iOS parity (smoothClipFreezePresentation
+  // records the frozen value). Pairing the frozen mid-flight presentation
+  // with the last real sample lets a grab-and-instant-refling inherit
+  // bounded recent motion instead of launching dead; an unchanged value
+  // dedupes to a no-op and ages out through the staleness guard.
+  recordVelocitySample(state.samples, toChannels(current), nowSeconds());
   applyToViews(state, current);
   emitCompletion(driverId, animationId, false);
   return current;

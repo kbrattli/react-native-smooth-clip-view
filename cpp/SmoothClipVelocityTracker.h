@@ -60,17 +60,12 @@ inline void recordVelocitySample(
   history.latestTimeS = nowS;
 }
 
-// beginInteraction semantics: history restarts from a single fresh sample;
-// one more record is needed before 'inherit' can measure motion.
-inline void resetVelocitySamples(
-    VelocitySampleHistory &history,
-    const std::array<double, 7> &channels,
-    double nowS) {
-  history.hasPrevious = false;
-  history.hasLatest = true;
-  history.latest = channels;
-  history.latestTimeS = nowS;
-}
+// beginInteraction on both platforms records the frozen presentation as a
+// plain sample: a grab mid-animation pairs the frozen value with the last
+// real sample, so an instant refling inherits bounded recent motion instead
+// of launching dead, and a grab at an unchanged value dedupes to a no-op
+// whose staleness keeps aging. There is deliberately no reset primitive —
+// the 100 ms staleness guard is the forgetting mechanism.
 
 inline void clearVelocitySamples(VelocitySampleHistory &history) {
   history = VelocitySampleHistory{};
