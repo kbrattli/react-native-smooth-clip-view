@@ -9,7 +9,6 @@ import com.facebook.proguard.annotations.DoNotStrip
 import com.facebook.react.uimanager.PixelUtil
 import com.facebook.react.uimanager.ThemedReactContext
 import com.facebook.react.views.view.ReactViewGroup
-import kotlin.math.roundToInt
 
 class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     internal val contentContainer = ReactViewGroup(context)
@@ -32,6 +31,14 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     private var outlineRight = 0
     private var outlineBottom = 0
     private var clipIsEmpty = true
+    // Sub-pixel remainder of the clip origin, carried on this view's own
+    // translation and subtracted back out of the content container.
+    private var clipResidualX = 0f
+    private var clipResidualY = 0f
+    // The consumer's `transform` translation, kept apart from the residual so
+    // the two compose instead of clobbering each other.
+    private var userTranslationX = 0f
+    private var userTranslationY = 0f
     private var requestedImportantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_AUTO
     private var acceptingTouchStream = false
 
@@ -110,14 +117,8 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         requestedWidth = nextWidth
         requestedHeight = nextHeight
         requestedRadius = nextRadius
-        if (requestedContentTranslateX != nextContentTranslateX) {
-            requestedContentTranslateX = nextContentTranslateX
-            contentContainer.translationX = nextContentTranslateX
-        }
-        if (requestedContentTranslateY != nextContentTranslateY) {
-            requestedContentTranslateY = nextContentTranslateY
-            contentContainer.translationY = nextContentTranslateY
-        }
+        requestedContentTranslateX = nextContentTranslateX
+        requestedContentTranslateY = nextContentTranslateY
         applyRequestedGeometry()
     }
 
@@ -136,14 +137,11 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         contentTranslateX: Float,
         contentTranslateY: Float,
     ) {
-        if (requestedContentTranslateX != contentTranslateX) {
-            requestedContentTranslateX = contentTranslateX
-            contentContainer.translationX = contentTranslateX
-        }
-        if (requestedContentTranslateY != contentTranslateY) {
-            requestedContentTranslateY = contentTranslateY
-            contentContainer.translationY = contentTranslateY
-        }
+        // Stored only; applyNormalizedClipPx computes the clip residual and
+        // applyClipPlacement writes both translations together, because the
+        // content's final offset depends on the residual as well.
+        requestedContentTranslateX = contentTranslateX
+        requestedContentTranslateY = contentTranslateY
         applyNormalizedClipPx(left, top, right, bottom, radius)
     }
 
@@ -169,11 +167,19 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         radius: Float,
     ) {
         val isEmpty = right <= left || bottom <= top
+        // Far edges are derived, not rounded independently: see outlineFarEdge.
+        // Independent rounding breathes the emitted size by 1 px under pure
+        // translation, which is the visible artifact once an animation's tail
+        // slows below a pixel per frame.
+        val nextOutlineLeft = outlineOrigin(left)
+        val nextOutlineTop = outlineOrigin(top)
+        val nextOutlineRight = outlineFarEdge(left, right)
+        val nextOutlineBottom = outlineFarEdge(top, bottom)
         val outlineGeometryChanged = outlineChanged(
-            left,
-            top,
-            right,
-            bottom,
+            nextOutlineLeft,
+            nextOutlineTop,
+            nextOutlineRight,
+            nextOutlineBottom,
             radius,
             outlineLeft,
             outlineTop,
@@ -182,19 +188,20 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
             clipRadius,
         )
 
-        if (!outlineGeometryChanged && isEmpty == clipIsEmpty) {
-            return
-        }
-
         clipLeft = left
         clipTop = top
         clipRight = right
         clipBottom = bottom
         clipRadius = radius
-        outlineLeft = left.roundToInt()
-        outlineTop = top.roundToInt()
-        outlineRight = right.roundToInt()
-        outlineBottom = bottom.roundToInt()
+        // Whatever integer rounding threw away, carried on this view's own
+        // translation so the clip edge still lands where the driver asked
+        // instead of snapping to the pixel grid while the content it clips
+        // slides in floats. It is a single scalar per axis only because the far
+        // edges are derived from the origin — with independently rounded edges
+        // no one translation could place both.
+        clipResidualX = left - nextOutlineLeft
+        clipResidualY = top - nextOutlineTop
+        applyClipPlacement()
 
         if (isEmpty != clipIsEmpty) {
             clipIsEmpty = isEmpty
@@ -206,6 +213,12 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
             if (isEmpty) acceptingTouchStream = false
         }
 
+        if (!outlineGeometryChanged) return
+
+        outlineLeft = nextOutlineLeft
+        outlineTop = nextOutlineTop
+        outlineRight = nextOutlineRight
+        outlineBottom = nextOutlineBottom
         // Schedules the traversal too: invalidateOutline() ends in
         // invalidateViewProperty(), which damages this view in its parent up
         // to ViewRootImpl.scheduleTraversals(). A plain invalidate() on top
@@ -213,6 +226,42 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         // every frame to restage an outline the RenderNode applies as a
         // property.
         invalidateOutline()
+    }
+
+    /**
+     * Single writer for both translations. The view carries the sub-pixel
+     * remainder of the clip origin; the content container subtracts it back out
+     * so only the clip edge moves and the content stays exactly where the
+     * driver put it. Every write self-dedupes inside View.setTranslationX, so
+     * calling this on an unchanged frame costs four float comparisons.
+     */
+    private fun applyClipPlacement() {
+        super.setTranslationX(userTranslationX + clipResidualX)
+        super.setTranslationY(userTranslationY + clipResidualY)
+        contentContainer.translationX = requestedContentTranslateX - clipResidualX
+        contentContainer.translationY = requestedContentTranslateY - clipResidualY
+    }
+
+    // The clip's sub-pixel placement and the consumer's `transform` prop share
+    // one property, so they are composed rather than allowed to overwrite each
+    // other. RN routes every transform write through these setters
+    // (BaseViewManager.setTransformProperty), so intercepting them is enough.
+    //
+    // The getters are deliberately NOT overridden to hide the residual:
+    // View.setTranslationX dedupes by calling getTranslationX() virtually, so
+    // reporting the consumer's value there would make every write look like a
+    // change and re-invalidate the view on frames where nothing moved. The cost
+    // of leaving them alone is that a read-modify-write of translationX picks up
+    // the residual twice — sub-pixel, and nothing in RN's transform path reads
+    // back before writing.
+    override fun setTranslationX(translationX: Float) {
+        userTranslationX = translationX
+        super.setTranslationX(translationX + clipResidualX)
+    }
+
+    override fun setTranslationY(translationY: Float) {
+        userTranslationY = translationY
+        super.setTranslationY(translationY + clipResidualY)
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -266,9 +315,14 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     internal fun densityScale(): Double = PixelUtil.toPixelFromDIP(1f).toDouble()
 
     private fun containsRoundedPoint(x: Float, y: Float): Boolean {
+        // The event arrives in this view's local space, which the parent has
+        // already inverse-transformed by the residual translation. Adding it
+        // back maps the point into the space clipLeft/clipTop are expressed in,
+        // so hit testing stays against the geometry the driver delivered — the
+        // same test as before the residual existed.
         return containsRoundedPointPx(
-            x,
-            y,
+            x + clipResidualX,
+            y + clipResidualY,
             clipLeft,
             clipTop,
             clipRight,
@@ -328,8 +382,9 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         requestedRadius = 0f
         requestedContentTranslateX = 0f
         requestedContentTranslateY = 0f
-        contentContainer.translationX = 0f
-        contentContainer.translationY = 0f
+        clipResidualX = 0f
+        clipResidualY = 0f
+        applyClipPlacement()
         outlineLeft = 0
         outlineTop = 0
         outlineRight = 0

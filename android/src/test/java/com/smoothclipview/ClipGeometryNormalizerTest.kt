@@ -199,10 +199,36 @@ class ClipGeometryNormalizerTest {
         )
     }
 
+    /** Mirrors what SmoothClipView.applyNormalizedClipPx derives per frame. */
+    private fun outlineChangedFor(
+        left: Float,
+        top: Float,
+        right: Float,
+        bottom: Float,
+        radius: Float,
+        cachedLeft: Int,
+        cachedTop: Int,
+        cachedRight: Int,
+        cachedBottom: Int,
+        cachedRadius: Float,
+    ): Boolean =
+        outlineChanged(
+            outlineOrigin(left),
+            outlineOrigin(top),
+            outlineFarEdge(left, right),
+            outlineFarEdge(top, bottom),
+            radius,
+            cachedLeft,
+            cachedTop,
+            cachedRight,
+            cachedBottom,
+            cachedRadius,
+        )
+
     @Test
     fun outlineDedupeIgnoresSubPixelMotionWithinTheSameRoundedEdges() {
         assertFalse(
-            outlineChanged(
+            outlineChangedFor(
                 10.2f,
                 20.1f,
                 100.4f,
@@ -216,7 +242,7 @@ class ClipGeometryNormalizerTest {
             ),
         )
         assertFalse(
-            outlineChanged(
+            outlineChangedFor(
                 10.49f,
                 20.49f,
                 100.49f,
@@ -232,9 +258,72 @@ class ClipGeometryNormalizerTest {
     }
 
     @Test
+    fun subPixelMotionSurvivesAsAResidualEvenWhenTheOutlineDedupes() {
+        // The frames the dedupe skips are exactly the ones that used to freeze
+        // the clip: the rounded rect is unchanged, so nothing was restaged and
+        // the edge held while the content kept sliding. The residual the view
+        // carries on its own translation is what still moves on those frames.
+        val extent = 90.4f
+        var previousResidual = Float.NaN
+        for (origin in listOf(10.05f, 10.15f, 10.25f, 10.35f)) {
+            val left = outlineOrigin(origin)
+            assertEquals(10, left)
+            val residual = origin - left
+            assertTrue(
+                "sub-pixel motion must not be lost when the outline dedupes",
+                residual != previousResidual,
+            )
+            previousResidual = residual
+            // ...and the size the outline emits stays put through all of it.
+            assertEquals(90, outlineFarEdge(origin, origin + extent) - left)
+        }
+    }
+
+    @Test
+    fun emitsAStableOutlineSizeWhileTranslatingANonIntegerExtent() {
+        // The artifact this guards: rounding both edges independently makes
+        // round(right) - round(left) alternate between floor and ceil of a
+        // constant extent as the origin's fraction sweeps, so a pure
+        // translation breathes the emitted size by 1 px every frame. Under the
+        // old scheme this table produced widths 91, 91, 90, 90, 90, 91; the
+        // extent has to be non-integer for the two schemes to disagree at all.
+        val extent = 90.4f
+        for (origin in listOf(10.2f, 10.4f, 10.6f, 10.8f, 11.0f, 11.2f)) {
+            val left = outlineOrigin(origin)
+            val right = outlineFarEdge(origin, origin + extent)
+            assertEquals(
+                "emitted width changed while translating at constant extent",
+                90,
+                right - left,
+            )
+        }
+    }
+
+    @Test
+    fun outlineDedupeStillFiresWhenTheOriginCrossesARoundedEdge() {
+        // Size stability must not make the dedupe blind to real motion: at a
+        // constant extent the origin still steps, and that step has to
+        // invalidate the outline.
+        assertTrue(
+            outlineChangedFor(
+                10.6f,
+                20.6f,
+                101.0f,
+                80.6f,
+                12f,
+                outlineOrigin(10.4f),
+                outlineOrigin(20.4f),
+                outlineFarEdge(10.4f, 100.8f),
+                outlineFarEdge(20.4f, 80.4f),
+                12f,
+            ),
+        )
+    }
+
+    @Test
     fun outlineDedupeDetectsChangesCrossingARoundedEdge() {
         assertTrue(
-            outlineChanged(
+            outlineChangedFor(
                 10.6f,
                 20.1f,
                 100.4f,
@@ -248,7 +337,7 @@ class ClipGeometryNormalizerTest {
             ),
         )
         assertTrue(
-            outlineChanged(
+            outlineChangedFor(
                 10.2f,
                 20.1f,
                 100.4f,
