@@ -1,4 +1,5 @@
 #include "SmoothClipAndroid.h"
+#include "SmoothClipAnimationCurve.h"
 #include "SmoothClipVelocityTracker.h"
 
 #include <fbjni/fbjni.h>
@@ -25,6 +26,20 @@ using facebook::jni::global_ref;
 enum class Ownership { Interactive, Native };
 enum class AnimationKind { Timing, Spring, Keyframes };
 
+// Load-bearing invariant, not just a convenience clock: advance()'s frame-clock
+// anchor compares this value ABSOLUTELY against a choreographer frame stamp
+// (std::min), so the two must share an epoch. They do — bionic's steady_clock,
+// System.nanoTime() behind Choreographer#frameTimeNanos, and the
+// SystemClock.uptimeMillis() Reanimated stamps its own animations with are all
+// CLOCK_MONOTONIC since boot. (The anchor this replaced subtracted two samples
+// of this clock and was epoch-independent; the min() is not.)
+//
+// Breaking that invariant fails silently and asymmetrically. A frame axis
+// running BEHIND the wall axis degrades quietly: min() always adopts the frame
+// stamp and animations lose only their sub-frame start offset. A frame axis
+// running AHEAD is fatal: min() always keeps startedAtS, the first fraction
+// (frame - startedAtS)/duration clamps to 1, and every animation completes on
+// its first frame.
 double nowSeconds() {
   return std::chrono::duration<double>(
              std::chrono::steady_clock::now().time_since_epoch())
@@ -39,7 +54,9 @@ struct ActiveAnimation {
   Presentation current{{0, 0, 0, 0, 0}, 0, 0};
   TimingAnimation timing{};
   SpringAnimation spring{};
-  std::vector<Keyframe> keyframes;
+  // Owns the keyframes and their precomputed monotone-cubic tangents; the
+  // tangent solve happens on reset(), never per frame.
+  KeyframeCurve keyframes;
   double durationS = 0;
   double startedAtS = 0;
   // Wall-clock twin of startedAtS: stamped together with it, NEVER moved by
@@ -191,8 +208,10 @@ void scheduleFrame() {
 }
 
 // --- Math (ported from SmoothClipRegistry.kt so both platforms match) -----
-
-double clamp01(double value) { return std::min(1.0, std::max(0.0, value)); }
+//
+// clamp01, toChannels/fromChannels, interpolate, the frame-clock anchor and the
+// keyframe curve now live in cpp/SmoothClipAnimationCurve.h so a test binary can
+// reach them without linking fbjni; ios/tests pins their behavior.
 
 double cubicBezier(
     double x1,
@@ -217,24 +236,6 @@ double cubicBezier(
   const double inverse = 1 - t;
   return 3 * inverse * inverse * t * y1 + 3 * inverse * t * t * y2 +
       t * t * t;
-}
-
-// Presentation <-> per-channel array (x, y, width, height, radius, tx, ty).
-std::array<double, 7> toChannels(const Presentation &presentation) {
-  return {presentation.clip.x,
-          presentation.clip.y,
-          presentation.clip.width,
-          presentation.clip.height,
-          presentation.clip.radius,
-          presentation.contentTranslateX,
-          presentation.contentTranslateY};
-}
-
-Presentation fromChannels(const std::array<double, 7> &channels) {
-  return Presentation{
-      {channels[0], channels[1], channels[2], channels[3], channels[4]},
-      channels[5],
-      channels[6]};
 }
 
 // Springs settle below these per-channel thresholds (DIP and DIP/s).
@@ -291,37 +292,6 @@ bool advanceSpring(ActiveAnimation &animation, double now) {
   }
   animation.current = fromChannels(animation.springPosition);
   return settled || now - animation.startedAtS >= kSpringMaxDurationS;
-}
-
-Presentation interpolate(
-    const Presentation &from,
-    const Presentation &to,
-    double progress) {
-  const auto mix = [progress](double start, double end) {
-    return start + (end - start) * progress;
-  };
-  return Presentation{
-      {mix(from.clip.x, to.clip.x),
-       mix(from.clip.y, to.clip.y),
-       mix(from.clip.width, to.clip.width),
-       mix(from.clip.height, to.clip.height),
-       mix(from.clip.radius, to.clip.radius)},
-      mix(from.contentTranslateX, to.contentTranslateX),
-      mix(from.contentTranslateY, to.contentTranslateY)};
-}
-
-Presentation interpolateKeyframes(
-    const std::vector<Keyframe> &frames,
-    double progress) {
-  size_t upper = 1;
-  while (upper < frames.size() - 1 && progress > frames[upper].offset) {
-    upper += 1;
-  }
-  const Keyframe &lower = frames[upper - 1];
-  const Keyframe &higher = frames[upper];
-  const double span = higher.offset - lower.offset;
-  const double local = span <= 0 ? 1.0 : (progress - lower.offset) / span;
-  return interpolate(lower.presentation, higher.presentation, clamp01(local));
 }
 
 bool systemAnimatorsEnabled() {
@@ -533,7 +503,7 @@ void advance(uint64_t driverId, DriverState &state, double now) {
     // frameTimeNanos forward to within one frame interval of now (jitter
     // correction), for every CALLBACK_ANIMATION client at once, so the clip
     // and the content stall and catch up together.
-    animation.startedAtS = std::min(animation.startedAtS, now);
+    animation.startedAtS = anchorStartTime(animation.startedAtS, now);
     animation.lastFrameS = animation.startedAtS;
     animation.frameClockAnchored = true;
     // wallStartedAtS deliberately keeps the wall axis (re-latch remainder).
@@ -544,11 +514,9 @@ void advance(uint64_t driverId, DriverState &state, double now) {
     done = advanceSpring(animation, now);
   } else {
     const double fraction =
-        animation.durationS <= 0
-        ? 1.0
-        : clamp01((now - animation.startedAtS) / animation.durationS);
+        timingFraction(now, animation.startedAtS, animation.durationS);
     if (animation.kind == AnimationKind::Keyframes) {
-      animation.current = interpolateKeyframes(animation.keyframes, fraction);
+      animation.current = animation.keyframes.evaluate(fraction);
     } else {
       const double eased = cubicBezier(
           animation.timing.controlPoint1X,
@@ -793,7 +761,7 @@ int32_t animateKeyframes(
   ActiveAnimation active;
   active.id = animationId;
   active.kind = AnimationKind::Keyframes;
-  active.keyframes = std::move(keyframes);
+  active.keyframes.reset(std::move(keyframes));
   active.start = resolvedStart;
   active.target = presentation;
   active.durationS = durationMs / 1000.0;
@@ -1051,7 +1019,7 @@ void unregisterViewAndroid(
               : clamp01(elapsedS / animation.durationS);
           std::vector<Keyframe> remaining;
           remaining.push_back({0, animation.current});
-          for (const Keyframe &frame : animation.keyframes) {
+          for (const Keyframe &frame : animation.keyframes.frames()) {
             if (frame.offset <= progress) continue;
             remaining.push_back(
                 {(frame.offset - progress) / (1 - progress),
@@ -1060,7 +1028,9 @@ void unregisterViewAndroid(
           if (remaining.size() == 1) {
             remaining.push_back({1, animation.target});
           }
-          animation.keyframes = std::move(remaining);
+          // reset() re-solves the tangents for the pruned curve and rewinds
+          // the segment cursor; the resumed run must not inherit either.
+          animation.keyframes.reset(std::move(remaining));
           animation.durationS = remainingS;
         }
         animation.start = animation.current;
