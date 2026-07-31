@@ -74,8 +74,9 @@ frame stamps, and `min()` reproduces both branches:
   `__frameTimestamp` is unset and it takes the wall clock too. The frame that
   dispatches us is later than the call, so the wall stamp survives the `min()`
   and the first fraction is already positive: no duplicated start frame, which
-  was the whole point of anchoring. Both engines are then on `(F − W_call)/D`
-  — identical, frame for frame.
+  was the whole point of anchoring. Both engines are then on `(F − W_call)/D`,
+  frame for frame — identical up to how precisely each can stamp `W_call`, see
+  "What parity actually costs" below.
 - **Call issued from inside the frame that dispatches us** — a Reanimated
   mapper or animation callback in the same `CALLBACK_ANIMATION` phase, where
   `__frameTimestamp` *is* this frame's stamp. `min()` adopts the same stamp
@@ -91,6 +92,30 @@ was right for the `AChoreographer` loop this engine used to run on — see "The
 second defect" below for why the move to the Java Choreographer retired it.
 
 The spring path gets its first `dt` on the same axis for free.
+
+### What parity actually costs
+
+Phase parity is exact up to Reanimated's own timestamp granularity, which is
+worth stating because "identical" is what the next person debugging a few
+pixels of lead will trust.
+
+`_getAnimationTimestamp()` is `SystemClock.uptimeMillis()`
+(`NativeProxy.kt`) — integer milliseconds, truncated. Reanimated's `t0` is
+therefore up to 1 ms *earlier* than the true call time while `nowSeconds()`
+carries full precision, so on a between-frames start Reanimated leads by up to
+1 ms of curve time: ≈0.86 % of total travel at the steepest point of a 350 ms
+`Easing.out(Easing.cubic)`, decaying to zero. That is the floor; it cannot be
+improved from this side.
+
+Note the sign. Under the wall-elapsed rebase the **clip** led the content by
+`L₁` (5–15 ms once the loop moved into `CALLBACK_ANIMATION`). Now **Reanimated**
+leads by ≤1 ms — same class of error, opposite direction, an order of magnitude
+smaller, and no longer load-dependent.
+
+Per-frame pacing has no such floor: both engines advance on the same
+`frameTimeNanos`, which Reanimated takes as a full-precision
+`frameTimeNanos / 1e6` (`AnimationFrameQueue.calculateTimestamp`, and
+`NodesManager.onAnimationFrame` for its own loop).
 
 Two details are load-bearing:
 
@@ -158,9 +183,22 @@ run-ahead guard that propped it up, because both were shaped by
 - **The run-ahead guard went with it.** Its condition reduces to `L₁ − Lₖ >
   17 ms`; with `L` now equal to main-thread load, "heavy first frame, lighter
   after" — the exact profile of a close — could trip it and snap the clip
-  *backwards* mid-flight. `min()` cannot lead wall time in the first place
-  (frame stamps are monotonic and never exceed now), so there is nothing left
-  to guard.
+  *backwards* mid-flight. `min()` cannot lead wall time in the first place, and
+  `Choreographer` guarantees that three separate ways: a vsync stamp arriving
+  ahead of `System.nanoTime()` is clamped to it on receipt, `doFrame` bails out
+  and re-schedules when `frameTimeNanos < mLastFrameTimeNanos`, and the
+  `jitterNanos` correction above only ever moves a stamp *forward*. Frame stamps
+  are monotonic and never exceed now, so there is nothing left to guard.
+
+One more property falls out of pacing on the frame stamp, and it is the reason
+this is robust rather than merely correct: **an advance's computed position no
+longer depends on when inside the frame it runs.** SmoothClip posts a raw
+`Choreographer.FrameCallback` while Reanimated arrives behind RN's
+`ReactChoreographer` dispatcher; both land in `CALLBACK_ANIMATION`, FIFO by post
+order, and which of them runs first can flip between frames. Under the
+wall-elapsed rebase that ordering was baked into the curve. Under `min()` both
+positions are pure functions of a stamp both engines were handed before either
+ran, so the ordering is free to flip and nothing observable changes.
 
 One Kotlin-side non-change is worth recording, because it looks like a gap and
 is not: `invalidateOutline()` **does** schedule the redraw. It ends in
@@ -171,6 +209,56 @@ non-accelerated branch calls `invalidate(false)`, also a traversal. Adding a
 plain `invalidate()` after it — briefly committed, never released — only sets
 `PFLAG_INVALIDATED`, forcing a display-list re-record every changed frame to
 restage an outline the RenderNode applies as a property. It was reverted.
+
+## The third defect: keyframes were reconstructed as straight lines
+
+Nothing to do with the clock, but it lands in the same place — the rendered
+motion of a close — and it hid behind the same misleading metric.
+
+`interpolateKeyframes` lerped between adjacent keyframes. That is exact *at*
+every keyframe, and the position error in between is genuinely tiny (a 31-frame
+bake of a 350 ms curve linearizes to well under a pixel). But position error is
+the wrong quantity again: straight segments make the interpolated **velocity** a
+staircase that steps at every keyframe boundary, beside content whose Reanimated
+curve is continuous. Consumers bake dozens of keyframes precisely because their
+geometry path is not affine in progress, so reconstructing that path smoothly is
+the honest reading of what they asked for.
+
+`KeyframeCurve` (`cpp/SmoothClipAnimationCurve.h`) now evaluates monotone cubic
+Hermite (Fritsch-Carlson). Monotone rather than plain Catmull-Rom because these
+channels do not tolerate overshoot — width, height and radius must never dip
+below zero or bulge past the values the consumer gave. Two keyframes degenerate
+to exactly the old straight line, so the simple case is bit-for-bit unchanged.
+
+Two things keep it off the hot path. Tangents are solved once in `reset()`, at
+animation start and again when the re-latch path prunes the curve, never per
+frame. And the segment scan resumes from the previous frame's index instead of
+restarting at 1 — progress is monotonic within an animation, so what used to be
+O(keyframes) every frame is now O(1) amortized. Net per-frame cost is at or
+below the lerp it replaced.
+
+**Parity note.** iOS builds a `CAKeyframeAnimation` with `kCAAnimationLinear`
+and cannot run this evaluator — CoreAnimation interpolates off-thread, in
+another process. The platforms therefore differ mid-segment by exactly the
+linearization error this removes: sub-pixel at any realistic keyframe density,
+and zero at every keyframe. Closing it needs either `kCAAnimationCubic` (a
+different spline, and one that can overshoot — rejected for the reason above) or
+resampling the keyframes densely through this curve before handing them to CA.
+Left open deliberately rather than papered over.
+
+### Why this math lives in `cpp/`
+
+The anchor, the timing fraction and the keyframe curve moved out of the Android
+registry translation unit because that one is bound to fbjni and cannot be
+linked into a test binary — which is why the two commits that changed the
+animation curve shipped gated on nothing but "it compiles".
+`ios/tests/SmoothClipAnimationCurveTests.mm` now pins all three: that the anchor
+keeps a between-frames wall stamp and adopts a same-frame stamp, that it can
+never lead the frame clock (the reason the run-ahead guard could go), that the
+curve passes through every keyframe, never overshoots, stays exactly linear for
+two keyframes, tracks the sampled path more closely than straight segments do,
+and is C¹ across an interior keyframe. Same arrangement as the shared velocity
+tracker: iOS hosts the tests, Android executes the code.
 
 ## Why iOS never had this
 
@@ -216,13 +304,55 @@ platform's shape, not a design shortcut.
    animation resume at the same position, together. Nothing can paint pixels
    while the thread is blocked; app-level stalls are the remaining jank budget
    on Android.
-2. **Integer outline quantization — platform-forced, negligible.**
-   `Outline.setRoundRect` takes an int rect (float `setPath` outlines cannot
-   clip), so motion quantizes to whole pixels and sub-pixel frames are skipped.
-   Max error 0.5 px; iOS animates floats.
-3. **Per-frame cost — already at the floor.** Integrate 7 scalars, normalize,
-   one JNI call, two property stores, `invalidateOutline`. Allocation-free, no
-   layout.
+2. **Integer outline quantization — platform-forced, and the cost is temporal,
+   not spatial.** `Outline.setRoundRect` takes an int rect (float `setPath`
+   outlines cannot clip), so motion quantizes to whole pixels and sub-pixel
+   frames are skipped. iOS animates floats.
+
+   The 0.5 px spatial bound is the reassuring number and the wrong one. What
+   reads as jank is the per-frame *derivative*: a static half-pixel bias is
+   invisible, an error that alternates between frames is not. During a drag the
+   per-frame delta is tens of pixels and quantization disappears under it; on an
+   ease-out tail the delta falls below a pixel and the quantization *is* the
+   motion — which is why an animation can feel rougher than the gesture that
+   launched it even when both are perfectly paced.
+
+   Both oscillating terms have been removed, in two steps that depend on each
+   other:
+
+   - **Size.** Rounding both edges independently made `round(right) −
+     round(left)` alternate between the floor and the ceil of a *constant*
+     extent as the origin's fraction swept, so pure translation breathed the
+     emitted size by 1 px every frame while the content inside translated in
+     floats. `outlineFarEdge` derives the far edge from the rounded origin plus
+     the rounded extent, making the emitted size a pure function of the true
+     size. An int rect cannot bound origin, far edge and extent at half a pixel
+     simultaneously — extent is their difference — so the slack moved onto the
+     far edge, where it is ≤1 px and *static*.
+   - **Position.** The rounded origin still snapped to the pixel grid, so the
+     clip-to-content offset kept jittering even with the size held. The
+     remainder (`left − round(left)`) is now carried on the view's own
+     `translationX/Y` and subtracted back out of the content container, so the
+     clip edge lands where the driver asked and the content does not move with
+     it. This is only expressible because the far edges are derived: with
+     independently rounded edges the rect had two independent errors per axis
+     and no single translation could place both.
+
+     That property is shared with the consumer's `transform` prop, so
+     `SmoothClipView` overrides `setTranslationX/Y` and composes the two rather
+     than letting either win — RN routes every transform write through those
+     setters (`BaseViewManager.setTransformProperty`). Hit testing adds the
+     residual back to the incoming point, so it still tests the geometry the
+     driver delivered.
+
+   What remains is the ≤0.5 px static size bias, which does not alternate and so
+   does not read as motion.
+3. **Per-frame cost — near the floor.** Integrate 7 scalars, normalize, one JNI
+   call, four property stores (two of them self-deduping no-ops when only the
+   outline moved), `invalidateOutline` only on frames whose *rounded* rect
+   actually changed. Allocation-free, no layout. Sub-pixel-only frames now cost
+   a translation write where they used to cost nothing and render nothing —
+   that is the fix having a price, not a regression.
 4. **One structural advantage over iOS.** Consumers often run Reanimated
    content animations in parallel with the native clip. On Android the two are
    coherent in both dimensions that matter: they advance in the same
