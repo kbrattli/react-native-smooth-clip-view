@@ -46,9 +46,25 @@ const NATIVE = 1;
 
 const setPresentationHostFunction = NativeSmoothClipModule.setClipPresentation;
 const beginInteractionHostFunction = NativeSmoothClipModule.beginInteraction;
-const animateTimingHostFunction = NativeSmoothClipModule.animateTiming;
-const animateSpringHostFunction = NativeSmoothClipModule.animateSpring;
-const animateKeyframesHostFunction = NativeSmoothClipModule.animateKeyframes;
+
+// The animate* host functions take one argument beyond the TurboModule spec:
+// the Reanimated-rule start stamp in milliseconds (see animateOnUI). Android's
+// JSI bindings read it as an optional trailing argument; the iOS TurboModule
+// reads its declared parameters positionally and ignores extras, so the
+// codegen spec stays untouched and both platforms take the same call. A
+// narrower function is assignable to the widened type, so no cast is needed.
+type WithStartStamp<F> = F extends (...args: infer A) => infer R
+  ? (...args: [...A, startedAtMs: number]) => R
+  : never;
+const animateTimingHostFunction: WithStartStamp<
+  typeof NativeSmoothClipModule.animateTiming
+> = NativeSmoothClipModule.animateTiming;
+const animateSpringHostFunction: WithStartStamp<
+  typeof NativeSmoothClipModule.animateSpring
+> = NativeSmoothClipModule.animateSpring;
+const animateKeyframesHostFunction: WithStartStamp<
+  typeof NativeSmoothClipModule.animateKeyframes
+> = NativeSmoothClipModule.animateKeyframes;
 const rejectAnimationHostFunction = NativeSmoothClipModule.rejectAnimation;
 const cancelAnimationHostFunction = NativeSmoothClipModule.cancelAnimation;
 const destroyDriverHostFunction = NativeSmoothClipModule.destroyDriver;
@@ -325,6 +341,26 @@ export function useSmoothClipDriver(
       scalarsStale.value = 0;
       const startClip = start.clip;
       const targetClip = target.clip;
+      // Reanimated stamps a parallel animation's t0 on this same runtime as
+      // `__frameTimestamp || _getAnimationTimestamp()` (valueSetter.ts).
+      // Capturing the identical value here and handing it to the integrator
+      // keeps clip and content phase-locked in every branch — including a
+      // start issued from CALLBACK_INPUT (batched gesture moves), where the
+      // dispatching frame's stamp is EARLIER than the call: the native min()
+      // anchor alone would adopt that frame stamp while Reanimated, outside
+      // its rAF flush where __frameTimestamp is cleared, keeps the wall
+      // clock — a lead lasting the whole animation. NaN when the globals are
+      // absent (tests, non-worklets runtimes): native then falls back to its
+      // own clock plus the min() anchor, the pre-stamp behavior.
+      const workletGlobal = globalThis as {
+        __frameTimestamp?: number;
+        _getAnimationTimestamp?: () => number;
+      };
+      const startedAtMs =
+        workletGlobal.__frameTimestamp ||
+        (typeof workletGlobal._getAnimationTimestamp === 'function'
+          ? workletGlobal._getAnimationTimestamp()
+          : Number.NaN);
       let animationId: number;
 
       if (animation.type === 'timing') {
@@ -351,7 +387,8 @@ export function useSmoothClipDriver(
           y1,
           x2,
           y2,
-          reduceMotion
+          reduceMotion,
+          startedAtMs
         );
       } else if (animation.type === 'spring') {
         const inheritVelocity =
@@ -379,7 +416,8 @@ export function useSmoothClipDriver(
           Math.max(0, animation.damping ?? 10),
           inheritVelocity ? 0 : (animation.initialVelocity as number),
           inheritVelocity,
-          reduceMotion
+          reduceMotion,
+          startedAtMs
         );
       } else {
         animationId = animateKeyframesHostFunction(
@@ -401,7 +439,8 @@ export function useSmoothClipDriver(
           target.contentTranslateY,
           Math.max(0, animation.duration),
           flattenedKeyframes(animation),
-          reduceMotion
+          reduceMotion,
+          startedAtMs
         );
       }
       if (animationId === 0) {

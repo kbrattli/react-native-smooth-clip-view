@@ -44,8 +44,45 @@ inline double clamp01(double value) {
 // Both arguments must be CLOCK_MONOTONIC seconds. This compares them
 // absolutely, so a shared epoch is load-bearing — see nowSeconds() in the
 // Android registry for what breaks if that ever stops holding.
+//
+// min() is an APPROXIMATION of Reanimated's rule that reads no JS state, and
+// it has one wrong branch: a start issued from an earlier phase of a frame
+// already in flight (CALLBACK_INPUT — batched gesture moves) is dispatched in
+// that same doFrame, whose stamp is EARLIER than the call. min() adopts the
+// frame stamp while Reanimated — outside its rAF flush, where
+// __frameTimestamp is cleared — keeps its wall stamp, so the clip led a
+// parallel Reanimated animation by the callback's intra-frame offset for the
+// whole duration. Starts that carry the JS-captured stamp resolve through
+// resolveStartStamp() below and skip this anchor entirely; min() remains for
+// latch flushes and stamp-less callers, where its two branches are exact.
 inline double anchorStartTime(double startedAtS, double frameNowS) {
   return std::min(startedAtS, frameNowS);
+}
+
+// A resolved start stamp for a new animation.
+struct StartStamp {
+  double startedAtS;
+  // True when startedAtS already lives on Reanimated's own start axis (the
+  // JS side captured `__frameTimestamp || _getAnimationTimestamp()` in the
+  // same worklet that issued the animateTo), so the first advance() must NOT
+  // re-anchor it with min() — see the CALLBACK_INPUT note on
+  // anchorStartTime().
+  bool frameClockAnchored;
+};
+
+// How far a JS-captured stamp may sit from the native wall clock and still be
+// trusted. The two reads happen microseconds apart in the same synchronous
+// call stack, and a __frameTimestamp hint can lag by at most one stalled
+// frame; a full second means a broken epoch (a caller stamping from the wrong
+// clock), where falling back to the native clock is strictly safer than
+// completing every animation on its first frame.
+inline constexpr double kStartStampSanityWindowS = 1.0;
+
+inline StartStamp resolveStartStamp(double jsStampS, double wallNowS) {
+  const bool usable = std::isfinite(jsStampS) &&
+      std::abs(jsStampS - wallNowS) <= kStartStampSanityWindowS;
+  if (usable) return {jsStampS, true};
+  return {wallNowS, false};
 }
 
 // Elapsed fraction of a timing/keyframe animation. A non-positive duration is
@@ -113,8 +150,11 @@ inline Presentation interpolate(
 // and these channels do not tolerate it: width, height and radius must never
 // dip below zero or bulge past the values the consumer asked for. The
 // Fritsch-Carlson tangent clamp keeps every segment inside the range of its own
-// endpoints. Two keyframes degenerate to exactly the old straight line (both
-// tangents equal the secant), so the simple case is bit-for-bit unchanged.
+// endpoints. Two keyframes degenerate to the old straight line (both tangents
+// equal the secant) — equal in real arithmetic, within one ulp (~1e-13 of the
+// travel) in doubles because the Hermite blend orders its operations
+// differently than the lerp it replaced. The jfloat delivery cast erases the
+// difference long before a pixel could see it.
 //
 // PARITY NOTE: iOS builds a CAKeyframeAnimation with `kCAAnimationLinear`
 // (SmoothClipView.mm) and cannot run this evaluator — CoreAnimation interpolates

@@ -93,6 +93,59 @@ std::vector<Keyframe> easeOutCubicSamples(size_t count, double travel) {
   }
 }
 
+#pragma mark - JS-captured start stamp
+
+- (void)testStartStampHintIsAdoptedAndArrivesPreAnchored {
+  // The stamp is Reanimated's own t0, read in the worklet that issued the
+  // animateTo — microseconds before the native wall read. It must be adopted
+  // verbatim and must NOT be re-anchored by min() on the first advance.
+  const smoothclip::StartStamp stamp =
+      smoothclip::resolveStartStamp(999.996, 1000.0);
+  XCTAssertEqual(stamp.startedAtS, 999.996);
+  XCTAssertTrue(stamp.frameClockAnchored);
+}
+
+- (void)testStartStampInputPhaseWallStampSurvivesAnEarlierFrame {
+  // The branch min() got wrong: a CALLBACK_INPUT start at wall T+4ms whose
+  // dispatching frame stamp is T. Reanimated keeps the wall stamp there
+  // (__frameTimestamp is cleared outside its rAF flush), so the hint must
+  // survive; the same-frame advance then clamps to fraction 0 — the start is
+  // drawn once, exactly what Reanimated renders on that frame — and from the
+  // next frame both engines share one t0.
+  const double frame = 1000.0;
+  const double callWall = 1000.004;
+  const smoothclip::StartStamp stamp =
+      smoothclip::resolveStartStamp(callWall, callWall);
+  XCTAssertEqual(stamp.startedAtS, callWall);
+  XCTAssertTrue(stamp.frameClockAnchored);
+  XCTAssertEqual(smoothclip::timingFraction(frame, stamp.startedAtS, 0.35), 0.0);
+}
+
+- (void)testStartStampFallsBackToTheWallClockWhenAbsent {
+  // NaN is the deliberate "no stamp" sentinel (tests, stamp-less callers,
+  // iOS ignoring the field): behavior reduces to nowSeconds() + min().
+  const smoothclip::StartStamp stamp =
+      smoothclip::resolveStartStamp(NAN, 1000.0);
+  XCTAssertEqual(stamp.startedAtS, 1000.0);
+  XCTAssertFalse(stamp.frameClockAnchored);
+}
+
+- (void)testStartStampRejectsAForeignEpoch {
+  // A stamp a second away from the native clock is a broken epoch, not a
+  // dispatch delay. Trusting it would complete every animation on its first
+  // frame (stamp far in the past) or freeze it (far in the future); falling
+  // back to the native clock is strictly safer.
+  const smoothclip::StartStamp past =
+      smoothclip::resolveStartStamp(998.5, 1000.0);
+  XCTAssertEqual(past.startedAtS, 1000.0);
+  XCTAssertFalse(past.frameClockAnchored);
+
+  const smoothclip::StartStamp future =
+      smoothclip::resolveStartStamp(1001.5, 1000.0);
+  XCTAssertEqual(future.startedAtS, 1000.0);
+  XCTAssertFalse(future.frameClockAnchored);
+}
+
 #pragma mark - Timing fraction
 
 - (void)testTimingFractionClampsAndCompletesDegenerateDurations {
