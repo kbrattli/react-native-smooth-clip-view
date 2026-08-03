@@ -48,6 +48,14 @@ export function detachDriverState(state: DriverState): void {
   if (statesById.get(state.driverId) === state) {
     statesById.delete(state.driverId);
   }
+  // Requests pending at teardown were settled by rejectDriverRequests, but
+  // their completion deferrals can no longer be released: the late-scheduled
+  // resolver's releaseDriverCompletions no-ops against a detached state. An
+  // effect replay reattaches THIS same object, so a stale positive count
+  // would queue every future completion forever. The deferrals died with
+  // their requests — reset them.
+  state.completionDeferrals = 0;
+  state.deferredCompletions.length = 0;
 }
 
 export function createDriverState(

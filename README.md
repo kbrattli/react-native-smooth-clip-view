@@ -249,16 +249,27 @@ puts on screen, which is the property worth keeping identical.
   authoritative interactive start, creates the missing driver state and
   returns a real id. `0` — with no completion — is reserved for off-main,
   invalid-id, or otherwise unsupported dispatch: a missing-state native request
-  with no authoritative start, and any `driver.ui.animateTo` issued after the
-  driver's hook has unmounted. (The second case is decided on the UI runtime,
+  with no authoritative start, any `driver.ui.animateTo` issued after the
+  driver's hook has unmounted, and an invalid-parameter request issued before
+  the driver's first seed reached native (validation rejections mint their
+  `finished: false` completion only once the native entry exists). (The
+  post-unmount case is decided on the UI runtime,
   because a destroyed driver and a not-yet-seeded one are the same missing
   registry entry to native — accepting it would build a latch nothing can start
   and nothing can cancel.) A host is displayable only while it is attached,
-  foreground/window-visible, laid out, and positive-sized. Losing the last
+  foreground/window-visible, laid out, and positive-sized (the window's own
+  `hidden`/scene state is not consulted — RN's single always-visible window
+  makes it moot). Losing the last
   displayable host mid-flight — including temporary detach, zero-size layout,
   or app background — freezes and re-latches the exact remainder instead of
   consuming duration offscreen. Foreground/reattach resumes the same animation
   ID from that stored timing/keyframe phase or spring state.
+  Parallel Reanimated clocks do **not** pause with it: a `withTiming` started
+  beside `animateTo` keeps its wall-clock start, so after backgrounding it
+  completes on its first resumed frame while the native run still animates its
+  preserved remainder. Key teardown and state transitions off
+  `onAnimationComplete` (or re-synchronize on `AppState`) rather than off a
+  duration-matched Reanimated callback.
   With multiple hosts on one driver, a host becomes an installed participant
   only after its native animation starts. Temporary loss moves it to suspended;
   a rejoin restores active participation. Unregistering an installed/suspended

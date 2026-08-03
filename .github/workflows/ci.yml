@@ -63,6 +63,11 @@ jobs:
       - name: Validate npm package contents
         run: npm pack --dry-run --json
 
+      - name: Ensure the build left the tree clean
+        # bob and pack must only write into gitignored outputs; anything else
+        # would ship stale on the next publish.
+        run: git diff --exit-code
+
   android-native:
     runs-on: ubuntu-24.04
 

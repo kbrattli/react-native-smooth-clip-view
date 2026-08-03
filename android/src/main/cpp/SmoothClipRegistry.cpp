@@ -890,6 +890,11 @@ void destroyDriver(uint64_t driverId) {
   auto &state = iterator->second;
   state.ownership = Ownership::Interactive;
   finishActive(driverId, state, false);
+  // A destroyed driver's interaction history must not seed a revived
+  // incarnation: the revival seed would otherwise pair with these samples and
+  // refresh the staleness clock with motion no finger produced. (iOS clears
+  // its per-view histories at the same point.)
+  state.samples = VelocitySampleHistory{};
   if (state.views.empty()) {
     registry().erase(iterator);
   } else {

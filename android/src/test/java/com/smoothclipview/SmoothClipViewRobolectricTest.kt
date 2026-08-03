@@ -93,6 +93,49 @@ class SmoothClipViewRobolectricTest {
         assertTrue(actions.isEmpty())
     }
 
+    @Test
+    fun reentrantCollapseFromTheCancelHandlerDispatchesExactlyOneCancel() {
+        val application = RuntimeEnvironment.getApplication()
+        val reactContext = mock(ReactApplicationContext::class.java)
+        val themedContext = ThemedReactContext(reactContext, application, null, -1)
+        val reentrantView = SmoothClipView(themedContext)
+        val reentrantActions = mutableListOf<Int>()
+        var collapsedFromHandler = false
+        val child = View(themedContext).apply {
+            isClickable = true
+            setOnTouchListener { _, event ->
+                reentrantActions += event.actionMasked
+                if (event.actionMasked == MotionEvent.ACTION_CANCEL &&
+                    !collapsedFromHandler
+                ) {
+                    // Untrusted child code re-entering geometry application
+                    // synchronously from the synthesized cancel: the stream
+                    // must already read as ended, or this nested collapse
+                    // would synthesize a second cancel.
+                    collapsedFromHandler = true
+                    reentrantView.setClipPresentationPx(
+                        0f, 0f, 0.2f, 100f, 0f, 0f, 0f,
+                    )
+                }
+                true
+            }
+        }
+        reentrantView.contentContainer.addView(child)
+        reentrantView.layout(0, 0, 100, 100)
+        child.layout(0, 0, 100, 100)
+        reentrantView.setClipPresentationPx(0f, 0f, 100f, 100f, 0f, 0f, 0f)
+
+        assertTrue(
+            reentrantView.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 50f, 50f)),
+        )
+        reentrantView.setClipPresentationPx(0f, 0f, 0.49f, 100f, 0f, 0f, 0f)
+
+        assertEquals(
+            listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_CANCEL),
+            reentrantActions,
+        )
+    }
+
     private fun event(action: Int, x: Float, y: Float): MotionEvent =
         MotionEvent.obtain(10L, 20L, action, x, y, 0)
 }

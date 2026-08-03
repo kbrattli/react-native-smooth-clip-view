@@ -147,22 +147,14 @@ static std::array<double, 7> SmoothClipVelocityChannels(
     _activeAnimationKind = 0;
     _pendingAnimationInstall = NO;
     smoothclip::clearVelocitySamples(_velocitySamples);
-    [[NSNotificationCenter defaultCenter]
-        addObserver:self
-           selector:@selector(applicationWillResignActive)
-               name:UIApplicationWillResignActiveNotification
-             object:nil];
-    [[NSNotificationCenter defaultCenter]
-        addObserver:self
-           selector:@selector(applicationDidBecomeActive)
-               name:UIApplicationDidBecomeActiveNotification
-             object:nil];
+    // App-state transitions are observed by the registry itself (see
+    // installApplicationStateObservers): the active flag is process-global,
+    // so its observer must outlive any individual view.
   }
   return self;
 }
 
 - (void)dealloc {
-  [[NSNotificationCenter defaultCenter] removeObserver:self];
   if (_driverId != 0) {
     smoothclip::unregisterView(_driverId, self);
   }
@@ -381,6 +373,10 @@ static std::array<double, 7> SmoothClipVelocityChannels(
 
 - (BOOL)smoothClipHasPendingInstall {
   return _pendingAnimationInstall;
+}
+
+- (void)smoothClipClearVelocitySamples {
+  smoothclip::clearVelocitySamples(_velocitySamples);
 }
 
 - (double)smoothClipSpringContinuationVelocity {
@@ -810,14 +806,6 @@ static std::array<double, 7> SmoothClipVelocityChannels(
     [self writeContentTranslation:visibleContentTranslation];
     [self syncVisibilityForRect:visibleRect];
   }
-}
-
-- (void)applicationWillResignActive {
-  smoothclip::applicationWillResignActive();
-}
-
-- (void)applicationDidBecomeActive {
-  smoothclip::applicationDidBecomeActive();
 }
 
 - (void)smoothClipAnimationDidStopWithDriverId:(uint64_t)driverId
