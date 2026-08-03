@@ -1,11 +1,10 @@
 # Publishing checklist
 
-Current state (2026-08-03): **0.2.6 is tagged (`v0.2.6`) and released on
-GitHub, but intentionally remains unpublished on npm** — the registry still
-serves 0.2.5 as `latest`. Do not move, republish, or publish the 0.2.6 tag; its
-correctness follow-up ships as 0.2.7, and the existing GitHub release carries a
-correction addendum. Tag `v0.2.3` likewise remains permanently npm-less
-(superseded by 0.2.4 before it was ever published).
+Current state (2026-08-03): **0.2.7 is tagged (`v0.2.7`) and released on
+GitHub; npm still serves 0.2.5 as `latest`.** When publishing, use the
+"publish an existing tag as-is" flow below against `v0.2.7`. Tags `v0.2.6`
+(superseded by the 0.2.7 correctness follow-up before it was ever published)
+and `v0.2.3` (superseded by 0.2.4) remain permanently npm-less.
 
 0.2.6 is Android-only — `git diff v0.2.5..v0.2.6 -- ios/` touches nothing but a
 new test file. It carries the Java-Choreographer frame-loop migration, the
