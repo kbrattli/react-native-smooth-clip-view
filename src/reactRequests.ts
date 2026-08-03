@@ -6,6 +6,11 @@ import {
 type PendingRequest = {
   resolve(value: unknown): void;
   reject(error: Error): void;
+  // Set for calls whose documented usage is fire-and-forget (`void
+  // driver.react.animateTo(...)`): teardown resolves them with this benign
+  // sentinel instead of rejecting, so a discarded promise cannot surface as
+  // an unhandled rejection during ordinary unmount.
+  teardownResolution?: { value: unknown };
 };
 
 const requests = new Map<number, PendingRequest>();
@@ -14,7 +19,8 @@ let nextRequestId = 0;
 
 export function createReactRequest<T>(
   driverId: number,
-  deferCompletions = false
+  deferCompletions = false,
+  teardownResolution?: { value: unknown }
 ): { requestId: number; promise: Promise<T> } {
   nextRequestId = (nextRequestId % 0x7ffffffe) + 1;
   const requestId = nextRequestId;
@@ -27,6 +33,7 @@ export function createReactRequest<T>(
   requests.set(requestId, {
     resolve: resolveRequest as (value: unknown) => void,
     reject: rejectRequest,
+    teardownResolution,
   });
   const driverRequests = requestsByDriver.get(driverId) ?? new Set<number>();
   driverRequests.add(requestId);
@@ -58,7 +65,12 @@ export function rejectDriverRequests(driverId: number): void {
   for (const requestId of driverRequests) {
     const request = requests.get(requestId);
     requests.delete(requestId);
-    request?.reject(new Error('[SmoothClipView] Driver was destroyed.'));
+    if (!request) continue;
+    if (request.teardownResolution) {
+      request.resolve(request.teardownResolution.value);
+    } else {
+      request.reject(new Error('[SmoothClipView] Driver was destroyed.'));
+    }
   }
   requestsByDriver.delete(driverId);
 }

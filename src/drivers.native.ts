@@ -107,9 +107,19 @@ function animationIsFinite(
     return false;
   }
   if (animation.type === 'timing') {
+    const [x1, , x2] = animation.controlPoints;
     return (
       Number.isFinite(animation.duration) &&
-      animation.controlPoints.every(Number.isFinite)
+      animation.controlPoints.every(Number.isFinite) &&
+      // A cubic-bezier easing is only defined for x within [0,1] (the CSS /
+      // CoreAnimation / Reanimated Easing.bezier contract). Out-of-range x
+      // makes the Android parameter solve meaningless while CoreAnimation
+      // silently clamps — reject like any other invalid input instead of
+      // diverging per platform.
+      x1 >= 0 &&
+      x1 <= 1 &&
+      x2 >= 0 &&
+      x2 <= 1
     );
   }
   if (animation.type === 'spring') {
@@ -477,8 +487,10 @@ export function useSmoothClipDriver(
         // dispatch. A missing driver is accepted when this call carries the
         // authoritative interactive start above; a start-less missing-state
         // request remains unsupported rather than inventing zero geometry.
-        // Validation failures never get here (they reject before any side
-        // effect with a fresh id and one finished:false completion).
+        // Validation failures never get here: they reject before any side
+        // effect, with a fresh id and one finished:false completion once the
+        // native entry exists — in the pre-seed window rejectAnimation has no
+        // entry and returns the bare 0 sentinel with no completion instead.
         ownership.value = INTERACTIVE;
         presentation.value = start;
         if (scalarsWereStale) scalarsStale.value = 1;
@@ -570,7 +582,14 @@ export function useSmoothClipDriver(
           return promise;
         },
         set(next) {
-          const { requestId, promise } = createReactRequest<void>(driverId);
+          // Teardown resolves (undefined) rather than rejects: `set` is a
+          // documented fire-and-forget call, and a promise discarded with
+          // `void` must not become an unhandled rejection at unmount.
+          const { requestId, promise } = createReactRequest<void>(
+            driverId,
+            false,
+            { value: undefined }
+          );
           scheduleOnUI(() => {
             'worklet';
             setOnUI(next);
@@ -579,9 +598,12 @@ export function useSmoothClipDriver(
           return promise;
         },
         animateTo(target, animation) {
+          // Teardown resolves with the documented 0 rejection sentinel (see
+          // `set` above): the README's own example voids this promise.
           const { requestId, promise } = createReactRequest<number>(
             driverId,
-            true
+            true,
+            { value: 0 }
           );
           scheduleOnUI(() => {
             'worklet';

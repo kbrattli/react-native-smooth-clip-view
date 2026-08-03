@@ -43,6 +43,7 @@
 - (BOOL)smoothClipCanDisplay;
 - (BOOL)smoothClipHasPendingInstall;
 - (double)smoothClipSpringContinuationVelocity;
+- (void)smoothClipClearVelocitySamples;
 @end
 
 namespace smoothclip {
@@ -102,7 +103,33 @@ std::unordered_map<uint64_t, DriverState> &registry() {
   return value;
 }
 
+// The transitions must be observed for the whole process lifetime, not per
+// view: the state below is process-global, and a notification delivered while
+// no SmoothClipView happens to be alive (the last host unmounted during
+// inactivity, or the app backgrounded between screens) must still land.
+// View-held observers die with their views and left the flag permanently
+// stale in exactly those windows.
+void installApplicationStateObservers() {
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    [center addObserverForName:UIApplicationWillResignActiveNotification
+                        object:nil
+                         queue:nil
+                    usingBlock:^(NSNotification *) {
+                      applicationWillResignActive();
+                    }];
+    [center addObserverForName:UIApplicationDidBecomeActiveNotification
+                        object:nil
+                         queue:nil
+                    usingBlock:^(NSNotification *) {
+                      applicationDidBecomeActive();
+                    }];
+  });
+}
+
 bool &applicationActiveState() {
+  installApplicationStateObservers();
   // The first SmoothClipView can be created after the app already entered the
   // background, too late to observe WillResignActive. Seed from UIKit rather
   // than assuming foreground so that first registration cannot start offscreen.
@@ -199,6 +226,8 @@ Presentation canonicalFrozenPresentation(
       ? state.animation->start
       : state.latest;
   bool hasCanonical = false;
+  bool hasParticipantFallback = false;
+  Presentation participantFallback{{0, 0, 0, 0, 0}, 0, 0};
   for (const ViewKey key : state.views) {
     // Freeze every view (the teardown side effect must reach all of them),
     // but only a laid-out view may define the canonical geometry — an
@@ -211,7 +240,20 @@ Presentation canonicalFrozenPresentation(
     } else if (!hasCanonical && [candidate smoothClipIsJoinable]) {
       canonical = frozen;
       hasCanonical = true;
+    } else if (!hasParticipantFallback && state.animation.has_value() &&
+               (state.animation->participants.count(key) > 0 ||
+                state.animation->suspendedParticipants.count(key) > 0)) {
+      // An installed participant whose HOST just lost its size still holds
+      // real mid-flight geometry on its clip layer (host bounds do not feed
+      // the clip container). Without this fallback, a sole running host
+      // resized to zero froze the re-latch at state.latest — the target —
+      // and the resumed animation snapped to its endpoint.
+      hasParticipantFallback = true;
+      participantFallback = frozen;
     }
+  }
+  if (!hasCanonical && hasParticipantFallback) {
+    canonical = participantFallback;
   }
   return canonical;
 }
@@ -385,6 +427,10 @@ void relatchActiveAnimation(
     }
   }
   const Presentation frozen = canonicalFrozenPresentation(state, preferred);
+  // Captured before the migration below: only hosts that were ALREADY
+  // suspended are unresolved. The active participants being frozen right now
+  // rendered every frame up to this instant.
+  const bool hadUnresolvedSuspended = !active.suspendedParticipants.empty();
   active.suspendedParticipants.insert(
       active.participants.begin(), active.participants.end());
   active.participants.clear();
@@ -413,8 +459,21 @@ void relatchActiveAnimation(
 
   if (state.destroyed ||
       (active.kind != AnimationKind::Spring && active.durationMs <= 0)) {
+    // A residual trimmed to zero means the curve fully elapsed while a host
+    // displayed every frame — only the asynchronous didStop was outstanding
+    // when this freeze arrived. Report that run honestly instead of stamping
+    // the freeze-path false; hosts that were suspended before the freeze are
+    // unresolved and still poison it.
+    const bool ranToEnd = !state.destroyed && progress >= 1 &&
+        active.finished && !hadUnresolvedSuspended;
+    // Deferred peers hold pending installs for this id; invalidate them and
+    // finalize statically at the target, exactly as the didStop completion
+    // path does. Frozen participants already have no animation to cancel.
+    for (const ViewKey key : state.views) {
+      [viewForKey(key) smoothClipCancelAnimationUsingTarget:YES];
+    }
     state.ownership = Ownership::Interactive;
-    emitCompletion(driverId, state, active.animationId, false);
+    emitCompletion(driverId, state, active.animationId, ranToEnd);
     return;
   }
   active.start = frozen;
@@ -1011,6 +1070,12 @@ void destroyDriver(uint64_t driverId) {
   if (iterator == registry().end()) return;
   auto &state = iterator->second;
   cancelActive(driverId, state, false);
+  // A destroyed driver's interaction history must not seed a revived
+  // incarnation: the revival seed would otherwise pair with these samples and
+  // refresh the staleness clock with motion no finger produced.
+  for (const ViewKey key : state.views) {
+    [viewForKey(key) smoothClipClearVelocitySamples];
+  }
   if (state.views.empty()) {
     registry().erase(iterator);
   } else {

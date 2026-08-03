@@ -690,6 +690,83 @@ describe('hybrid native driver (iOS + Android)', () => {
     );
   });
 
+  it('rejects out-of-range timing control point x values', () => {
+    const driver = useSmoothClipDriver(initial);
+
+    // x outside [0,1] is undefined for a CSS/CA cubic bezier: CoreAnimation
+    // clamps while the Android bisection solve returns garbage, so the call
+    // must reject instead of diverging silently per platform.
+    const animationId = driver.ui.animateTo(target, {
+      ...timing,
+      controlPoints: [1.5, 0, 0.58, 1] as const,
+    });
+
+    expect(animationId).toBe(99);
+    expect(mockNative.rejectAnimation).toHaveBeenCalled();
+    expect(mockNative.animateTiming).not.toHaveBeenCalled();
+  });
+
+  it('resolves fire-and-forget react promises benignly at teardown', async () => {
+    mockRNRuntime = true;
+    const driver = useSmoothClipDriver(initial);
+    const registration = mockEffects[mockEffects.length - 1]!;
+    mockUIState().__smoothClipTestQueueUI = true;
+
+    const animatePromise = driver.react.animateTo(target, timing);
+    const setPromise = driver.react.set(target);
+    const beginPromise = driver.react.beginInteraction();
+    if (typeof registration.cleanup === 'function') registration.cleanup();
+    mockUIState().__smoothClipTestQueueUI = false;
+
+    // The documented idiom voids animateTo/set; teardown must resolve them
+    // with their benign sentinels instead of surfacing an unhandled
+    // rejection. Value-carrying calls are always awaited and keep rejecting.
+    await expect(animatePromise).resolves.toBe(0);
+    await expect(setPromise).resolves.toBeUndefined();
+    await expect(beginPromise).rejects.toThrow('Driver was destroyed');
+  });
+
+  it('replaying the effect after a torn-down react request still delivers completions', async () => {
+    const onAnimationComplete = jest.fn();
+    const driver = useSmoothClipDriver(initial, { onAnimationComplete });
+    const registration = mockEffects[mockEffects.length - 1]!;
+
+    // A react request is in flight — deferring completion delivery — when
+    // cleanup tears the driver down.
+    mockUIState().__smoothClipTestQueueUI = true;
+    const tornDown = driver.react.animateTo(target, timing);
+    if (typeof registration.cleanup === 'function') registration.cleanup();
+    // The scheduled worklet lands after teardown; its late resolver runs
+    // against a detached state and must not leave the deferral behind.
+    const tasks = mockUIState().__smoothClipTestUITasks ?? [];
+    while (tasks.length) tasks.shift()?.();
+    mockUIState().__smoothClipTestQueueUI = false;
+    await expect(tornDown).resolves.toBe(0);
+
+    // StrictMode/<Activity> replay reattaches the SAME driver state. A stale
+    // deferral count here would queue every future completion forever.
+    registration.effect();
+    const completionListener = mockNative.onClipAnimationComplete.mock.calls.at(
+      -1
+    )?.[0] as (result: {
+      driverId: number;
+      animationId: number;
+      finished: boolean;
+    }) => void;
+    const driverId = mockNative.setClipPresentation.mock.calls.at(
+      -1
+    )?.[0] as number;
+    expect(driverId).toBeDefined();
+
+    const animationId = driver.ui.animateTo(target, timing);
+    completionListener({ driverId, animationId, finished: true });
+    expect(onAnimationComplete).toHaveBeenCalledTimes(1);
+    expect(onAnimationComplete).toHaveBeenCalledWith({
+      animationId,
+      finished: true,
+    });
+  });
+
   it('rejects a non-finite from without touching native', () => {
     const driver = useSmoothClipDriver(initial);
     jest.clearAllMocks();

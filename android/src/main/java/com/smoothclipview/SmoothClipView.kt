@@ -417,11 +417,15 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         }
         val cancel = MotionEvent.obtain(latest)
         cancel.action = MotionEvent.ACTION_CANCEL
+        // Terminal BEFORE dispatch: a child's synchronous cancel handler can
+        // re-enter geometry application, and a nested emptiness transition
+        // must observe an already-ended stream instead of synthesizing a
+        // second cancel for it.
+        clearTouchState()
         try {
             super.dispatchTouchEvent(cancel)
         } finally {
             cancel.recycle()
-            clearTouchState()
         }
     }
 
