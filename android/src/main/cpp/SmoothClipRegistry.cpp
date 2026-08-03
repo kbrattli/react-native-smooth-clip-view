@@ -75,7 +75,9 @@ struct ActiveAnimation {
   bool started = false;
   // False until the first advance() translates the wall-clock start stamp
   // onto the choreographer frame-time axis (elapsed-preserving). Every
-  // startedAtS stamp clears it so a re-latched resume re-anchors too.
+  // startedAtS stamp clears it so a re-latched resume re-anchors too — except
+  // a start that carried the JS-captured Reanimated stamp, which arrives
+  // pre-anchored (see startAnimation) and must not be min()'d again.
   bool frameClockAnchored = false;
 };
 
@@ -448,11 +450,25 @@ void startLatchedAnimation(uint64_t driverId, DriverState &state) {
 int32_t startAnimation(
     uint64_t driverId,
     DriverState &state,
-    ActiveAnimation animation) {
-  animation.startedAtS = nowSeconds();
-  animation.lastFrameS = animation.startedAtS;
-  animation.wallStartedAtS = animation.startedAtS;
-  animation.frameClockAnchored = false;
+    ActiveAnimation animation,
+    double startedAtHintS) {
+  // With a JS-captured hint the start stamp is Reanimated's own
+  // (`__frameTimestamp || _getAnimationTimestamp()`, read in the worklet that
+  // issued this call), already on the axis min() only approximates — so the
+  // animation arrives pre-anchored and advance() must not min() it against
+  // the dispatching frame, which for a CALLBACK_INPUT start is EARLIER than
+  // the call and would re-open the intra-frame lead the hint closes. Without
+  // a hint (NaN: latch-less legacy callers, tests, iOS ignoring the field)
+  // this reduces exactly to the old nowSeconds() + min() anchor path.
+  const double wallNow = nowSeconds();
+  const StartStamp stamp = resolveStartStamp(startedAtHintS, wallNow);
+  animation.startedAtS = stamp.startedAtS;
+  animation.lastFrameS = stamp.startedAtS;
+  // Wall axis for the re-latch remainder keeps the native call stamp: the
+  // hint is at most a frame older and the remainder math wants honest wall
+  // elapsed from when the animation actually began integrating.
+  animation.wallStartedAtS = wallNow;
+  animation.frameClockAnchored = stamp.frameClockAnchored;
   // current = start even while latched is load-bearing: cancelAnimation,
   // beginInteraction, prepareAnimation's visibleBefore and registerView's
   // visible all read animation->current, giving a never-rendered latch
@@ -691,7 +707,7 @@ int32_t animateTiming(
   active.start = resolvedStart;
   active.target = presentation;
   active.durationS = animation.durationMs / 1000.0;
-  return startAnimation(driverId, state, std::move(active));
+  return startAnimation(driverId, state, std::move(active), start.startedAtHintS);
 }
 
 int32_t animateSpring(
@@ -734,7 +750,7 @@ int32_t animateSpring(
     active.springVelocity[index] =
         velocity * (targetChannels[index] - startChannels[index]);
   }
-  return startAnimation(driverId, state, std::move(active));
+  return startAnimation(driverId, state, std::move(active), start.startedAtHintS);
 }
 
 int32_t animateKeyframes(
@@ -765,7 +781,7 @@ int32_t animateKeyframes(
   active.start = resolvedStart;
   active.target = presentation;
   active.durationS = durationMs / 1000.0;
-  return startAnimation(driverId, state, std::move(active));
+  return startAnimation(driverId, state, std::move(active), start.startedAtHintS);
 }
 
 int32_t rejectAnimation(uint64_t driverId) {

@@ -6,6 +6,7 @@
 #include <jsi/jsi.h>
 
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <unordered_map>
 #include <utility>
@@ -43,6 +44,18 @@ bool finitePresentation(const Presentation &presentation) {
 
 bool boolArg(const Value *args, size_t count, size_t index) {
   return index < count && args[index].isBool() && args[index].getBool();
+}
+
+// Optional trailing start stamp (Reanimated-rule milliseconds captured in the
+// issuing worklet), converted to the registry's CLOCK_MONOTONIC seconds. A
+// missing or non-numeric argument — and the JS side's deliberate NaN fallback
+// when the worklet globals are absent — resolves to NaN, which
+// resolveStartStamp() treats as "no hint": nowSeconds() plus the min() anchor,
+// exactly the pre-hint behavior.
+double startStampArg(const Value *args, size_t count, size_t index) {
+  return index < count && args[index].isNumber()
+      ? args[index].asNumber() / 1000.0
+      : std::numeric_limits<double>::quiet_NaN();
 }
 
 Presentation presentationFromArgs(const Value *args, size_t offset) {
@@ -177,7 +190,7 @@ void installBindings(
       });
 
   setHostFunction(
-      runtime, bindings, "animateTiming", 22,
+      runtime, bindings, "animateTiming", 23,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
         if (count < 22) return Value(0);
         const double driverId = args[0].asNumber();
@@ -194,13 +207,13 @@ void installBindings(
         }
         return Value(animateTiming(
             static_cast<uint64_t>(driverId),
-            {boolArg(args, count, 1), start},
+            {boolArg(args, count, 1), start, startStampArg(args, count, 22)},
             target,
             animation));
       });
 
   setHostFunction(
-      runtime, bindings, "animateSpring", 22,
+      runtime, bindings, "animateSpring", 23,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
         if (count < 22) return Value(0);
         const double driverId = args[0].asNumber();
@@ -221,13 +234,13 @@ void installBindings(
         }
         return Value(animateSpring(
             static_cast<uint64_t>(driverId),
-            {boolArg(args, count, 1), start},
+            {boolArg(args, count, 1), start, startStampArg(args, count, 22)},
             target,
             animation));
       });
 
   setHostFunction(
-      runtime, bindings, "animateKeyframes", 19,
+      runtime, bindings, "animateKeyframes", 20,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
         if (count < 19 || !args[17].isObject() ||
             !args[17].getObject(rt).isArray(rt)) {
@@ -270,7 +283,7 @@ void installBindings(
         }
         return Value(animateKeyframes(
             static_cast<uint64_t>(driverId),
-            {boolArg(args, count, 1), start},
+            {boolArg(args, count, 1), start, startStampArg(args, count, 19)},
             target,
             durationMs,
             std::move(keyframes),

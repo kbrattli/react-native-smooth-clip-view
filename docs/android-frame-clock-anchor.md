@@ -80,11 +80,11 @@ frame stamps, and `min()` reproduces both branches:
 - **Call issued from inside the frame that dispatches us** — a Reanimated
   mapper or animation callback in the same `CALLBACK_ANIMATION` phase, where
   `__frameTimestamp` *is* this frame's stamp. `min()` adopts the same stamp
-  instead of letting `clamp01` pin the fraction to 0. (The narrow variant is a
+  instead of letting `clamp01` pin the fraction to 0. (The narrow variant was a
   start from `CALLBACK_INPUT` — batched moves — where Reanimated still takes
-  the wall clock while we adopt the frame stamp, leaving us ahead by that
-  callback's offset into the frame. Sub-frame, bounded, and strictly smaller
-  than what the wall-elapsed rebase below imposed on *every* start.)
+  the wall clock while `min()` adopts the earlier frame stamp, leaving the clip
+  ahead by that callback's offset into the frame for the animation's whole
+  duration. Closed by the JS-captured stamp — next section.)
 
 What this deliberately is *not* is a wall-elapsed rebase (`startedAtS = now −
 (nowSeconds() − startedAtS)`). That is what the anchor originally did, and it
@@ -92,6 +92,38 @@ was right for the `AChoreographer` loop this engine used to run on — see "The
 second defect" below for why the move to the Java Choreographer retired it.
 
 The spring path gets its first `dt` on the same axis for free.
+
+### Reading the rule instead of approximating it
+
+`min()` reproduces Reanimated's two branches without reading any JS state, and
+that indirection had exactly one wrong case: a start issued from an earlier
+phase of a frame already in flight (`CALLBACK_INPUT`, batched gesture moves) is
+dispatched in that same `doFrame`, whose stamp is *earlier* than the call.
+`min()` adopted the frame stamp; Reanimated — outside its rAF flush, where
+`__frameTimestamp` is cleared back to `undefined` — kept the wall clock. The
+clip led the content by the callback's intra-frame offset for the animation's
+whole duration: single-digit milliseconds on a healthy frame, up to a full
+frame interval on exactly the heavy transition frame the rest of this document
+worries about.
+
+So the issuing worklet now captures the rule's own output at the call site —
+`global.__frameTimestamp || global._getAnimationTimestamp()`, the identical
+expression `valueSetter.ts` evaluates for a parallel Reanimated animation
+started in the same worklet — and hands it through the bindings as an optional
+trailing argument (milliseconds; the bindings convert once). Native
+`resolveStartStamp()` (`cpp/SmoothClipAnimationCurve.h`, pinned by the
+XCTests) adopts it verbatim and marks the animation pre-anchored, so the first
+`advance()` skips `min()` entirely. A NaN stamp — stamp-less callers, tests,
+iOS ignoring the field — falls back to `nowSeconds()` plus the `min()` anchor:
+the approximation remains for the latch flush, which happens native-side long
+after any JS stamp went stale, and its two branches are exact there. A stamp
+more than a second from the native clock is a broken epoch, not a dispatch
+delay, and is rejected the same way.
+
+With the stamp in hand, a `CALLBACK_INPUT` start renders its first frame at
+fraction 0 — the same value Reanimated draws on that frame — and every later
+frame computes `(F − t0)/D` from the shared t0. What remains is the floor
+below, which is Reanimated's own and cannot be closed from this side.
 
 ### What parity actually costs
 
@@ -228,14 +260,21 @@ the honest reading of what they asked for.
 Hermite (Fritsch-Carlson). Monotone rather than plain Catmull-Rom because these
 channels do not tolerate overshoot — width, height and radius must never dip
 below zero or bulge past the values the consumer gave. Two keyframes degenerate
-to exactly the old straight line, so the simple case is bit-for-bit unchanged.
+to the old straight line: equal in real arithmetic (both tangents equal the
+secant), within one ulp — ~1e-13 of the travel, on roughly half of sampled
+progress values — in doubles, because the Hermite blend orders its operations
+differently than the lerp it replaced. The jfloat delivery cast erases the
+difference long before a pixel could see it.
 
-Two things keep it off the hot path. Tangents are solved once in `reset()`, at
-animation start and again when the re-latch path prunes the curve, never per
-frame. And the segment scan resumes from the previous frame's index instead of
+Two things keep it cheap on the hot path. Tangents are solved once in
+`reset()`, at animation start and again when the re-latch path prunes the
+curve, never per frame — `reset()` pays two small vector allocations for that,
+on the start path where a JSI call and a registry lookup already dwarf them.
+And the segment scan resumes from the previous frame's index instead of
 restarting at 1 — progress is monotonic within an animation, so what used to be
-O(keyframes) every frame is now O(1) amortized. Net per-frame cost is at or
-below the lerp it replaced.
+O(keyframes) every frame is now O(1) amortized. The Hermite blend itself costs
+a few dozen more flops per frame than the two-op lerp — nanoseconds, beside
+the JNI crossing that delivers the result in the same path.
 
 **Parity note.** iOS builds a `CAKeyframeAnimation` with `kCAAnimationLinear`
 and cannot run this evaluator — CoreAnimation interpolates off-thread, in

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <vector>
 
 namespace smoothclip {
@@ -46,6 +47,14 @@ struct SpringAnimation {
 struct AnimationStart {
   bool hasInteractiveStart;
   Presentation interactiveStart;
+  // Reanimated-rule start stamp, captured on the UI runtime at animateTo time
+  // as `__frameTimestamp || _getAnimationTimestamp()` and converted to
+  // CLOCK_MONOTONIC seconds. NaN means no stamp was captured (older callers,
+  // tests, platforms that ignore it): the integrator then falls back to its
+  // own clock plus the min() frame-clock anchor. iOS constructs this struct
+  // without the member and inherits the NaN default — CoreAnimation anchors
+  // its own animations, so the hint is Android-only by design.
+  double startedAtHintS = std::numeric_limits<double>::quiet_NaN();
 };
 
 struct CancelResult {
