@@ -3,6 +3,7 @@
 #import "SmoothClipGeometry.h"
 #import "SmoothClipViewRegistry.h"
 
+#include "SmoothClipAnimationCurve.h"
 #include "SmoothClipVelocityTracker.h"
 
 #import <QuartzCore/QuartzCore.h>
@@ -89,11 +90,6 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   smoothclip::TimingAnimation _timingAnimation;
   smoothclip::SpringAnimation _springAnimation;
   SmoothClipAnimationDelegate *_animationDelegate;
-  BOOL _animationPaused;
-  CGRect _pausedRect;
-  CGFloat _pausedRadius;
-  CGPoint _pausedContentTranslation;
-  CFTimeInterval _pausedRemaining;
 
   // 'inherit' velocity samples (normalized geometry, per view); recording/
   // coalescing/projection live in the shared cpp/SmoothClipVelocityTracker.h
@@ -150,7 +146,6 @@ static std::array<double, 7> SmoothClipVelocityChannels(
     _activeAnimationId = 0;
     _activeAnimationKind = 0;
     _pendingAnimationInstall = NO;
-    _animationPaused = NO;
     smoothclip::clearVelocitySamples(_velocitySamples);
     [[NSNotificationCenter defaultCenter]
         addObserver:self
@@ -175,8 +170,8 @@ static std::array<double, 7> SmoothClipVelocityChannels(
 
 - (void)didMoveToWindow {
   [super didMoveToWindow];
-  if (_driverId != 0 && [self smoothClipCanDisplay]) {
-    smoothclip::viewBecameDisplayable(_driverId, self);
+  if (_driverId != 0) {
+    smoothclip::viewDisplayabilityChanged(_driverId, self);
   }
 }
 
@@ -332,11 +327,17 @@ static std::array<double, 7> SmoothClipVelocityChannels(
 }
 
 - (void)smoothClipApplyPresentation:(smoothclip::Presentation)presentation {
-  _animationPaused = NO;
+  [self smoothClipApplyPresentation:presentation recordVelocitySample:YES];
+}
+
+- (void)smoothClipApplyPresentation:(smoothclip::Presentation)presentation
+               recordVelocitySample:(BOOL)recordVelocitySample {
   [self stopLayerAnimationWithoutCallback];
   [self storeRequestedPresentation:presentation];
   [self applyRequestedClip];
-  if (_hasLayout) {
+  // Skipped for writes that are not interactive motion (a latched
+  // cancel-to-target): they must not enter the 'inherit' history.
+  if (recordVelocitySample && _hasLayout) {
     [self recordInteractiveRect:_normalizedClip
                          radius:_normalizedRadius
              contentTranslation:_normalizedContentTranslation];
@@ -366,18 +367,29 @@ static std::array<double, 7> SmoothClipVelocityChannels(
 - (BOOL)smoothClipIsJoinable {
   // A view without layout reports zero geometry from
   // smoothClipCurrentPresentation and must not be used as a join reference.
-  return _hasLayout;
+  return _hasLayout && self.bounds.size.width > 0 &&
+      self.bounds.size.height > 0;
 }
 
 - (BOOL)smoothClipCanDisplay {
   // A CA animation committed while this view's layer tree is detached from
   // the render tree does not survive the later attach commit; installs and
   // latch starts must wait until a frame can actually be produced.
-  return _hasLayout && self.window != nil;
+  return [self smoothClipIsJoinable] && self.window != nil &&
+      smoothclip::applicationIsActive();
 }
 
 - (BOOL)smoothClipHasPendingInstall {
   return _pendingAnimationInstall;
+}
+
+- (double)smoothClipSpringContinuationVelocity {
+  if (_activeAnimationId == 0 || _activeAnimationKind != 2 ||
+      _pendingAnimationInstall) {
+    return 0;
+  }
+  const double elapsed = MAX(0, CACurrentMediaTime() - _animationStartedAt);
+  return smoothclip::springContinuationVelocity(_springAnimation, elapsed);
 }
 
 - (smoothclip::Presentation)smoothClipFreezePresentation {
@@ -391,7 +403,6 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   const CGPoint visibleContentTranslation = CGPointMake(
       visible.contentTranslateX,
       visible.contentTranslateY);
-  _animationPaused = NO;
   [self stopLayerAnimationWithoutCallback];
   _requestedClip = visibleRect;
   _requestedRadius = visible.clip.radius;
@@ -399,9 +410,6 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   [self writeLayerRect:visibleRect radius:visible.clip.radius];
   [self writeContentTranslation:visibleContentTranslation];
   [self syncVisibilityForRect:visibleRect];
-  [self recordInteractiveRect:visibleRect
-                       radius:visible.clip.radius
-           contentTranslation:visibleContentTranslation];
   return visible;
 }
 
@@ -432,7 +440,6 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   _ignoreAnimationCallback = NO;
   _activeAnimationId = 0;
   _activeAnimationKind = 0;
-  _animationPaused = NO;
   _animationDelegate = nil;
 }
 
@@ -623,13 +630,13 @@ static std::array<double, 7> SmoothClipVelocityChannels(
                                  forKey:@"smoothClip.content"];
 }
 
-- (void)startAnimationToRequestedGeometryWithDuration:(CFTimeInterval)duration {
+- (BOOL)startAnimationToRequestedGeometryWithDuration:(CFTimeInterval)duration {
   if (![self smoothClipCanDisplay]) {
     _pendingAnimationInstall = YES;
-    return;
+    return NO;
   }
   SmoothNormalizedClipGeometry target;
-  if (![self normalizedRequestedGeometry:&target]) return;
+  if (![self normalizedRequestedGeometry:&target]) return NO;
   const smoothclip::Presentation current = [self smoothClipCurrentPresentation];
   [self installAnimationFromRect:CGRectMake(
                                      current.clip.x,
@@ -644,20 +651,21 @@ static std::array<double, 7> SmoothClipVelocityChannels(
                         toRadius:target.radius
             toContentTranslation:_requestedContentTranslation
                         duration:duration];
+  return YES;
 }
 
-- (void)smoothClipAnimateTiming:(smoothclip::Presentation)presentation
+- (BOOL)smoothClipAnimateTiming:(smoothclip::Presentation)presentation
                        animation:(smoothclip::TimingAnimation)animation
                      animationId:(int32_t)animationId {
   [self storeRequestedPresentation:presentation];
   _timingAnimation = animation;
   _activeAnimationKind = 1;
   _activeAnimationId = animationId;
-  [self startAnimationToRequestedGeometryWithDuration:
-            MAX(0, animation.durationMs) / 1000.0];
+  return [self startAnimationToRequestedGeometryWithDuration:
+                   MAX(0, animation.durationMs) / 1000.0];
 }
 
-- (void)smoothClipAnimateSpring:(smoothclip::Presentation)presentation
+- (BOOL)smoothClipAnimateSpring:(smoothclip::Presentation)presentation
                        animation:(smoothclip::SpringAnimation)animation
                      animationId:(int32_t)animationId {
   [self storeRequestedPresentation:presentation];
@@ -675,7 +683,7 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   }
   _activeAnimationKind = 2;
   _activeAnimationId = animationId;
-  [self startAnimationToRequestedGeometryWithDuration:0];
+  return [self startAnimationToRequestedGeometryWithDuration:0];
 }
 
 - (CAKeyframeAnimation *)keyframeAnimationForKeyPath:(NSString *)keyPath
@@ -689,17 +697,17 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   return animation;
 }
 
-- (void)smoothClipAnimateKeyframes:(smoothclip::Presentation)presentation
+- (BOOL)smoothClipAnimateKeyframes:(smoothclip::Presentation)presentation
                           keyframes:(const std::vector<smoothclip::Keyframe> &)keyframes
                           durationMs:(double)durationMs
                          animationId:(int32_t)animationId {
-  if (keyframes.size() < 2) return;
+  if (keyframes.size() < 2) return NO;
   [self storeRequestedPresentation:presentation];
   _activeAnimationKind = 3;
   _activeAnimationId = animationId;
   if (![self smoothClipCanDisplay]) {
     _pendingAnimationInstall = YES;
-    return;
+    return NO;
   }
   [self stopLayerAnimationWithoutCallback];
   _activeAnimationKind = 3;
@@ -726,7 +734,7 @@ static std::array<double, 7> SmoothClipVelocityChannels(
             frame.presentation.clip.height,
             frame.presentation.clip.radius,
             hostSize,
-            &normalized)) return;
+            &normalized)) return NO;
     [times addObject:@(frame.offset)];
     [boundsValues addObject:[NSValue valueWithCGRect:normalized.rect]];
     [positionValues addObject:[NSValue valueWithCGPoint:CGPointMake(
@@ -737,7 +745,7 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   }
 
   SmoothNormalizedClipGeometry target;
-  if (![self normalizedRequestedGeometry:&target]) return;
+  if (![self normalizedRequestedGeometry:&target]) return NO;
   [self writeLayerRect:target.rect radius:target.radius];
   [self writeContentTranslation:_requestedContentTranslation];
   [self setClipContainerHidden:NO];
@@ -776,6 +784,7 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   [_clipContainer.layer addAnimation:group forKey:@"smoothClip.geometry"];
   [_contentContainer.layer addAnimation:contentGroup
                                  forKey:@"smoothClip.content"];
+  return YES;
 }
 
 - (void)smoothClipCancelAnimationUsingTarget:(BOOL)useTarget {
@@ -790,7 +799,6 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   const CGPoint visibleContentTranslation = CGPointMake(
       visible.contentTranslateX,
       visible.contentTranslateY);
-  _animationPaused = NO;
   [self stopLayerAnimationWithoutCallback];
   if (useTarget) {
     [self applyRequestedClip];
@@ -801,55 +809,15 @@ static std::array<double, 7> SmoothClipVelocityChannels(
     [self writeLayerRect:visibleRect radius:visible.clip.radius];
     [self writeContentTranslation:visibleContentTranslation];
     [self syncVisibilityForRect:visibleRect];
-    [self recordInteractiveRect:visibleRect
-                         radius:visible.clip.radius
-             contentTranslation:visibleContentTranslation];
   }
 }
 
 - (void)applicationWillResignActive {
-  if (_activeAnimationId == 0 || _animationPaused) return;
-  const smoothclip::Presentation visible =
-      [self smoothClipCurrentPresentation];
-  _pausedRect = CGRectMake(
-      visible.clip.x,
-      visible.clip.y,
-      visible.clip.width,
-      visible.clip.height);
-  _pausedRadius = visible.clip.radius;
-  _pausedContentTranslation = CGPointMake(
-      visible.contentTranslateX,
-      visible.contentTranslateY);
-  _pausedRemaining = MAX(
-      0, _animationDuration - (CACurrentMediaTime() - _animationStartedAt));
-  const int32_t animationId = _activeAnimationId;
-  const NSInteger animationKind = _activeAnimationKind;
-  [self stopLayerAnimationWithoutCallback];
-  _activeAnimationId = animationId;
-  _activeAnimationKind = animationKind;
-  [self writeLayerRect:_pausedRect radius:_pausedRadius];
-  [self writeContentTranslation:_pausedContentTranslation];
-  _animationPaused = YES;
+  smoothclip::applicationWillResignActive();
 }
 
 - (void)applicationDidBecomeActive {
-  if (!_animationPaused || _activeAnimationId == 0) return;
-  _animationPaused = NO;
-  SmoothNormalizedClipGeometry target;
-  if ([self normalizedRequestedGeometry:&target]) {
-    if (_activeAnimationKind == 3) {
-      _activeAnimationKind = 1;
-      _timingAnimation = {
-          _pausedRemaining * 1000.0, 0, 0, 1, 1, 2};
-    }
-    [self installAnimationFromRect:_pausedRect
-                        fromRadius:_pausedRadius
-            fromContentTranslation:_pausedContentTranslation
-                            toRect:target.rect
-                          toRadius:target.radius
-              toContentTranslation:_requestedContentTranslation
-                          duration:_pausedRemaining];
-  }
+  smoothclip::applicationDidBecomeActive();
 }
 
 - (void)smoothClipAnimationDidStopWithDriverId:(uint64_t)driverId
@@ -858,7 +826,6 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   if (_ignoreAnimationCallback || animationId != _activeAnimationId) return;
   _activeAnimationId = 0;
   _activeAnimationKind = 0;
-  _animationPaused = NO;
   _animationDelegate = nil;
   [self syncVisibilityForRect:_normalizedClip];
   smoothclip::viewAnimationDidStop(
@@ -908,31 +875,10 @@ static std::array<double, 7> SmoothClipVelocityChannels(
 
 - (void)updateLayoutMetrics:(const LayoutMetrics &)layoutMetrics
              oldLayoutMetrics:(const LayoutMetrics &)oldLayoutMetrics {
-  if (!_hasLayout && _pendingAnimationInstall && _driverId != 0) {
-    // A native animation install arrived before the first layout. Join it now
-    // through the registry so it starts from live presentation geometry with
-    // the true remaining duration instead of jumping to the target.
-    [super updateLayoutMetrics:layoutMetrics oldLayoutMetrics:oldLayoutMetrics];
-    _hasLayout = YES;
-    [self layoutContentContainer];
-    if (self.window == nil) {
-      // Still detached (transparentModal subtree before presentation): an
-      // install here would not survive the attach commit. Keep the install
-      // pending; didMoveToWindow completes it.
-      return;
-    }
-    _pendingAnimationInstall = NO;
-    if (!smoothclip::joinActiveAnimation(_driverId, self)) {
-      // The animation finished or was cancelled while awaiting layout.
-      _activeAnimationId = 0;
-      _activeAnimationKind = 0;
-      [self applyRequestedClip];
-    }
-    return;
-  }
   CGFloat visibleRadius = 0;
   const BOOL wasAnimating = _activeAnimationId != 0;
-  const smoothclip::Presentation visible = wasAnimating
+  const BOOL wasPending = _pendingAnimationInstall;
+  const smoothclip::Presentation visible = wasAnimating && !wasPending
       ? [self smoothClipCurrentPresentation]
       : smoothclip::Presentation{{0, 0, 0, 0, 0}, 0, 0};
   const CGRect visibleRect = CGRectMake(
@@ -944,43 +890,49 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   const CGPoint visibleContentTranslation = CGPointMake(
       visible.contentTranslateX,
       visible.contentTranslateY);
-  const CFTimeInterval remaining = wasAnimating
+  CFTimeInterval remaining = wasAnimating
       ? MAX(0, _animationDuration -
                    (CACurrentMediaTime() - _animationStartedAt))
+      : 0;
+  const double springContinuationVelocity =
+      wasAnimating && !wasPending && _activeAnimationKind == 2
+      ? [self smoothClipSpringContinuationVelocity]
       : 0;
 
   [super updateLayoutMetrics:layoutMetrics oldLayoutMetrics:oldLayoutMetrics];
   _hasLayout = YES;
   [self layoutContentContainer];
-  if (wasAnimating && _animationPaused) {
-    SmoothNormalizedClipGeometry paused;
-    if (SmoothClipNormalizeGeometry(
-            CGRectGetMinX(_pausedRect),
-            CGRectGetMinY(_pausedRect),
-            CGRectGetWidth(_pausedRect),
-            CGRectGetHeight(_pausedRect),
-            _pausedRadius,
-            self.bounds.size,
-            &paused)) {
-      _pausedRect = paused.rect;
-      _pausedRadius = paused.radius;
-      [self writeLayerRect:paused.rect radius:paused.radius];
-    }
-  } else if (wasAnimating) {
-    if (![self smoothClipCanDisplay]) {
-      // Relayout while detached, with an animation dispatched to this view
-      // (a transparentModal subtree resized before presentation): an install
-      // from this commit would not survive the attach commit. Keep the
-      // install deferred; didMoveToWindow completes it via the registry join.
-      _pendingAnimationInstall = YES;
-      return;
-    }
+  if (_driverId != 0) {
+    // Both edges matter: zero size/detach/background suspend an installed
+    // participant; the first positive visible layout resumes the held latch.
+    smoothclip::viewDisplayabilityChanged(_driverId, self);
+  }
+  if (wasPending) {
+    // The registry either kept the install deferred or installed the rebased
+    // latch. Relayout must not independently restart a background-held id.
+    if (_activeAnimationId == 0) [self applyRequestedClip];
+    return;
+  }
+  if (wasAnimating) {
+    // A negative transition may have frozen this host and re-latched the
+    // registry above. Its non-recording freeze is already the correct model
+    // state for the new lifecycle; do not resurrect a local timer.
+    if (_activeAnimationId == 0 || ![self smoothClipCanDisplay]) return;
     const int32_t animationId = _activeAnimationId;
     const NSInteger animationKind = _activeAnimationKind;
     [self stopLayerAnimationWithoutCallback];
     _activeAnimationId = animationId;
     _activeAnimationKind = animationKind;
-    if (_activeAnimationKind == 3) {
+    if (_activeAnimationKind == 1 && _animationDuration > 0) {
+      const double progress = smoothclip::clamp01(
+          1 - remaining / _animationDuration);
+      _timingAnimation =
+          smoothclip::timingRemainder(_timingAnimation, progress).animation;
+      remaining = _timingAnimation.durationMs / 1000.0;
+    } else if (_activeAnimationKind == 2) {
+      _springAnimation.initialVelocity = springContinuationVelocity;
+      _springAnimation.inheritVelocity = false;
+    } else if (_activeAnimationKind == 3) {
       _activeAnimationKind = 1;
       _timingAnimation = {remaining * 1000.0, 0, 0, 1, 1, 2};
     }
@@ -1004,6 +956,12 @@ static std::array<double, 7> SmoothClipVelocityChannels(
                             duration:remaining];
     }
   } else {
+    if (_driverId != 0 && smoothclip::hasActiveAnimation(_driverId)) {
+      // Registry-level lifecycle pause owns the frozen model. A layout pass
+      // while its latch is held must not apply the requested target or start a
+      // per-view timer; foreground/reattach will normalize and resume it once.
+      return;
+    }
     [self applyRequestedClip];
   }
 }
@@ -1071,7 +1029,6 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   }
   [self stopLayerAnimationWithoutCallback];
   _pendingAnimationInstall = NO;
-  _animationPaused = NO;
   smoothclip::clearVelocitySamples(_velocitySamples);
   [super prepareForRecycle];
   _requestedClip = CGRectZero;

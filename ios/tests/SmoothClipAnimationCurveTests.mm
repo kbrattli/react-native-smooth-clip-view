@@ -157,6 +157,164 @@ std::vector<Keyframe> easeOutCubicSamples(size_t count, double travel) {
       smoothclip::timingFraction(2.0, 1.0, 2.0), 0.5, 1e-12);
 }
 
+#pragma mark - Timing remainder
+
+- (void)testTimingRemainderReproducesTheOriginalCurveAfterTheCut {
+  const smoothclip::TimingAnimation original{1000, 0.42, 0, 0.58, 1, 2};
+  const double cutoff = 0.4;
+  const smoothclip::TimingRemainder remainder =
+      smoothclip::timingRemainder(original, cutoff);
+  XCTAssertTrue(remainder.representable);
+  XCTAssertEqualWithAccuracy(remainder.animation.durationMs, 600, 1e-9);
+
+  for (double local = 0; local <= 1; local += 0.05) {
+    const double originalValue = smoothclip::cubicBezier(
+        original.controlPoint1X,
+        original.controlPoint1Y,
+        original.controlPoint2X,
+        original.controlPoint2Y,
+        cutoff + (1 - cutoff) * local);
+    const double residualValue = smoothclip::cubicBezier(
+        remainder.animation.controlPoint1X,
+        remainder.animation.controlPoint1Y,
+        remainder.animation.controlPoint2X,
+        remainder.animation.controlPoint2Y,
+        local);
+    const double composed = remainder.easedProgress +
+        (1 - remainder.easedProgress) * residualValue;
+    XCTAssertEqualWithAccuracy(composed, originalValue, 2e-4);
+  }
+}
+
+- (void)testTimingRemainderPreservesVelocityAtTheSeam {
+  const smoothclip::TimingAnimation original{1000, 0.42, 0, 0.58, 1, 2};
+  const double cutoff = 0.4;
+  const smoothclip::TimingRemainder remainder =
+      smoothclip::timingRemainder(original, cutoff);
+  const double t =
+      smoothclip::cubicBezierParameterForX(0.42, 0.58, cutoff, 30);
+  const double inverse = 1 - t;
+  const double dx = 3 * inverse * inverse * 0.42 +
+      6 * inverse * t * (0.58 - 0.42) + 3 * t * t * (1 - 0.58);
+  const double dy = 6 * inverse * t + 3 * t * t * (1 - 1);
+  const double before = dy / dx / original.durationMs;
+  const double residualSlope =
+      remainder.animation.controlPoint1Y /
+      remainder.animation.controlPoint1X;
+  const double after = (1 - remainder.easedProgress) * residualSlope /
+      remainder.animation.durationMs;
+  XCTAssertEqualWithAccuracy(before, after, 1e-9);
+  // Restarting the original ease-in-out controls would have zero launch
+  // slope, which is the visible cusp this test excludes.
+  XCTAssertGreaterThan(after, 1e-4);
+}
+
+- (void)testRepeatedTimingTrimMatchesOneDirectTrim {
+  const smoothclip::TimingAnimation original{1000, 0.42, 0, 0.58, 1, 2};
+  const smoothclip::TimingRemainder first =
+      smoothclip::timingRemainder(original, 0.25);
+  const smoothclip::TimingRemainder repeated =
+      smoothclip::timingRemainder(first.animation, 1.0 / 3.0);
+  const smoothclip::TimingRemainder direct =
+      smoothclip::timingRemainder(original, 0.5);
+  XCTAssertEqualWithAccuracy(
+      repeated.animation.durationMs, direct.animation.durationMs, 1e-9);
+  XCTAssertEqualWithAccuracy(
+      repeated.animation.controlPoint1X,
+      direct.animation.controlPoint1X,
+      2e-4);
+  XCTAssertEqualWithAccuracy(
+      repeated.animation.controlPoint1Y,
+      direct.animation.controlPoint1Y,
+      2e-4);
+  XCTAssertEqualWithAccuracy(
+      repeated.animation.controlPoint2X,
+      direct.animation.controlPoint2X,
+      2e-4);
+  XCTAssertEqualWithAccuracy(
+      repeated.animation.controlPoint2Y,
+      direct.animation.controlPoint2Y,
+      2e-4);
+}
+
+- (void)testTimingContinuationUsesTheLastRenderedTimestamp {
+  const smoothclip::TimingAnimation timing{1000, 0.42, 0, 0.58, 1, 2};
+  const Presentation start = presentationWithX(0);
+  const Presentation target = presentationWithX(100);
+  const double startedAt = 10.0;
+  const double lastRenderedAt = 10.25;
+  const double laterLifecycleCallback = 10.9;
+
+  const smoothclip::TimingContinuation continuation =
+      smoothclip::timingContinuationAtFrame(
+          timing,
+          start,
+          target,
+          lastRenderedAt,
+          startedAt,
+          1.0);
+  XCTAssertEqualWithAccuracy(continuation.animation.durationMs, 750, 1e-9);
+  XCTAssertEqualWithAccuracy(
+      continuation.start.clip.x,
+      100 * smoothclip::timingRemainder(timing, 0.25).easedProgress,
+      1e-9);
+  XCTAssertNotEqualWithAccuracy(
+      continuation.start.clip.x,
+      100 * smoothclip::cubicBezier(
+          0.42, 0, 0.58, 1, laterLifecycleCallback - startedAt),
+      1.0);
+}
+
+- (void)testRepeatedTimingContinuationPreservesTheSameFrozenPhase {
+  const smoothclip::TimingAnimation timing{1000, 0.42, 0, 0.58, 1, 2};
+  const Presentation start = presentationWithX(0);
+  const Presentation target = presentationWithX(100);
+  const smoothclip::TimingContinuation first =
+      smoothclip::timingContinuation(timing, start, target, 0.25);
+  const smoothclip::TimingContinuation repeated =
+      smoothclip::timingContinuation(
+          first.animation, first.start, target, 0.5);
+  XCTAssertEqualWithAccuracy(repeated.animation.durationMs, 375, 1e-9);
+  const smoothclip::TimingContinuation direct =
+      smoothclip::timingContinuation(timing, start, target, 0.625);
+  XCTAssertEqualWithAccuracy(repeated.start.clip.x, direct.start.clip.x, 0.01);
+}
+
+#pragma mark - Spring continuation
+
+- (void)testSpringContinuationPreservesPhysicalStateInEveryDampingRegime {
+  const double dampings[] = {10, 20, 40}; // under, critical, over for k=100,m=1
+  for (double damping : dampings) {
+    const smoothclip::SpringAnimation original{
+        1, 100, damping, 1.5, false, 2};
+    const double cutoff = 0.08;
+    const smoothclip::NormalizedSpringState state =
+        smoothclip::normalizedSpringState(original, cutoff);
+    const double continuation =
+        smoothclip::springContinuationVelocity(original, cutoff);
+    XCTAssertEqualWithAccuracy(
+        state.remaining * continuation, -state.velocity, 1e-10);
+
+    smoothclip::SpringAnimation resumed = original;
+    resumed.initialVelocity = continuation;
+    const double local = 0.035;
+    const smoothclip::NormalizedSpringState resumedState =
+        smoothclip::normalizedSpringState(resumed, local);
+    const smoothclip::NormalizedSpringState uninterrupted =
+        smoothclip::normalizedSpringState(original, cutoff + local);
+    XCTAssertEqualWithAccuracy(
+        state.remaining * resumedState.remaining,
+        uninterrupted.remaining,
+        1e-10);
+  }
+}
+
+- (void)testSpringContinuationAtLaunchEqualsTheRequestedVelocity {
+  const smoothclip::SpringAnimation spring{1, 180, 18, 2.25, false, 2};
+  XCTAssertEqualWithAccuracy(
+      smoothclip::springContinuationVelocity(spring, 0), 2.25, 1e-12);
+}
+
 #pragma mark - Keyframe curve
 
 - (void)testCurvePassesThroughEveryKeyframeExactly {
@@ -170,7 +328,7 @@ std::vector<Keyframe> easeOutCubicSamples(size_t count, double travel) {
   }
 }
 
-- (void)testTwoKeyframesStayExactlyLinear {
+- (void)testTwoKeyframesStayLinearWithinFloatingPointTolerance {
   // The degenerate case must be bit-for-bit what the old lerp produced, so a
   // consumer passing a straight segment sees no behavior change at all.
   KeyframeCurve curve;
@@ -320,6 +478,83 @@ std::vector<Keyframe> easeOutCubicSamples(size_t count, double travel) {
     XCTAssertFalse(std::isnan(x));
     XCTAssertGreaterThanOrEqual(x, 3.0);
     XCTAssertLessThanOrEqual(x, 20.0);
+  }
+}
+
+- (void)testKeyframeContinuationKeepsTheRenderedStartAndUniqueOffsets {
+  const Presentation target = presentationWithX(100);
+  const std::vector<Keyframe> frames{
+      {0.0, presentationWithX(0)},
+      {0.25, presentationWithX(20)},
+      {0.5, presentationWithX(60)},
+      {1.0, target}};
+  const smoothclip::KeyframeContinuation continuation =
+      smoothclip::keyframeContinuation(
+          frames, presentationWithX(23), target, 1000, 0.25);
+  XCTAssertEqualWithAccuracy(continuation.start.clip.x, 23, 1e-12);
+  XCTAssertEqualWithAccuracy(continuation.durationMs, 750, 1e-12);
+  XCTAssertEqual(continuation.frames.size(), 3u);
+  XCTAssertEqualWithAccuracy(continuation.frames[0].offset, 0, 1e-12);
+  XCTAssertEqualWithAccuracy(
+      continuation.frames[1].offset, 1.0 / 3.0, 1e-12);
+  XCTAssertEqualWithAccuracy(continuation.frames[2].offset, 1, 1e-12);
+  for (size_t index = 1; index < continuation.frames.size(); index += 1) {
+    XCTAssertGreaterThan(
+        continuation.frames[index].offset,
+        continuation.frames[index - 1].offset);
+  }
+}
+
+- (void)testKeyframeContinuationUsesTheLastRenderedTimestamp {
+  const Presentation target = presentationWithX(100);
+  const std::vector<Keyframe> frames{
+      {0.0, presentationWithX(0)},
+      {0.5, presentationWithX(50)},
+      {1.0, target}};
+  const double startedAt = 10.0;
+  const double lastRenderedAt = 10.25;
+  const double laterLifecycleCallback = 10.9;
+
+  const smoothclip::KeyframeContinuation continuation =
+      smoothclip::keyframeContinuationAtFrame(
+          frames,
+          presentationWithX(25),
+          target,
+          lastRenderedAt,
+          startedAt,
+          1.0);
+  XCTAssertEqualWithAccuracy(continuation.durationMs, 750, 1e-9);
+  XCTAssertEqualWithAccuracy(continuation.start.clip.x, 25, 1e-12);
+  XCTAssertNotEqualWithAccuracy(
+      continuation.durationMs,
+      1000 * (1 - (laterLifecycleCallback - startedAt)),
+      1.0);
+}
+
+- (void)testRepeatedKeyframeContinuationAvoidsZeroLengthSegments {
+  const Presentation target = presentationWithX(100);
+  const smoothclip::KeyframeContinuation first =
+      smoothclip::keyframeContinuation(
+          {{0, presentationWithX(0)},
+           {0.5, presentationWithX(50)},
+           {1, target}},
+          presentationWithX(25),
+          target,
+          1000,
+          0.25);
+  const smoothclip::KeyframeContinuation second =
+      smoothclip::keyframeContinuation(
+          first.frames,
+          presentationWithX(50),
+          target,
+          first.durationMs,
+          1.0 / 3.0);
+  XCTAssertEqualWithAccuracy(second.durationMs, 500, 1e-9);
+  XCTAssertEqualWithAccuracy(second.frames.front().offset, 0, 1e-12);
+  XCTAssertEqualWithAccuracy(second.frames.back().offset, 1, 1e-12);
+  for (size_t index = 1; index < second.frames.size(); index += 1) {
+    XCTAssertGreaterThan(
+        second.frames[index].offset, second.frames[index - 1].offset);
   }
 }
 

@@ -159,6 +159,12 @@ Two details are load-bearing:
   `startedAtS` before the first advance can run — the field must always hold a
   valid timestamp.
 
+Lifecycle re-latching uses `lastFrameS`, updated for timing, keyframes, and
+springs on every delivered frame. The frozen presentation, timing cutoff,
+keyframe pruning, and residual duration therefore all describe that same
+rendered instant; a later detach/unregister wall callback cannot burn an unseen
+fraction. The older independent wall-start stamp was removed.
+
 ## The second defect: two frame sources on one thread
 
 The anchor fixed the handoff; a subtler pacing defect remained for the whole
@@ -215,8 +221,11 @@ run-ahead guard that propped it up, because both were shaped by
 - **The run-ahead guard went with it.** Its condition reduces to `L₁ − Lₖ >
   17 ms`; with `L` now equal to main-thread load, "heavy first frame, lighter
   after" — the exact profile of a close — could trip it and snap the clip
-  *backwards* mid-flight. `min()` cannot lead wall time in the first place, and
-  `Choreographer` guarantees that three separate ways: a vsync stamp arriving
+  *backwards* mid-flight. Raw `min()` does have the same-doFrame input-phase
+  exception described above; worklet-issued starts now bypass it with the
+  captured Reanimated stamp. On the remaining fallback/latch path there is no
+  persistent run-ahead to correct, and `Choreographer` guarantees frame-stamp
+  sanity three separate ways: a vsync stamp arriving
   ahead of `System.nanoTime()` is clamped to it on receipt, `doFrame` bails out
   and re-schedules when `frameTimeNanos < mLastFrameTimeNanos`, and the
   `jitterNanos` correction above only ever moves a stamp *forward*. Frame stamps
@@ -276,6 +285,14 @@ O(keyframes) every frame is now O(1) amortized. The Hermite blend itself costs
 a few dozen more flops per frame than the two-op lerp — nanoseconds, beside
 the JNI crossing that delivers the result in the same path.
 
+The monotone guarantee is not a promise to preserve an intentionally abrupt
+keyframe polyline. Fritsch–Carlson limits neighboring tangents together; with
+highly uneven offsets and a sudden change in value density, it can noticeably
+round a “crawl, then snap” path while still remaining C¹ and inside every
+segment's endpoint range. Author such discontinuous-feeling motion with denser
+frames around the transition (or a separate animation); the reconstruction
+claim is intended for samples of a smooth underlying path.
+
 **Parity note.** iOS builds a `CAKeyframeAnimation` with `kCAAnimationLinear`
 and cannot run this evaluator — CoreAnimation interpolates off-thread, in
 another process. The platforms therefore differ mid-segment by exactly the
@@ -294,8 +311,8 @@ animation curve shipped gated on nothing but "it compiles".
 `ios/tests/SmoothClipAnimationCurveTests.mm` now pins all three: that the anchor
 keeps a between-frames wall stamp and adopts a same-frame stamp, that it can
 never lead the frame clock (the reason the run-ahead guard could go), that the
-curve passes through every keyframe, never overshoots, stays exactly linear for
-two keyframes, tracks the sampled path more closely than straight segments do,
+curve passes through every keyframe, never overshoots, stays linear within the
+documented one-ulp evaluation difference for two keyframes, tracks the sampled path more closely than straight segments do,
 and is C¹ across an interior keyframe. Same arrangement as the shared velocity
 tracker: iOS hosts the tests, Android executes the code.
 
@@ -383,6 +400,24 @@ platform's shape, not a design shortcut.
      setters (`BaseViewManager.setTransformProperty`). Hit testing adds the
      residual back to the incoming point, so it still tests the geometry the
      driver delivered.
+
+   - **Emptiness.** `Outline.setRoundRect(Int...)` collapses a degenerate
+     emitted rect to an empty outline. The view now derives `clipIsEmpty` from
+     those same rounded integer edges, not from the pre-rounding floats, and
+     uses it consistently for visibility, accessibility and hit testing. A
+     positive extent below 0.5 px is therefore empty; 0.5 px rounds to a
+     visible 1 px outline. Because emptiness is a pure function of the emitted
+     edges, it cannot flip while the existing outline-dedupe key stays equal,
+     so `invalidateOutline()` cannot miss the transition.
+
+     This is a deliberate sub-pixel divergence from iOS, which masks in floats
+     and calls only a zero-or-negative extent empty (`CGRectIsEmpty`). Both
+     platforms make the semantic state — hidden, out of the accessibility tree,
+     not accepting touches — agree with what they actually render, and that
+     agreement is the invariant worth holding identical; the exact threshold
+     cannot be, because one platform quantizes the outline and the other does
+     not. Consequence for a consumer: a clip animating through `(0, 0.5)` px
+     goes non-interactive one frame earlier on Android.
 
    What remains is the ≤0.5 px static size bias, which does not alternate and so
    does not read as motion.

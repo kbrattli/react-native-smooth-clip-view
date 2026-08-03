@@ -19,17 +19,22 @@
 #include <utility>
 #include <vector>
 
+#include "SmoothClipAnimationId.h"
+#include "SmoothClipAnimationCurve.h"
+
 @interface SmoothClipView (Registry)
 - (void)smoothClipApplyPresentation:(smoothclip::Presentation)presentation;
+- (void)smoothClipApplyPresentation:(smoothclip::Presentation)presentation
+               recordVelocitySample:(BOOL)recordVelocitySample;
 - (smoothclip::Presentation)smoothClipFreezePresentation;
 - (smoothclip::Presentation)smoothClipCurrentPresentation;
-- (void)smoothClipAnimateTiming:(smoothclip::Presentation)presentation
+- (BOOL)smoothClipAnimateTiming:(smoothclip::Presentation)presentation
                        animation:(smoothclip::TimingAnimation)animation
                      animationId:(int32_t)animationId;
-- (void)smoothClipAnimateSpring:(smoothclip::Presentation)presentation
+- (BOOL)smoothClipAnimateSpring:(smoothclip::Presentation)presentation
                        animation:(smoothclip::SpringAnimation)animation
                      animationId:(int32_t)animationId;
-- (void)smoothClipAnimateKeyframes:(smoothclip::Presentation)presentation
+- (BOOL)smoothClipAnimateKeyframes:(smoothclip::Presentation)presentation
                          keyframes:(const std::vector<smoothclip::Keyframe> &)keyframes
                          durationMs:(double)durationMs
                         animationId:(int32_t)animationId;
@@ -37,6 +42,7 @@
 - (BOOL)smoothClipIsJoinable;
 - (BOOL)smoothClipCanDisplay;
 - (BOOL)smoothClipHasPendingInstall;
+- (double)smoothClipSpringContinuationVelocity;
 @end
 
 namespace smoothclip {
@@ -50,6 +56,10 @@ enum class AnimationKind { Timing, Spring, Keyframes };
 struct ActiveAnimation {
   int32_t animationId;
   std::unordered_set<ViewKey> participants;
+  // Hosts that installed this id and temporarily lost displayability. They
+  // may rejoin the same remainder; completion is false if any remain
+  // unresolved when the run ends or unregister.
+  std::unordered_set<ViewKey> suspendedParticipants;
   bool finished = true;
   AnimationKind kind = AnimationKind::Timing;
   // Geometry the transition started from. Used when a view must join the
@@ -60,9 +70,13 @@ struct ActiveAnimation {
   std::vector<Keyframe> keyframes;
   double durationMs = 0;
   CFTimeInterval startedAt = 0;
-  // False while the animation is latched: built before any host view
-  // registered, held un-rendered until the first registerView rebases
-  // startedAt and starts it. startedAt is only meaningful once started.
+  // False while the animation is latched. Two ways in: built before any host
+  // view could display (pre-registration, or a host in a detached subtree), or
+  // re-latched by unregisterView when the last DISPLAYABLE host left
+  // mid-flight. Started by whichever registration/displayability update or
+  // joinActiveAnimation first finds a host that can produce a frame; each
+  // rebases startedAt through startLatchedAnimation. startedAt is only
+  // meaningful once started.
   bool started = false;
 };
 
@@ -72,7 +86,6 @@ struct DriverState {
   Ownership ownership = Ownership::Interactive;
   std::vector<ViewKey> views;
   std::optional<ActiveAnimation> animation;
-  int32_t nextAnimationId = 0;
   // Set by destroyDriver while views are still registered (StrictMode effect
   // replay, hosts mounted in another subtree). The entry is erased when the
   // last view leaves and revived by a take-ownership setPresentation.
@@ -87,6 +100,15 @@ struct CompletionSink {
 std::unordered_map<uint64_t, DriverState> &registry() {
   static std::unordered_map<uint64_t, DriverState> value;
   return value;
+}
+
+bool &applicationActiveState() {
+  // The first SmoothClipView can be created after the app already entered the
+  // background, too late to observe WillResignActive. Seed from UIKit rather
+  // than assuming foreground so that first registration cannot start offscreen.
+  static bool active = UIApplication.sharedApplication.applicationState ==
+      UIApplicationStateActive;
+  return active;
 }
 
 CompletionSink &completionSink() {
@@ -167,15 +189,9 @@ void emitStandaloneCompletion(
 #endif
 }
 
-int32_t allocateAnimationId(DriverState &state) {
-  state.nextAnimationId =
-      state.nextAnimationId == std::numeric_limits<int32_t>::max()
-      ? 1
-      : state.nextAnimationId + 1;
-  return state.nextAnimationId;
-}
-
-Presentation canonicalFrozenPresentation(DriverState &state) {
+Presentation canonicalFrozenPresentation(
+    DriverState &state,
+    SmoothClipView *preferred = nil) {
   // A latched animation never rendered, so state.latest already holds its
   // target; freezing there would jump the clip. Freeze at the start instead.
   Presentation canonical =
@@ -189,7 +205,10 @@ Presentation canonicalFrozenPresentation(DriverState &state) {
     // unlaid-out one reports {0,0,0,0} and would collapse the clip.
     SmoothClipView *candidate = viewForKey(key);
     const Presentation frozen = [candidate smoothClipFreezePresentation];
-    if (!hasCanonical && [candidate smoothClipIsJoinable]) {
+    if (candidate == preferred && [candidate smoothClipIsJoinable]) {
+      canonical = frozen;
+      hasCanonical = true;
+    } else if (!hasCanonical && [candidate smoothClipIsJoinable]) {
       canonical = frozen;
       hasCanonical = true;
     }
@@ -203,18 +222,44 @@ void cancelActive(
     bool useTarget) {
   if (!state.animation.has_value()) return;
   const int32_t animationId = state.animation->animationId;
-  for (const ViewKey key : state.animation->participants) {
+  // Deferred views are deliberately not completion participants, but they do
+  // hold a pending install and requested target. Cancellation must still reach
+  // every registered view so a later attach cannot resurrect the old id.
+  for (const ViewKey key : state.views) {
     [viewForKey(key) smoothClipCancelAnimationUsingTarget:useTarget];
   }
   emitCompletion(driverId, state, animationId, false);
 }
 
-void applyPresentation(DriverState &state, Presentation presentation) {
+void finishIfNoInstalledParticipants(uint64_t driverId, DriverState &state) {
+  if (!state.animation.has_value() || !state.animation->started ||
+      !state.animation->participants.empty()) {
+    return;
+  }
+  const int32_t animationId = state.animation->animationId;
+  const bool finished = state.animation->finished &&
+      state.animation->suspendedParticipants.empty();
+  // A detached/unlaid-out view can have a requested animation without any CA
+  // delegate capable of completing it. Once every installed animation ends,
+  // make those deferred views statically correct and invalidate their pending
+  // ids before releasing the driver-level completion.
+  for (const ViewKey key : state.views) {
+    [viewForKey(key) smoothClipCancelAnimationUsingTarget:YES];
+  }
+  state.ownership = Ownership::Interactive;
+  emitCompletion(driverId, state, animationId, finished);
+}
+
+void applyPresentation(
+    DriverState &state,
+    Presentation presentation,
+    bool recordVelocitySample = true) {
   state.latest = presentation;
   state.hasLatest = true;
   state.ownership = Ownership::Interactive;
   for (const ViewKey key : state.views) {
-    [viewForKey(key) smoothClipApplyPresentation:presentation];
+    [viewForKey(key) smoothClipApplyPresentation:presentation
+                              recordVelocitySample:recordVelocitySample];
   }
 }
 
@@ -258,21 +303,33 @@ void dispatchActiveAnimationJoin(
     DriverState &state,
     SmoothClipView *view,
     ViewKey key,
-    const Presentation &visible) {
+    const Presentation &visible,
+    SmoothClipView *reference = nil) {
   auto &active = *state.animation;
-  active.participants.insert(key);
   const double elapsedMs = (CACurrentMediaTime() - active.startedAt) * 1000.0;
   const double remainingMs = MAX(0, active.durationMs - elapsedMs);
+  BOOL installed = NO;
   if (active.kind == AnimationKind::Timing) {
-    TimingAnimation timing = active.timing;
-    timing.durationMs = remainingMs;
-    [view smoothClipAnimateTiming:state.latest
-                        animation:timing
-                      animationId:active.animationId];
+    const double progress = active.durationMs <= 0
+        ? 1
+        : MIN(1, MAX(0, elapsedMs / active.durationMs));
+    TimingAnimation timing = timingRemainder(active.timing, progress).animation;
+    installed = [view smoothClipAnimateTiming:state.latest
+                                    animation:timing
+                                  animationId:active.animationId];
   } else if (active.kind == AnimationKind::Spring) {
-    [view smoothClipAnimateSpring:state.latest
-                        animation:active.spring
-                      animationId:active.animationId];
+    SpringAnimation spring = active.spring;
+    if (reference != nil) {
+      // A late host must join the spring's CURRENT physical state. Reusing the
+      // original launch velocity (or resolving `inherit` from the joining
+      // host's unrelated samples) creates a different spring at the seam.
+      spring.inheritVelocity = false;
+      spring.initialVelocity =
+          [reference smoothClipSpringContinuationVelocity];
+    }
+    installed = [view smoothClipAnimateSpring:state.latest
+                                    animation:spring
+                                  animationId:active.animationId];
   } else {
     const double progress = active.durationMs <= 0
         ? 1
@@ -285,10 +342,14 @@ void dispatchActiveAnimationJoin(
       remaining.push_back({offset, frame.presentation});
     }
     if (remaining.size() == 1) remaining.push_back({1, state.latest});
-    [view smoothClipAnimateKeyframes:state.latest
-                           keyframes:remaining
-                          durationMs:remainingMs
-                         animationId:active.animationId];
+    installed = [view smoothClipAnimateKeyframes:state.latest
+                                      keyframes:remaining
+                                     durationMs:remainingMs
+                                    animationId:active.animationId];
+  }
+  if (installed) {
+    active.participants.insert(key);
+    active.suspendedParticipants.erase(key);
   }
 }
 
@@ -304,22 +365,107 @@ bool anyDisplayableView(const DriverState &state) {
   return false;
 }
 
+void relatchActiveAnimation(
+    uint64_t driverId,
+    DriverState &state,
+    SmoothClipView *preferred = nil) {
+  if (!state.animation.has_value() || !state.animation->started) return;
+  auto &active = *state.animation;
+  double springVelocity = 0;
+  if (active.kind == AnimationKind::Spring) {
+    SmoothClipView *source = preferred;
+    if (source == nil ||
+        active.participants.count(keyForView(source)) == 0) {
+      source = active.participants.empty()
+          ? nil
+          : viewForKey(*active.participants.begin());
+    }
+    if (source != nil) {
+      springVelocity = [source smoothClipSpringContinuationVelocity];
+    }
+  }
+  const Presentation frozen = canonicalFrozenPresentation(state, preferred);
+  active.suspendedParticipants.insert(
+      active.participants.begin(), active.participants.end());
+  active.participants.clear();
+
+  const double elapsedMs = MAX(
+      0, (CACurrentMediaTime() - active.startedAt) * 1000.0);
+  const double progress = active.durationMs <= 0
+      ? 1
+      : MIN(1, MAX(0, elapsedMs / active.durationMs));
+  if (active.kind == AnimationKind::Timing) {
+    active.timing = timingRemainder(active.timing, progress).animation;
+    active.durationMs = active.timing.durationMs;
+  } else if (active.kind == AnimationKind::Keyframes) {
+    const KeyframeContinuation continuation = keyframeContinuation(
+        active.keyframes,
+        frozen,
+        state.latest,
+        active.durationMs,
+        progress);
+    active.keyframes = continuation.frames;
+    active.durationMs = continuation.durationMs;
+  } else {
+    active.spring.inheritVelocity = false;
+    active.spring.initialVelocity = springVelocity;
+  }
+
+  if (state.destroyed ||
+      (active.kind != AnimationKind::Spring && active.durationMs <= 0)) {
+    state.ownership = Ownership::Interactive;
+    emitCompletion(driverId, state, active.animationId, false);
+    return;
+  }
+  active.start = frozen;
+  active.started = false;
+}
+
 // Starts a latched animation: rebases the clock so no progress was burned
 // while no view could display, then dispatches the join to every registered
 // view. Views that still cannot display defer their install per-view and
-// resume via viewBecameDisplayable.
+// resume via a later positive displayability update.
 void startLatchedAnimation(DriverState &state) {
   state.animation->startedAt = CACurrentMediaTime();
   state.animation->started = true;
+  // Participants describe live CA delegates, not registered views. Anything
+  // left from the frozen run can only produce a stale callback for that run.
+  state.animation->participants.clear();
   const Presentation start = state.animation->start;
   for (const ViewKey key : state.views) {
     SmoothClipView *participant = viewForKey(key);
-    [participant smoothClipApplyPresentation:start];
+    [participant smoothClipApplyPresentation:start recordVelocitySample:NO];
     dispatchActiveAnimationJoin(state, participant, key, start);
   }
 }
 
 } // namespace
+
+bool applicationIsActive() {
+  return applicationActiveState();
+}
+
+void applicationWillResignActive() {
+  NSCAssert(NSThread.isMainThread, @"SmoothClip registry is main-thread only");
+  if (!applicationActiveState()) return;
+  applicationActiveState() = false;
+  for (auto &[driverId, state] : registry()) {
+    relatchActiveAnimation(driverId, state);
+  }
+}
+
+void applicationDidBecomeActive() {
+  NSCAssert(NSThread.isMainThread, @"SmoothClip registry is main-thread only");
+  if (applicationActiveState()) return;
+  applicationActiveState() = true;
+  for (auto &[driverId, state] : registry()) {
+    (void)driverId;
+    if (state.animation.has_value() && !state.animation->started &&
+        anyDisplayableView(state)) {
+      startLatchedAnimation(state);
+    }
+  }
+}
 
 void setCompletionCallback(
     const void *owner,
@@ -356,18 +502,18 @@ void registerView(
   const bool hasLatch = hasAnimation && !state.animation->started;
   // A latch may only start once this view can produce a visible frame; a
   // registration from a detached subtree (transparentModal before its view
-  // controller is presented) keeps the latch held and viewBecameDisplayable
-  // starts it inside the attach commit.
+  // controller is presented) keeps the latch held; the positive
+  // displayability update starts it inside the attach commit.
   const bool startsLatch = hasLatch && [view smoothClipCanDisplay];
   const bool shouldReplay =
       hasAnimation && state.animation->started && !state.views.empty();
   Presentation visible = state.latest;
+  SmoothClipView *reference = nil;
   if (shouldReplay) {
     // A registered peer that never laid out reports zero geometry; joining
     // from it would visibly collapse the clip. Prefer the first laid-out
     // peer and fall back to the animation's start.
-    SmoothClipView *reference = nil;
-    for (const ViewKey candidate : state.views) {
+    for (const ViewKey candidate : state.animation->participants) {
       SmoothClipView *candidateView = viewForKey(candidate);
       if ([candidateView smoothClipIsJoinable]) {
         reference = candidateView;
@@ -387,19 +533,18 @@ void registerView(
       state.views.end()) {
     state.views.push_back(key);
   }
-  [view smoothClipApplyPresentation:visible];
+  [view smoothClipApplyPresentation:visible recordVelocitySample:NO];
   if (startsLatch) {
-    // Rebases the join clock and dispatches to every registered view (the
-    // participant inserts inside the joins also keep unregisterView
-    // orphan-safe for a mount-then-unmount before first layout).
+    // Rebase the join clock and dispatch to every registered view. Only views
+    // that actually install their CA groups become completion participants.
     startLatchedAnimation(state);
     return;
   }
   if (!shouldReplay) return;
-  dispatchActiveAnimationJoin(state, view, key, visible);
+  dispatchActiveAnimationJoin(state, view, key, visible, reference);
 }
 
-void viewBecameDisplayable(uint64_t driverId, SmoothClipView *view) {
+void viewDisplayabilityChanged(uint64_t driverId, SmoothClipView *view) {
   NSCAssert(NSThread.isMainThread, @"SmoothClip registry is main-thread only");
   auto iterator = registry().find(driverId);
   if (iterator == registry().end()) return;
@@ -410,15 +555,25 @@ void viewBecameDisplayable(uint64_t driverId, SmoothClipView *view) {
       state.views.end()) {
     return;
   }
+  if (![view smoothClipCanDisplay]) {
+    if (!state.animation->started) return;
+    if (state.animation->participants.count(key) == 0) return;
+    if (!anyDisplayableView(state)) {
+      relatchActiveAnimation(driverId, state, view);
+      return;
+    }
+    [view smoothClipFreezePresentation];
+    state.animation->participants.erase(key);
+    state.animation->suspendedParticipants.insert(key);
+    return;
+  }
   if (!state.animation->started) {
-    if (![view smoothClipCanDisplay]) return;
     startLatchedAnimation(state);
     return;
   }
-  // A running animation whose install this view deferred while it could not
-  // display: resume through the standard mid-flight join (original clock —
-  // late joiners stay in sync with peers that were already rendering).
-  if ([view smoothClipHasPendingInstall]) {
+  // A deferred or suspended host joins from the registry's rebased remainder.
+  if ([view smoothClipHasPendingInstall] ||
+      state.animation->suspendedParticipants.count(key) > 0) {
     joinActiveAnimation(driverId, view);
   }
 }
@@ -433,33 +588,41 @@ bool joinActiveAnimation(uint64_t driverId, SmoothClipView *view) {
   if (!state.animation.has_value() || state.views.empty()) {
     return false;
   }
-  // Unreachable in the normal flow (a pending install implies the animation
-  // was dispatched, which implies started), but a join must never compute
-  // elapsed time against an un-rebased latch clock.
-  if (!state.animation->started) {
-    return false;
-  }
   const ViewKey key = keyForView(view);
   if (std::find(state.views.begin(), state.views.end(), key) ==
       state.views.end()) {
     return false;
   }
+  // A pending install used to imply the animation was dispatched, which
+  // implied started. Re-latching on displayability broke that: when the last
+  // displayable host leaves, a peer that deferred its install keeps
+  // `_pendingAnimationInstall` while the animation goes back to un-started, and
+  // its first layout lands here. Start the latch — returning false would make
+  // the caller clear `_activeAnimationId` and apply the requested geometry,
+  // snapping this view straight to the target. A *join* must still never
+  // compute elapsed time against an un-rebased latch clock, so this returns
+  // instead of falling through.
+  if (!state.animation->started) {
+    if (![view smoothClipCanDisplay]) return false;
+    startLatchedAnimation(state);
+    return true;
+  }
   // Join from a laid-out peer's live presentation, exactly as a view that had
   // registered at this moment would. When the joining view is the only
   // registered host, its own layer never received geometry (the install was
   // deferred for lack of layout), so fall back to the animation's start.
-  ViewKey canonicalKey = 0;
-  for (const ViewKey candidate : state.views) {
+  SmoothClipView *reference = nil;
+  for (const ViewKey candidate : state.animation->participants) {
     if (candidate != key && [viewForKey(candidate) smoothClipIsJoinable]) {
-      canonicalKey = candidate;
+      reference = viewForKey(candidate);
       break;
     }
   }
-  const Presentation visible = canonicalKey != 0
-      ? [viewForKey(canonicalKey) smoothClipCurrentPresentation]
+  const Presentation visible = reference != nil
+      ? [reference smoothClipCurrentPresentation]
       : state.animation->start;
-  [view smoothClipApplyPresentation:visible];
-  dispatchActiveAnimationJoin(state, view, key, visible);
+  [view smoothClipApplyPresentation:visible recordVelocitySample:NO];
+  dispatchActiveAnimationJoin(state, view, key, visible, reference);
   return true;
 }
 
@@ -470,59 +633,36 @@ void unregisterView(uint64_t driverId, SmoothClipView *view) {
 
   auto &state = iterator->second;
   const ViewKey key = keyForView(view);
-  if (state.animation.has_value() &&
-      state.animation->participants.erase(key) > 0) {
-    state.animation->finished = false;
-    if (state.animation->participants.empty()) {
-      auto &active = *state.animation;
-      const double elapsedMs =
-          (CACurrentMediaTime() - active.startedAt) * 1000.0;
-      const double remainingMs = MAX(0, active.durationMs - elapsedMs);
-      const bool canResume = !state.destroyed &&
-          (active.kind == AnimationKind::Spring || remainingMs > 0);
-      if (!canResume) {
-        // The animation ends here; without releasing ownership a host that
-        // remounts on this driver later would drop every interactive update.
-        state.ownership = Ownership::Interactive;
-        emitCompletion(driverId, state, active.animationId, false);
-      } else {
-        // The last rendering host left mid-flight (remount, screen swap).
-        // Completing here would leave `latest` at the target and statically
-        // snap any re-registering host straight to it. Re-latch instead:
-        // freeze the remaining animation at the departing view's visible
-        // geometry so the next displayable host resumes it with the true
-        // remaining time. Ownership stays Native — the pending animation
-        // still owns rendering intent; destroyDriver cancels a latch that
-        // never finds a host, so the completion cannot hang.
-        const Presentation visible = [view smoothClipIsJoinable]
-            ? [view smoothClipCurrentPresentation]
-            : active.start;
-        if (active.kind == AnimationKind::Timing) {
-          active.durationMs = remainingMs;
-          active.timing.durationMs = remainingMs;
-        } else if (active.kind == AnimationKind::Keyframes) {
-          const double progress = active.durationMs <= 0
-              ? 1
-              : MIN(1, MAX(0, elapsedMs / active.durationMs));
-          std::vector<Keyframe> remaining;
-          remaining.push_back({0, visible});
-          for (const Keyframe &frame : active.keyframes) {
-            if (frame.offset <= progress) continue;
-            const double offset = (frame.offset - progress) / (1 - progress);
-            remaining.push_back({offset, frame.presentation});
-          }
-          if (remaining.size() == 1) remaining.push_back({1, state.latest});
-          active.keyframes = std::move(remaining);
-          active.durationMs = remainingMs;
+  bool installed = false;
+  if (state.animation.has_value()) {
+    installed = state.animation->participants.count(key) > 0 ||
+        state.animation->suspendedParticipants.count(key) > 0;
+    if (state.animation->started &&
+        state.animation->participants.count(key) > 0) {
+      bool otherDisplayable = false;
+      for (const ViewKey candidate : state.views) {
+        if (candidate != key && [viewForKey(candidate) smoothClipCanDisplay]) {
+          otherDisplayable = true;
+          break;
         }
-        active.start = visible;
-        active.started = false;
+      }
+      if (!otherDisplayable) {
+        relatchActiveAnimation(driverId, state, view);
       }
     }
   }
+
   state.views.erase(
       std::remove(state.views.begin(), state.views.end(), key),
       state.views.end());
+  if (state.animation.has_value()) {
+    state.animation->participants.erase(key);
+    state.animation->suspendedParticipants.erase(key);
+    if (installed) state.animation->finished = false;
+    if (state.animation->started && state.animation->participants.empty()) {
+      finishIfNoInstalledParticipants(driverId, state);
+    }
+  }
   if (state.destroyed && state.views.empty()) {
     registry().erase(iterator);
   }
@@ -531,7 +671,8 @@ void unregisterView(uint64_t driverId, SmoothClipView *view) {
 void setPresentation(
     uint64_t driverId,
     Presentation presentation,
-    bool takeOwnership) {
+    bool takeOwnership,
+    bool overridePendingAnimation) {
   // CALayer writes require the main thread (not main-queue drain context).
   if (!NSThread.isMainThread) {
     // Never block an off-main caller: a synchronous hop can deadlock against
@@ -539,7 +680,8 @@ void setPresentation(
     // thread while holding it, and the main thread routinely waits for the
     // same mutex when draining scheduled worklets).
     RCTExecuteOnMainQueue(^{
-      setPresentation(driverId, presentation, takeOwnership);
+      setPresentation(
+          driverId, presentation, takeOwnership, overridePendingAnimation);
     });
     return;
   }
@@ -574,13 +716,10 @@ void setPresentation(
   }
   if (takeOwnership) {
     state.destroyed = false;
-    // A held latch is strictly newer intent than this write: the latch was
-    // created after whatever value the caller read (the hook's seed replays
-    // a SharedValue that an earlier animateTo already advanced to its
-    // target). Cancelling it here would seed the target and turn the pending
-    // animation into a static jump. Callers that want to override a latch
-    // cancel it explicitly first.
-    if (state.animation.has_value() && !state.animation->started) {
+    // Passive seeds and public setters must not displace newer pending intent.
+    // The fused animation.from write is authoritative and opts in explicitly.
+    if (state.animation.has_value() && !state.animation->started &&
+        !overridePendingAnimation) {
 #if defined(SMOOTH_CLIP_ENABLE_SIGNPOSTS) && SMOOTH_CLIP_ENABLE_SIGNPOSTS
       if (signpostsEnabled) {
         os_signpost_interval_end(
@@ -633,18 +772,22 @@ int32_t animateTiming(
     // See setPresentation: blocking off-main risks a deadlock. 0 is the
     // documented rejection sentinel.
     return 0;
-  }  auto iterator = registry().find(driverId);
+  }
+  auto iterator = registry().find(driverId);
   if (iterator == registry().end()) {
-    return 0;
+    if (!start.hasInteractiveStart) return 0;
+    iterator = registry().try_emplace(driverId).first;
+    iterator->second.latest = start.interactiveStart;
+    iterator->second.hasLatest = true;
   }
   auto &state = iterator->second;
   state.destroyed = false;
-  const int32_t animationId = allocateAnimationId(state);
+  const int32_t animationId = allocateAnimationId();
   const Presentation resolvedStart = resolvedAnimationStart(state, start);
   prepareAnimation(driverId, state, start, presentation);
 
   if (shouldReduceMotion(animation.reduceMotion) || animation.durationMs <= 0) {
-    applyPresentation(state, presentation);
+    applyPresentation(state, presentation, false);
     emitCompletion(driverId, state, animationId, true);
     return animationId;
   }
@@ -655,7 +798,6 @@ int32_t animateTiming(
   active.timing = animation;
   active.durationMs = animation.durationMs;
   active.startedAt = CACurrentMediaTime();
-  active.participants.insert(state.views.begin(), state.views.end());
   active.started = anyDisplayableView(state);
   state.animation = std::move(active);
   if (!state.animation->started) {
@@ -675,9 +817,11 @@ int32_t animateTiming(
       static_cast<unsigned long>(state.views.size()));
 #endif
   for (const ViewKey key : state.views) {
-    [viewForKey(key) smoothClipAnimateTiming:presentation
-                                  animation:animation
-                                animationId:animationId];
+    if ([viewForKey(key) smoothClipAnimateTiming:presentation
+                                      animation:animation
+                                    animationId:animationId]) {
+      state.animation->participants.insert(key);
+    }
   }
   return animationId;
 }
@@ -690,16 +834,22 @@ int32_t animateSpring(
   if (!NSThread.isMainThread) {
     // See setPresentation: blocking off-main risks a deadlock.
     return 0;
-  }  auto iterator = registry().find(driverId);
-  if (iterator == registry().end()) return 0;
+  }
+  auto iterator = registry().find(driverId);
+  if (iterator == registry().end()) {
+    if (!start.hasInteractiveStart) return 0;
+    iterator = registry().try_emplace(driverId).first;
+    iterator->second.latest = start.interactiveStart;
+    iterator->second.hasLatest = true;
+  }
   auto &state = iterator->second;
   state.destroyed = false;
-  const int32_t animationId = allocateAnimationId(state);
+  const int32_t animationId = allocateAnimationId();
   const Presentation resolvedStart = resolvedAnimationStart(state, start);
   prepareAnimation(driverId, state, start, presentation);
 
   if (shouldReduceMotion(animation.reduceMotion)) {
-    applyPresentation(state, presentation);
+    applyPresentation(state, presentation, false);
     emitCompletion(driverId, state, animationId, true);
     return animationId;
   }
@@ -709,7 +859,6 @@ int32_t animateSpring(
   active.start = resolvedStart;
   active.spring = animation;
   active.startedAt = CACurrentMediaTime();
-  active.participants.insert(state.views.begin(), state.views.end());
   active.started = anyDisplayableView(state);
   state.animation = std::move(active);
   if (!state.animation->started) {
@@ -724,9 +873,11 @@ int32_t animateSpring(
       static_cast<unsigned long>(state.views.size()));
 #endif
   for (const ViewKey key : state.views) {
-    [viewForKey(key) smoothClipAnimateSpring:presentation
-                                  animation:animation
-                                animationId:animationId];
+    if ([viewForKey(key) smoothClipAnimateSpring:presentation
+                                      animation:animation
+                                    animationId:animationId]) {
+      state.animation->participants.insert(key);
+    }
   }
   return animationId;
 }
@@ -741,15 +892,21 @@ int32_t animateKeyframes(
   if (!NSThread.isMainThread) {
     // See setPresentation: blocking off-main risks a deadlock.
     return 0;
-  }  auto iterator = registry().find(driverId);
-  if (iterator == registry().end()) return 0;
+  }
+  auto iterator = registry().find(driverId);
+  if (iterator == registry().end()) {
+    if (!start.hasInteractiveStart) return 0;
+    iterator = registry().try_emplace(driverId).first;
+    iterator->second.latest = start.interactiveStart;
+    iterator->second.hasLatest = true;
+  }
   auto &state = iterator->second;
   state.destroyed = false;
-  const int32_t animationId = allocateAnimationId(state);
+  const int32_t animationId = allocateAnimationId();
   const Presentation resolvedStart = resolvedAnimationStart(state, start);
   prepareAnimation(driverId, state, start, presentation);
   if (shouldReduceMotion(reduceMotion) || durationMs <= 0) {
-    applyPresentation(state, presentation);
+    applyPresentation(state, presentation, false);
     emitCompletion(driverId, state, animationId, true);
     return animationId;
   }
@@ -760,7 +917,6 @@ int32_t animateKeyframes(
   active.keyframes = keyframes;
   active.durationMs = durationMs;
   active.startedAt = CACurrentMediaTime();
-  active.participants.insert(state.views.begin(), state.views.end());
   active.started = anyDisplayableView(state);
   state.animation = std::move(active);
   if (!state.animation->started) {
@@ -768,10 +924,12 @@ int32_t animateKeyframes(
     return animationId;
   }
   for (const ViewKey key : state.views) {
-    [viewForKey(key) smoothClipAnimateKeyframes:presentation
-                                      keyframes:keyframes
-                                     durationMs:durationMs
-                                    animationId:animationId];
+    if ([viewForKey(key) smoothClipAnimateKeyframes:presentation
+                                          keyframes:keyframes
+                                         durationMs:durationMs
+                                        animationId:animationId]) {
+      state.animation->participants.insert(key);
+    }
   }
   return animationId;
 }
@@ -782,7 +940,7 @@ int32_t rejectAnimation(uint64_t driverId) {
     return 0;
   }  auto iterator = registry().find(driverId);
   if (iterator == registry().end()) return 0;
-  const int32_t animationId = allocateAnimationId(iterator->second);
+  const int32_t animationId = allocateAnimationId();
   emitStandaloneCompletion(driverId, animationId, false);
   return animationId;
 }
@@ -812,7 +970,30 @@ CancelResult cancelAnimation(
 #endif
   if (useTarget) {
     const Presentation target = state.latest;
+    // A latch never dispatched to its views, so every participant still has
+    // _activeAnimationId == 0 and smoothClipCancelAnimationUsingTarget
+    // early-returns without writing anything: state.latest would report the
+    // target while every layer still showed the pre-animation geometry, and
+    // nothing else re-applies it. Android's cancelAnimation fans the result out
+    // unconditionally — match that. Read `started` before cancelActive, which
+    // resets state.animation.
+    //
+    // Gated on the latch case so a started animation is not written twice
+    // (smoothClipCancelAnimationUsingTarget already applied the target there),
+    // and applied WITHOUT a velocity sample: a jump to the target is not
+    // interactive motion, and the cancel-to-target path deliberately keeps it
+    // out of the 'inherit' history on both platforms — Android's cancel
+    // fan-out records nothing either.
+    const bool wasLatched = !state.animation->started;
     cancelActive(driverId, state, true);
+    if (wasLatched) {
+      // state.latest already holds the target (set at animate time); only the
+      // view fan-out is missing.
+      for (const ViewKey key : state.views) {
+        [viewForKey(key) smoothClipApplyPresentation:target
+                                recordVelocitySample:NO];
+      }
+    }
     state.ownership = Ownership::Interactive;
     return {true, target};
   }
@@ -853,15 +1034,17 @@ void viewAnimationDidStop(
   auto &state = iterator->second;
   if (!state.animation.has_value() ||
       state.animation->animationId != animationId) return;
+  // A delegate from the frozen run can still report a stop for this id after
+  // the animation has been re-latched. Draining participants there could
+  // complete an animation that is waiting to resume. Only a running animation
+  // may be completed by its installed delegates; a latch is completed by
+  // replacement, cancel or destroy.
+  if (!state.animation->started) return;
 
   const ViewKey key = keyForView(view);
   if (state.animation->participants.erase(key) == 0) return;
   state.animation->finished = state.animation->finished && finished;
-  if (state.animation->participants.empty()) {
-    state.ownership = Ownership::Interactive;
-    emitCompletion(
-        driverId, state, animationId, state.animation->finished);
-  }
+  finishIfNoInstalledParticipants(driverId, state);
 }
 
 size_t registeredViewCount(uint64_t driverId) {

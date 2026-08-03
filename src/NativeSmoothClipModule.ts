@@ -18,7 +18,8 @@ export interface Spec extends TurboModule {
     radius: CodegenTypes.Double,
     contentTranslateX: CodegenTypes.Double,
     contentTranslateY: CodegenTypes.Double,
-    takeOwnership: boolean
+    takeOwnership: boolean,
+    overridePendingAnimation: boolean
   ): void;
   beginInteraction(
     driverId: CodegenTypes.Double

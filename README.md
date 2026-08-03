@@ -165,6 +165,15 @@ const gesture = Gesture.Pan()
 | `driver`   | `SmoothClipDriver` | Reusable hybrid clip driver.            |
 | `children` | `ReactNode`        | Content rendered inside the fixed host. |
 
+The host hides itself, drops out of the accessibility tree, and stops accepting
+touches while the clip is empty. The two platforms draw the boundary where they
+actually stop rendering, which differs below one pixel: Android emits an integer
+`Outline`, which collapses to nothing under half a physical pixel, so an extent
+in `(0, 0.5)` px counts as empty there; iOS masks in floats and treats only a
+zero-or-negative extent as empty. A clip animating through that band therefore
+turns non-interactive one frame earlier on Android — matching what each platform
+puts on screen, which is the property worth keeping identical.
+
 ### Driver
 
 - `useSmoothClipDriver(initialPresentation, options)` returns one hybrid driver
@@ -190,15 +199,19 @@ const gesture = Gesture.Pan()
   remaining distance in one second). Every geometry channel continues with the
   same normalized rate, so grab/release preserves the felt direction and
   speed. `'inherit'` (the default) estimates the scalar from the last two
-  interactive samples on iOS and Android; samples older than 100 ms — and the
-  web fallback — fall back to zero. Two writes landing inside the same frame
+  interactive samples on iOS and Android; the web fallback always inherits
+  zero. How long the finger has been still since that last sample scales the
+  result: full credit for one frame (16.7 ms), then a linear decay to zero at
+  100 ms. A release straight out of a drag is therefore untouched, and holding
+  still before releasing bleeds the momentum off smoothly instead of keeping
+  all of it until 99 ms and none at 101 ms. Two writes landing inside the same frame
   (< 4 ms apart, e.g. a release-sample `from` seed right after the last drag
   write) coalesce into one sample, and an identical re-write is ignored, so a
   fused handoff can neither zero nor inflate the inherited velocity.
-  `beginInteraction()` records the frozen presentation as a plain sample on
-  both platforms, so a grab-and-instant-refling inherits bounded recent
-  motion (the staleness guard still zeroes a stale pair) instead of
-  launching dead.
+  Only interactive writes contribute samples. Internal freeze/join/resume and
+  static-finalization writes do not, so grabbing a native animation cannot
+  manufacture velocity for a later `'inherit'` spring; a subsequent drag (or
+  explicit `animation.from`) supplies the release samples instead.
 - `driver.react` exposes `beginInteraction`, `set`, `animateTo`, and `cancel`
   as Promises (`setScalars` is UI-worklet-only). React code never blocks
   waiting for main/UI-thread work. An immediate animation request resolves
@@ -217,35 +230,53 @@ const gesture = Gesture.Pan()
   write issued immediately before the handoff, so the animation starts from
   exactly that value (pass `frames[0].presentation` for keyframes, which
   interpolate absolutely). A non-finite `from` rejects the whole call; against
-  a held pending-animation latch the seed is dropped — the latch is newer
-  intent, and nothing is displayable yet anyway. `from` behaves the same on
-  both platforms (it is driver-layer, not native): on iOS the seed stops any
-  running Core Animation and writes the model layer first; keyframes then
-  start exactly at `from`, while timing/spring sample their from-value off
-  the presentation layer — the last committed frame, at most one frame
-  behind `from` — identical to the explicit two-call pattern.
+  a held pending-animation latch, explicit `from` is the newer intent: it
+  cancels that latch once with `finished: false`, records/applies `from`, then
+  starts the replacement from that native value. Passive hook seeds and public
+  `set`/`setScalars` writes still leave a held latch intact. `from` behaves the
+  same on both platforms (it is driver-layer, not native): on iOS the seed
+  stops any running Core Animation and writes the model layer first; keyframes
+  then start exactly at `from`, while timing/spring sample their from-value off
+  the presentation layer — the last committed frame, at most one frame behind
+  `from` — identical to the explicit two-call pattern.
 - `cancel()` freezes visible presentation by default. Pass `'target'` as its
   behavior to jump to the requested endpoint.
 - `options.onAnimationComplete` fires exactly once per animation with its ID
   and `finished` state, including cancellation, replacement, and native-side
   rejection (`animateTo` then returns a fresh non-zero id whose single
   `finished: false` completion follows — key completion handling by the
-  returned id, never by `0`). `animateTo` returns `0` — and delivers no
-  completion — only when the driver entry no longer exists (destroyed) or the
-  call ran off the main thread. Unmounting the last host mid-flight does not complete the
-  animation: the remainder is re-latched and the next displayable host resumes
-  it, so the completion arrives when it finishes there — or unfinished on
-  replacement, cancellation, `beginInteraction()`, or driver destruction.
-  With multiple hosts on one driver, unregistering any participant mid-flight
-  makes the eventual completion `finished: false` — `finished: true` means
-  every participant ran the animation to its end.
+  returned id, never by `0`). A valid pre-registration request carries its
+  authoritative interactive start, creates the missing driver state and
+  returns a real id. `0` — with no completion — is reserved for off-main,
+  invalid-id, or otherwise unsupported dispatch: a missing-state native request
+  with no authoritative start, and any `driver.ui.animateTo` issued after the
+  driver's hook has unmounted. (The second case is decided on the UI runtime,
+  because a destroyed driver and a not-yet-seeded one are the same missing
+  registry entry to native — accepting it would build a latch nothing can start
+  and nothing can cancel.) A host is displayable only while it is attached,
+  foreground/window-visible, laid out, and positive-sized. Losing the last
+  displayable host mid-flight — including temporary detach, zero-size layout,
+  or app background — freezes and re-latches the exact remainder instead of
+  consuming duration offscreen. Foreground/reattach resumes the same animation
+  ID from that stored timing/keyframe phase or spring state.
+  With multiple hosts on one driver, a host becomes an installed participant
+  only after its native animation starts. Temporary loss moves it to suspended;
+  a rejoin restores active participation. Unregistering an installed/suspended
+  host, or reaching completion while it remains suspended, makes the eventual
+  completion `finished: false`. A host that stayed deferred because it was
+  detached, unlaid-out, or zero-sized never poisons completion. `finished: true`
+  means every installed participant either ran to the end or rejoined and did so.
 - An `animateTo` issued before any host view can produce a visible frame (for
   example from an effect in the same commit that mounts the host, or inside a
   modal route whose subtree attaches to its window late) is held pending and
-  starts with its full duration at the first displayable registration or
-  window attach. A pending animation owns the driver: take-ownership writes
-  (`set`, `setScalars`, the hook's seed) are dropped while it is held —
-  replace it with another `animateTo`, or cancel it via `beginInteraction()`
+  starts with its full duration at the first moment a registered host can
+  produce a frame — positive layout, window attach/visibility, and foreground
+  state must all be present. This also covers an animation worklet that runs before the
+  hook's seed worklet: the animation creates the state and the later passive
+  seed cannot reset its ownership or active id. A pending animation owns the
+  driver: ordinary take-ownership writes (`set`, `setScalars`, the hook's seed)
+  are dropped while it is held. Replace it with another `animateTo`, override
+  it with an explicit `animation.from`, or cancel it via `beginInteraction()`
   or `cancel()`. If no view ever becomes displayable, it survives until it is
   replaced, cancelled, or the driver is destroyed — at which point its single
   `finished: false` completion is delivered.

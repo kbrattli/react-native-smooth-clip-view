@@ -83,12 +83,20 @@ internal fun outlineOrigin(value: Float): Int = value.roundToInt()
  * - A sub-pixel extent (0 < extent < 0.5) rounds to a degenerate rect, which
  *   `Outline.setRoundRect` collapses to `setEmpty()`. Independent rounding hit
  *   that state on some frames and a 1 px rect on others, i.e. it flickered;
- *   deriving the far edge makes it consistent. Whichever way the platform
- *   renders an empty outline, a stable result beats an alternating one — and
- *   the float `isEmpty` compare, not this rounding, is what governs visibility.
+ *   deriving the far edge makes it consistent. The emitted integer rect also
+ *   governs visibility, accessibility and hit testing, so a view never remains
+ *   logically visible while its outline clips every pixel.
  */
 internal fun outlineFarEdge(origin: Float, far: Float): Int =
     outlineOrigin(origin) + (far - origin).roundToInt()
+
+/** Exactly mirrors the non-empty requirement of Outline.setRoundRect(Int...). */
+internal fun outlineRectIsEmpty(
+    left: Int,
+    top: Int,
+    right: Int,
+    bottom: Int,
+): Boolean = right <= left || bottom <= top
 
 /**
  * Outline dedupe on the rounded integer physical-pixel edges actually emitted

@@ -73,7 +73,8 @@ void clearCompletionCallback(const void *owner);
 void setPresentation(
     uint64_t driverId,
     Presentation presentation,
-    bool takeOwnership);
+    bool takeOwnership,
+    bool overridePendingAnimation = false);
 Presentation beginInteraction(uint64_t driverId);
 int32_t animateTiming(
     uint64_t driverId,

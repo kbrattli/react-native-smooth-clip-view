@@ -166,15 +166,17 @@ void installBindings(
   Object bindings(runtime);
 
   setHostFunction(
-      runtime, bindings, "setClipPresentation", 9,
+      runtime, bindings, "setClipPresentation", 10,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
         if (count < 9) return Value::undefined();
         const double driverId = args[0].asNumber();
         const Presentation presentation = presentationFromArgs(args, 1);
         const bool takeOwnership = boolArg(args, count, 8);
+        const bool overridePendingAnimation = boolArg(args, count, 9);
         if (validDriverId(driverId) && finitePresentation(presentation)) {
           setPresentation(
-              static_cast<uint64_t>(driverId), presentation, takeOwnership);
+              static_cast<uint64_t>(driverId), presentation, takeOwnership,
+              overridePendingAnimation);
         }
         return Value::undefined();
       });
@@ -387,7 +389,8 @@ void nativeRegisterView(
     jdouble contentTranslateY,
     jdouble density,
     jdouble widthPx,
-    jdouble heightPx) {
+    jdouble heightPx,
+    jboolean lifecycleVisible) {
   if (driverId <= 0 || !std::isfinite(driverId)) return;
   smoothclip::registerViewAndroid(
       static_cast<uint64_t>(driverId),
@@ -396,7 +399,8 @@ void nativeRegisterView(
           {x, y, width, height, radius}, contentTranslateX, contentTranslateY},
       density,
       widthPx,
-      heightPx);
+      heightPx,
+      lifecycleVisible != 0);
 }
 
 void nativeSetViewHostGeometry(
@@ -419,13 +423,14 @@ void nativeUnregisterView(
   smoothclip::unregisterViewAndroid(static_cast<uint64_t>(driverId), view);
 }
 
-void nativeViewBecameDisplayable(
+void nativeSetViewLifecycleVisibility(
     jni::alias_ref<jni::JObject>,
     jdouble driverId,
-    jni::alias_ref<smoothclip::JSmoothClipView> view) {
+    jni::alias_ref<smoothclip::JSmoothClipView> view,
+    jboolean lifecycleVisible) {
   if (driverId <= 0 || !std::isfinite(driverId)) return;
-  smoothclip::viewBecameDisplayableAndroid(
-      static_cast<uint64_t>(driverId), view);
+  smoothclip::setViewLifecycleVisibilityAndroid(
+      static_cast<uint64_t>(driverId), view, lifecycleVisible != 0);
 }
 
 void nativeInvalidate(jni::alias_ref<jni::JObject>) {
@@ -449,7 +454,8 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) {
                 "nativeSetViewHostGeometry", nativeSetViewHostGeometry),
             makeNativeMethod("nativeUnregisterView", nativeUnregisterView),
             makeNativeMethod(
-                "nativeViewBecameDisplayable", nativeViewBecameDisplayable),
+                "nativeSetViewLifecycleVisibility",
+                nativeSetViewLifecycleVisibility),
             makeNativeMethod("nativeInvalidate", nativeInvalidate),
             makeNativeMethod("nativeOnFrame", nativeOnFrame),
         });

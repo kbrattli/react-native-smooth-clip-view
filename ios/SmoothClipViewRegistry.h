@@ -23,7 +23,10 @@ bool joinActiveAnimation(uint64_t driverId, SmoothClipView *view);
 // A CA animation committed while the host's layer tree is detached (e.g. a
 // transparentModal subtree before its view controller is presented) does not
 // survive the attach commit; installs must therefore wait for this signal.
-void viewBecameDisplayable(uint64_t driverId, SmoothClipView *view);
+void viewDisplayabilityChanged(uint64_t driverId, SmoothClipView *view);
+void applicationWillResignActive();
+void applicationDidBecomeActive();
+bool applicationIsActive();
 void viewAnimationDidStop(
     uint64_t driverId,
     int32_t animationId,

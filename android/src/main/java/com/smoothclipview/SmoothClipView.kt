@@ -41,6 +41,7 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     private var userTranslationY = 0f
     private var requestedImportantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_AUTO
     private var acceptingTouchStream = false
+    private var retainedTouchEvent: MotionEvent? = null
 
     /** Driver this view is registered with in the native registry (0 = none). */
     internal var boundDriverId: Double = 0.0
@@ -166,7 +167,6 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         bottom: Float,
         radius: Float,
     ) {
-        val isEmpty = right <= left || bottom <= top
         // Far edges are derived, not rounded independently: see outlineFarEdge.
         // Independent rounding breathes the emitted size by 1 px under pure
         // translation, which is the visible artifact once an animation's tail
@@ -175,6 +175,15 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         val nextOutlineTop = outlineOrigin(top)
         val nextOutlineRight = outlineFarEdge(left, right)
         val nextOutlineBottom = outlineFarEdge(top, bottom)
+        // Outline.setRoundRect collapses a degenerate integer rect to empty.
+        // Use the exact emitted geometry as the single semantic source for
+        // rendering, visibility, accessibility and hit testing.
+        val isEmpty = outlineRectIsEmpty(
+            nextOutlineLeft,
+            nextOutlineTop,
+            nextOutlineRight,
+            nextOutlineBottom,
+        )
         val outlineGeometryChanged = outlineChanged(
             nextOutlineLeft,
             nextOutlineTop,
@@ -204,15 +213,17 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         applyClipPlacement()
 
         if (isEmpty != clipIsEmpty) {
+            if (isEmpty) cancelAcceptedTouchStream()
             clipIsEmpty = isEmpty
             visibility = clipVisibility(isEmpty)
             importantForAccessibility = clipAccessibility(
                 isEmpty,
                 requestedImportantForAccessibility,
             )
-            if (isEmpty) acceptingTouchStream = false
         }
 
+        // An emptiness transition necessarily changes at least one emitted
+        // edge, so the existing edge/radius key cannot skip invalidateOutline.
         if (!outlineGeometryChanged) return
 
         outlineLeft = nextOutlineLeft
@@ -289,12 +300,24 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        pushLifecycleVisibility()
+    }
+
+    override fun onDetachedFromWindow() {
         if (boundDriverId != 0.0) {
-            // A latched animation may only start once this view can produce a
-            // visible frame; window attach is that signal for views that
-            // registered from a detached subtree.
-            SmoothClipBindings.nativeViewBecameDisplayable(boundDriverId, this)
+            SmoothClipBindings.nativeSetViewLifecycleVisibility(
+                boundDriverId,
+                this,
+                false,
+            )
         }
+        clearTouchState()
+        super.onDetachedFromWindow()
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        pushLifecycleVisibility()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -313,6 +336,18 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     }
 
     internal fun densityScale(): Double = PixelUtil.toPixelFromDIP(1f).toDouble()
+
+    internal fun isHostLifecycleVisible(): Boolean =
+        isAttachedToWindow && windowVisibility == VISIBLE
+
+    private fun pushLifecycleVisibility() {
+        if (boundDriverId == 0.0) return
+        SmoothClipBindings.nativeSetViewLifecycleVisibility(
+            boundDriverId,
+            this,
+            isHostLifecycleVisible(),
+        )
+    }
 
     private fun containsRoundedPoint(x: Float, y: Float): Boolean {
         // The event arrives in this view's local space, which the parent has
@@ -335,8 +370,16 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                clearTouchState()
                 acceptingTouchStream = containsRoundedPoint(event.x, event.y)
                 if (!acceptingTouchStream) return false
+                val accepted = super.dispatchTouchEvent(event)
+                if (accepted) {
+                    retainTouchEvent(event)
+                } else {
+                    clearTouchState()
+                }
+                return accepted
             }
             MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_UP -> {
                 val result = if (acceptingTouchStream) {
@@ -344,12 +387,42 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
                 } else {
                     false
                 }
-                acceptingTouchStream = false
+                clearTouchState()
                 return result
             }
         }
 
-        return acceptingTouchStream && super.dispatchTouchEvent(event)
+        if (!acceptingTouchStream) return false
+        val result = super.dispatchTouchEvent(event)
+        retainTouchEvent(event)
+        return result
+    }
+
+    private fun retainTouchEvent(event: MotionEvent) {
+        retainedTouchEvent?.recycle()
+        retainedTouchEvent = MotionEvent.obtain(event)
+    }
+
+    private fun clearTouchState() {
+        acceptingTouchStream = false
+        retainedTouchEvent?.recycle()
+        retainedTouchEvent = null
+    }
+
+    private fun cancelAcceptedTouchStream() {
+        val latest = retainedTouchEvent
+        if (!acceptingTouchStream || latest == null) {
+            clearTouchState()
+            return
+        }
+        val cancel = MotionEvent.obtain(latest)
+        cancel.action = MotionEvent.ACTION_CANCEL
+        try {
+            super.dispatchTouchEvent(cancel)
+        } finally {
+            cancel.recycle()
+            clearTouchState()
+        }
     }
 
     fun setRequestedImportantForAccessibility(value: Int) {
@@ -373,7 +446,7 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     }
 
     fun resetClipState() {
-        acceptingTouchStream = false
+        clearTouchState()
         commandIsAuthoritative = false
         requestedX = 0f
         requestedY = 0f

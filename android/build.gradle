@@ -114,6 +114,19 @@ android {
     targetCompatibility JavaVersion.VERSION_1_8
   }
 
+  testOptions {
+    unitTests {
+      includeAndroidResources = true
+      all {
+        // Robolectric on Java 17 reflects into these platform packages.
+        jvmArgs "--add-opens=java.base/java.lang=ALL-UNNAMED",
+                "--add-opens=java.base/java.util=ALL-UNNAMED",
+                "--add-opens=java.base/java.io=ALL-UNNAMED",
+                "--add-opens=java.base/java.net=ALL-UNNAMED"
+      }
+    }
+  }
+
   packagingOptions {
     // Provided by the host application at runtime.
     excludes += [
@@ -128,4 +141,6 @@ android {
 dependencies {
   implementation "com.facebook.react:react-android"
   testImplementation "junit:junit:4.13.2"
+  testImplementation "org.mockito:mockito-core:5.14.2"
+  testImplementation "org.robolectric:robolectric:4.16"
 }

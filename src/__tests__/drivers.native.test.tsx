@@ -3,6 +3,13 @@ import type { SmoothClipPresentation } from '../geometry';
 
 let mockRNRuntime = false;
 
+function mockUIState() {
+  return globalThis as {
+    __smoothClipTestQueueUI?: boolean;
+    __smoothClipTestUITasks?: Array<() => void>;
+  };
+}
+
 function mockMakeSharedValue<T>(initial: T) {
   const listeners = new Map<number, (value: T) => void>();
   return {
@@ -46,8 +53,15 @@ jest.mock('react-native-reanimated', () => ({
 
 jest.mock('react-native-worklets', () => ({
   isRNRuntime: () => mockRNRuntime,
-  scheduleOnUI: (fn: (...args: never[]) => void, ...args: never[]) =>
-    fn(...args),
+  scheduleOnUI: (fn: (...args: never[]) => void, ...args: never[]) => {
+    const task = () => fn(...args);
+    const state = mockUIState();
+    if (state.__smoothClipTestQueueUI) {
+      (state.__smoothClipTestUITasks ??= []).push(task);
+    } else {
+      task();
+    }
+  },
   scheduleOnRN: (fn: (...args: never[]) => void, ...args: never[]) =>
     fn(...args),
 }));
@@ -111,7 +125,15 @@ const fromPresentation: SmoothClipPresentation = {
 describe('hybrid native driver (iOS + Android)', () => {
   beforeEach(() => {
     mockRNRuntime = false;
+    mockUIState().__smoothClipTestQueueUI = false;
+    mockUIState().__smoothClipTestUITasks = [];
     mockEffects.length = 0;
+    delete (globalThis as { __frameTimestamp?: number }).__frameTimestamp;
+    delete (
+      globalThis as {
+        _getAnimationTimestamp?: () => number;
+      }
+    )._getAnimationTimestamp;
     jest.clearAllMocks();
     mockNative.animateTiming.mockReturnValue(7);
     mockNative.animateSpring.mockReturnValue(8);
@@ -132,6 +154,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       target.clip.radius,
       target.contentTranslateX,
       target.contentTranslateY,
+      false,
       false
     );
   });
@@ -150,7 +173,8 @@ describe('hybrid native driver (iOS + Android)', () => {
       5,
       6,
       7,
-      true
+      true,
+      false
     );
     // The SharedValue intentionally stays stale on the hot path.
     expect(driver.presentation.value).toBe(initial);
@@ -180,6 +204,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       target.clip.radius,
       target.contentTranslateX,
       target.contentTranslateY,
+      false,
       false
     );
   });
@@ -309,6 +334,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       dragged.clip.radius,
       dragged.contentTranslateX,
       dragged.contentTranslateY,
+      false,
       false
     );
   });
@@ -316,6 +342,9 @@ describe('hybrid native driver (iOS + Android)', () => {
   it('survives an effect replay and revives the destroyed native driver', () => {
     const driver = useSmoothClipDriver(initial);
     const registration = mockEffects[mockEffects.length - 1]!;
+
+    // Cleanup must clear UI-side Native ownership as well as native state.
+    driver.ui.animateTo(target, timing);
 
     // StrictMode / <Activity>: cleanup runs, then the same effect re-runs.
     if (typeof registration.cleanup === 'function') registration.cleanup();
@@ -327,20 +356,6 @@ describe('hybrid native driver (iOS + Android)', () => {
     // The replay re-seeds native with a take-ownership write...
     expect(mockNative.setClipPresentation).toHaveBeenCalledWith(
       expect.any(Number),
-      initial.clip.x,
-      initial.clip.y,
-      initial.clip.width,
-      initial.clip.height,
-      initial.clip.radius,
-      initial.contentTranslateX,
-      initial.contentTranslateY,
-      true
-    );
-
-    // ...and the driver remains fully operational afterwards.
-    driver.presentation.value = target;
-    expect(mockNative.setClipPresentation).toHaveBeenCalledWith(
-      expect.any(Number),
       target.clip.x,
       target.clip.y,
       target.clip.width,
@@ -348,8 +363,68 @@ describe('hybrid native driver (iOS + Android)', () => {
       target.clip.radius,
       target.contentTranslateX,
       target.contentTranslateY,
+      true,
       false
     );
+
+    // ...and the driver remains fully operational afterwards.
+    driver.presentation.value = initial;
+    expect(mockNative.setClipPresentation).toHaveBeenCalledWith(
+      expect.any(Number),
+      initial.clip.x,
+      initial.clip.y,
+      initial.clip.width,
+      initial.clip.height,
+      initial.clip.radius,
+      initial.contentTranslateX,
+      initial.contentTranslateY,
+      false,
+      false
+    );
+  });
+
+  it('ignores a delayed completion from the previous native incarnation', () => {
+    mockNative.animateTiming.mockReturnValueOnce(41).mockReturnValueOnce(42);
+    const driver = useSmoothClipDriver(initial);
+    const registration = mockEffects[mockEffects.length - 1]!;
+    const oldId = driver.ui.animateTo(target, timing);
+    expect(oldId).toBe(41);
+
+    if (typeof registration.cleanup === 'function') registration.cleanup();
+    registration.effect();
+    const completionListener = mockNative.onClipAnimationComplete.mock.calls.at(
+      -1
+    )?.[0] as (result: {
+      driverId: number;
+      animationId: number;
+      finished: boolean;
+    }) => void;
+    const driverId = mockNative.setClipPresentation.mock.calls.at(-1)?.[0] as
+      number | undefined;
+    expect(driverId).toBeDefined();
+    const newId = driver.ui.animateTo(fromPresentation, timing);
+    expect(newId).toBe(42);
+
+    completionListener({
+      driverId: driverId!,
+      animationId: oldId,
+      finished: false,
+    });
+    jest.clearAllMocks();
+    driver.presentation.value = initial;
+    // Old id 41 must not release Native ownership held by id 42.
+    expect(mockNative.setClipPresentation).not.toHaveBeenCalled();
+
+    completionListener({
+      driverId: driverId!,
+      animationId: newId,
+      finished: true,
+    });
+    driver.presentation.value = {
+      ...target,
+      clip: { ...target.clip, x: target.clip.x + 1 },
+    };
+    expect(mockNative.setClipPresentation).toHaveBeenCalled();
   });
 
   it('beginInteraction seeds without echoing back to native', () => {
@@ -408,6 +483,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       8,
       1,
       3,
+      true,
       true
     );
     const seedOrder =
@@ -445,6 +521,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       8,
       1,
       3,
+      true,
       true
     );
     expect(mockNative.animateKeyframes.mock.calls[0]?.[1]).toBe(false);
@@ -459,6 +536,158 @@ describe('hybrid native driver (iOS + Android)', () => {
 
     expect(mockNative.setClipPresentation).not.toHaveBeenCalled();
     expect(mockNative.animateTiming.mock.calls[0]?.[1]).toBe(true);
+  });
+
+  it('does not let a later hook seed overwrite an animation-first latch', () => {
+    // Model child-before-parent/FIFO scheduling: the effect's seed worklet is
+    // queued, while an already-running UI worklet animates this driver first.
+    mockUIState().__smoothClipTestQueueUI = true;
+    const driver = useSmoothClipDriver(initial);
+    const tasks = mockUIState().__smoothClipTestUITasks ?? [];
+    expect(tasks).toHaveLength(1);
+
+    const animationId = driver.ui.animateTo(target, timing);
+    expect(animationId).toBe(7);
+    expect(driver.presentation.value).toBe(target);
+    expect(mockNative.setClipPresentation).not.toHaveBeenCalled();
+
+    tasks.shift()?.();
+    expect(mockNative.setClipPresentation).not.toHaveBeenCalled();
+    expect(driver.presentation.value).toBe(target);
+    mockUIState().__smoothClipTestQueueUI = false;
+  });
+
+  it('passes the in-frame timestamp at each native trailing position', () => {
+    const getAnimationTimestamp = jest.fn(() => 5678);
+    (globalThis as { __frameTimestamp?: number }).__frameTimestamp = 1234;
+    (
+      globalThis as {
+        _getAnimationTimestamp?: () => number;
+      }
+    )._getAnimationTimestamp = getAnimationTimestamp;
+    const driver = useSmoothClipDriver(initial);
+
+    driver.ui.animateTo(target, timing);
+    driver.ui.animateTo(target, {
+      type: 'spring',
+      mass: 1,
+      stiffness: 180,
+      damping: 18,
+    });
+    driver.ui.animateTo(target, {
+      type: 'keyframes',
+      duration: 300,
+      frames: [
+        { offset: 0, presentation: initial },
+        { offset: 1, presentation: target },
+      ],
+    });
+
+    const timingArgs = mockNative.animateTiming.mock.calls[0] ?? [];
+    const springArgs = mockNative.animateSpring.mock.calls[0] ?? [];
+    const keyframeArgs = mockNative.animateKeyframes.mock.calls[0] ?? [];
+    expect(timingArgs).toHaveLength(23);
+    expect(springArgs).toHaveLength(23);
+    expect(keyframeArgs).toHaveLength(20);
+    expect(timingArgs[22]).toBe(1234);
+    expect(springArgs[22]).toBe(1234);
+    expect(keyframeArgs[19]).toBe(1234);
+    expect(getAnimationTimestamp).not.toHaveBeenCalled();
+  });
+
+  it('falls back to _getAnimationTimestamp outside the frame callback', () => {
+    const getAnimationTimestamp = jest.fn(() => 5678);
+    (
+      globalThis as {
+        _getAnimationTimestamp?: () => number;
+      }
+    )._getAnimationTimestamp = getAnimationTimestamp;
+    const driver = useSmoothClipDriver(initial);
+
+    driver.ui.animateTo(target, timing);
+
+    expect(mockNative.animateTiming.mock.calls[0]?.[22]).toBe(5678);
+    expect(getAnimationTimestamp).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects every call once the driver is disposed', () => {
+    const driver = useSmoothClipDriver(initial);
+    const registration = mockEffects[mockEffects.length - 1]!;
+    if (typeof registration.cleanup === 'function') registration.cleanup();
+    const animateCalls = mockNative.animateTiming.mock.calls.length;
+    const setCalls = mockNative.setClipPresentation.mock.calls.length;
+    const rejectCalls = mockNative.rejectAnimation.mock.calls.length;
+    const cancelCalls = mockNative.cancelAnimation.mock.calls.length;
+
+    // Native cannot tell a post-cleanup call from the pre-registration race —
+    // both are a missing registry entry — so an interactive start here would
+    // recreate the driver as a latch nothing can start and nothing can cancel,
+    // leaking the entry and never delivering the promised completion.
+    expect(driver.ui.animateTo(target, timing)).toBe(0);
+    const invalidTarget = {
+      ...target,
+      clip: { ...target.clip, width: Number.NaN },
+    };
+    expect(driver.ui.animateTo(invalidTarget, timing)).toBe(0);
+    expect(
+      driver.ui.animateTo(target, { ...timing, duration: Number.NaN })
+    ).toBe(0);
+    expect(
+      driver.ui.animateTo(target, { type: 'spring', mass: Number.NaN })
+    ).toBe(0);
+    expect(
+      driver.ui.animateTo(target, {
+        type: 'keyframes',
+        duration: Number.NaN,
+        frames: [
+          { offset: 0, presentation: initial },
+          { offset: 1, presentation: target },
+        ],
+      })
+    ).toBe(0);
+    expect(
+      driver.ui.animateTo(target, {
+        ...timing,
+        from: {
+          ...initial,
+          clip: { ...initial.clip, x: Number.NaN },
+        },
+      })
+    ).toBe(0);
+    driver.ui.set(target);
+    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
+    driver.ui.cancel();
+    expect(mockNative.animateTiming.mock.calls).toHaveLength(animateCalls);
+    expect(mockNative.setClipPresentation.mock.calls).toHaveLength(setCalls);
+    // Every entry point, not most of them: cancel is the last path that used
+    // to cross into native after the tombstone.
+    expect(mockNative.cancelAnimation.mock.calls).toHaveLength(cancelCalls);
+    // Not even a rejection id: there is no JS state left to route it to.
+    expect(mockNative.rejectAnimation.mock.calls).toHaveLength(rejectCalls);
+
+    // The next effect run owns the driver again and clears the tombstone
+    // before the listener or the seed, so nothing after it is rejected.
+    registration.effect();
+    expect(driver.ui.animateTo(target, timing)).toBe(7);
+  });
+
+  it('spends a suppressed-delivery credit even when the seed dedupes', () => {
+    const driver = useSmoothClipDriver(initial);
+
+    // Same shape as the replay case below, minus the replay. The cancel seed
+    // writes a value deliver() already recorded as `last` (the animateTo
+    // delivery was dropped under native ownership without advancing it), so
+    // deliver returns on the dedupe branch — before the decrement.
+    driver.ui.animateTo(target, timing);
+    driver.ui.cancel();
+    const setCalls = mockNative.setClipPresentation.mock.calls.length;
+
+    // No cleanup here to launder the credit: an unspent one would swallow this
+    // write and leave native one geometry behind for the driver's whole life.
+    driver.presentation.value = target;
+    expect(mockNative.setClipPresentation.mock.calls).toHaveLength(
+      setCalls + 1
+    );
   });
 
   it('rejects a non-finite from without touching native', () => {
@@ -513,6 +742,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       8,
       1,
       3,
+      true,
       true
     );
     expect(mockNative.animateTiming.mock.calls[0]?.[1]).toBe(false);

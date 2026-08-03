@@ -300,6 +300,61 @@ class ClipGeometryNormalizerTest {
     }
 
     @Test
+    fun subHalfPixelExtentsAreSemanticallyEmptyLikeTheirOutline() {
+        val left = outlineOrigin(10.2f)
+        val top = outlineOrigin(20.2f)
+        val right = outlineFarEdge(10.2f, 10.59f)
+        val bottom = outlineFarEdge(20.2f, 20.59f)
+
+        assertEquals(left, right)
+        assertEquals(top, bottom)
+        assertTrue(outlineRectIsEmpty(left, top, right, bottom))
+        assertEquals(View.INVISIBLE, clipVisibility(true))
+    }
+
+    @Test
+    fun halfPixelExtentsCrossTheVisibilityThreshold() {
+        val left = outlineOrigin(10.2f)
+        val top = outlineOrigin(20.2f)
+        val right = outlineFarEdge(10.2f, 10.7f)
+        val bottom = outlineFarEdge(20.2f, 20.7f)
+
+        assertEquals(1, right - left)
+        assertEquals(1, bottom - top)
+        assertFalse(outlineRectIsEmpty(left, top, right, bottom))
+        assertEquals(View.VISIBLE, clipVisibility(false))
+    }
+
+    @Test
+    fun emptinessCannotFlipWhileTheEmittedEdgesStayUnchanged() {
+        val samples = listOf(
+            floatArrayOf(10.05f, 20.05f, 10.44f, 20.44f),
+            floatArrayOf(10.2f, 20.2f, 10.59f, 20.59f),
+            floatArrayOf(10.49f, 20.49f, 10.88f, 20.88f),
+            floatArrayOf(10.2f, 20.2f, 10.7f, 20.7f),
+            floatArrayOf(10.35f, 20.35f, 10.85f, 20.85f),
+        )
+        val emptinessByEdges = mutableMapOf<List<Int>, Boolean>()
+
+        for (sample in samples) {
+            val edges = listOf(
+                outlineOrigin(sample[0]),
+                outlineOrigin(sample[1]),
+                outlineFarEdge(sample[0], sample[2]),
+                outlineFarEdge(sample[1], sample[3]),
+            )
+            val empty = outlineRectIsEmpty(
+                edges[0],
+                edges[1],
+                edges[2],
+                edges[3],
+            )
+            val previous = emptinessByEdges.putIfAbsent(edges, empty)
+            if (previous != null) assertEquals(previous, empty)
+        }
+    }
+
+    @Test
     fun outlineDedupeStillFiresWhenTheOriginCrossesARoundedEdge() {
         // Size stability must not make the dedupe blind to real motion: at a
         // constant extent the origin still steps, and that step has to
