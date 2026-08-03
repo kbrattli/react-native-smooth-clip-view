@@ -49,7 +49,8 @@ class SmoothClipTurboModule final
       double radius,
       double contentTranslateX,
       double contentTranslateY,
-      bool takeOwnership);
+      bool takeOwnership,
+      bool overridePendingAnimation);
   jsi::Array beginInteraction(jsi::Runtime &runtime, double driverId);
   int32_t animateTiming(
       jsi::Runtime &runtime,

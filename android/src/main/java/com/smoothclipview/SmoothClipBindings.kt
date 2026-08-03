@@ -32,6 +32,7 @@ internal object SmoothClipBindings {
         density: Double,
         widthPx: Double,
         heightPx: Double,
+        lifecycleVisible: Boolean,
     )
 
     /**
@@ -49,11 +50,14 @@ internal object SmoothClipBindings {
     external fun nativeUnregisterView(driverId: Double, view: SmoothClipView)
 
     /**
-     * Notifies the registry that a registered view attached to a window; a
-     * latched animation may only start once a view can produce a visible
-     * frame (attached and with real host geometry).
+     * Pushes both positive and negative attachment/window-visibility state.
+     * The registry combines it with real host geometry before a latch can run.
      */
-    external fun nativeViewBecameDisplayable(driverId: Double, view: SmoothClipView)
+    external fun nativeSetViewLifecycleVisibility(
+        driverId: Double,
+        view: SmoothClipView,
+        lifecycleVisible: Boolean,
+    )
 
     /**
      * Releases runtime-bound listener state during host teardown; must run

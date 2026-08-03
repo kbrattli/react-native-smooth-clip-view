@@ -75,12 +75,14 @@ void SmoothClipTurboModule::setClipPresentation(
     double radius,
     double contentTranslateX,
     double contentTranslateY,
-    bool takeOwnership) {
+    bool takeOwnership,
+    bool overridePendingAnimation) {
   const smoothclip::Presentation presentation{
       {x, y, width, height, radius}, contentTranslateX, contentTranslateY};
   if (validDriverId(driverId) && finitePresentation(presentation)) {
     smoothclip::setPresentation(
-        static_cast<uint64_t>(driverId), presentation, takeOwnership);
+        static_cast<uint64_t>(driverId), presentation, takeOwnership,
+        overridePendingAnimation);
   }
 }
 

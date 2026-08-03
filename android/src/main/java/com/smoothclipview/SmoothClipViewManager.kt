@@ -167,6 +167,7 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
                 view.densityScale(),
                 view.width.toDouble(),
                 view.height.toDouble(),
+                view.isHostLifecycleVisible(),
             )
         } else if (!view.commandIsAuthoritative) {
             // Command-driven mode (driverId 0): the initial props are the only

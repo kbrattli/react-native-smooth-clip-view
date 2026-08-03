@@ -22,7 +22,6 @@ struct JSmoothClipView : facebook::jni::JavaClass<JSmoothClipView> {
       const NormalizedClip &clip,
       double contentTranslateXPx,
       double contentTranslateYPx) const;
-  bool isViewAttachedToWindow() const;
 };
 
 // Called from Kotlin (SmoothClipViewManager) on the UI thread when a Fabric
@@ -33,7 +32,8 @@ void registerViewAndroid(
     Presentation initialPresentation,
     double density,
     double hostWidthPx,
-    double hostHeightPx);
+    double hostHeightPx,
+    bool lifecycleVisible);
 // Refreshes a registered view's density / host size (px) and synchronously
 // redelivers the driver's visible value pre-normalized against them.
 void setViewHostGeometryAndroid(
@@ -45,13 +45,12 @@ void setViewHostGeometryAndroid(
 void unregisterViewAndroid(
     uint64_t driverId,
     facebook::jni::alias_ref<JSmoothClipView> view);
-// Called from Kotlin when a registered view attaches to a window. A latched
-// animation may only start once a registered view can actually produce a
-// visible frame (attached AND has host geometry); otherwise its clock would
-// burn progress no one can see.
-void viewBecameDisplayableAndroid(
+// Pushes attachment/window visibility independently of host geometry. The
+// registry combines both signals into its displayability/participant state.
+void setViewLifecycleVisibilityAndroid(
     uint64_t driverId,
-    facebook::jni::alias_ref<JSmoothClipView> view);
+    facebook::jni::alias_ref<JSmoothClipView> view,
+    bool lifecycleVisible);
 
 // Advances the registry frame loop. Called from Kotlin (SmoothClipBindings)
 // inside Choreographer#doFrame with the frame's vsync timestamp converted to

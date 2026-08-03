@@ -1,11 +1,11 @@
 # Publishing checklist
 
-Current state (2026-07-31): **0.2.6 is tagged (`v0.2.6`) and released on
-GitHub, but is NOT yet on npm** — the registry still serves 0.2.5 as `latest`.
-The release was cut with `--no-npm.publish`, so the only remaining step is the
-publish itself; use the "publish an existing tag as-is" flow below against
-`v0.2.6`. Tag `v0.2.3` remains permanently npm-less (superseded by 0.2.4 before
-it was ever published); every other tag matches a registry version.
+Current state (2026-08-03): **0.2.6 is tagged (`v0.2.6`) and released on
+GitHub, but intentionally remains unpublished on npm** — the registry still
+serves 0.2.5 as `latest`. Do not move, republish, or publish the 0.2.6 tag; its
+correctness follow-up ships as 0.2.7, and the existing GitHub release carries a
+correction addendum. Tag `v0.2.3` likewise remains permanently npm-less
+(superseded by 0.2.4 before it was ever published).
 
 0.2.6 is Android-only — `git diff v0.2.5..v0.2.6 -- ios/` touches nothing but a
 new test file. It carries the Java-Choreographer frame-loop migration, the
@@ -37,7 +37,8 @@ cd - && git worktree remove ../scv-publish
 npm run typecheck && npm run lint && npm test
 npm run test:android
 npm run pack:check | grep cpp/      # cpp/ headers must ship
-cd example/android && ./gradlew :react-native-smooth-clip-view:externalNativeBuildRelease && cd -
+cd example/android && ./gradlew :react-native-smooth-clip-view:externalNativeBuildDebug -PreactNativeArchitectures=arm64-v8a
+./gradlew :react-native-smooth-clip-view:externalNativeBuildRelease -PreactNativeArchitectures=armeabi-v7a,arm64-v8a,x86,x86_64 && cd -
 cd example/ios && pod install && xcodebuild test \
   -workspace SmoothClipViewExample.xcworkspace \
   -scheme SmoothClipView-Unit-Tests \

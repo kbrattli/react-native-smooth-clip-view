@@ -16,8 +16,9 @@ type ClipAnimationBase = Readonly<{
    * On the native drivers `driver.presentation.value` is not written from
    * `from` (it stays stale until success sets it to the target); the web
    * fallback does write it — its presentation SharedValue is the render
-   * channel itself. Against a held pending-animation latch the seed is
-   * dropped by design — latch intent wins.
+   * channel itself. Against a held pending-animation latch, explicit `from`
+   * is newer intent: the fused write cancels that latch once unfinished,
+   * applies `from`, and starts the replacement from that native value.
    *
    * Keyframes interpolate absolutely, so pass `frames[0].presentation` —
    * the seed renders it before the first animation frame, making the

@@ -65,15 +65,29 @@ These are the load-bearing design choices added while fixing the defects:
    a thread-id compare). Supported usage (worklets UI runtime = main thread)
    never hits these branches.
 
-2. **Tombstone driver lifecycle + effect re-seed as the revival path.**
+2. **Tombstone driver lifecycle + ordered effect re-seed.**
    `destroyDriver` with views still registered no longer erases the entry — it
    marks it `destroyed`, releases ownership, and the entry is erased when the
    last view unregisters. The hook's effect performs an authoritative
-   take-ownership `setPresentation` seed on every run, which both creates the
-   native entry before any view mounts and *revives* a tombstoned driver after
-   a StrictMode/`<Activity>` effect replay. All other entry points
-   (`beginInteraction`, `animate*`, `rejectAnimation`) are `find()`-guarded so
-   stale scheduled calls can neither resurrect nor leak destroyed drivers.
+   take-ownership `setPresentation` seed on every ordinary run, which creates
+   the native entry before any view mounts and *revives* a tombstoned driver
+   after a StrictMode/`<Activity>` effect replay. Since 0.2.7, `animate*` may
+   instead create a missing entry only when it carries an authoritative
+   interactive start; a later seed observes Native ownership and cannot reset
+   that latch. Start-less animation requests, `beginInteraction`, and
+   `rejectAnimation` remain `find()`-guarded.
+
+   That creation rule costs the registry its old "a destroyed driver does not
+   resurrect" guarantee, because `destroyDriver` erases the entry and a
+   post-unmount request is then byte-for-byte the pre-registration race. The
+   lifetime half of the guarantee therefore moved to the only layer that can
+   still tell the two apart: a `disposed` SharedValue, set by the cleanup
+   worklet after native teardown and cleared as the *first* statement of the
+   next setup worklet. Every `driver.ui` entry point checks it, so a call from
+   a stale worklet after unmount returns `0` instead of building a latch that
+   nothing can start and nothing can cancel — a leaked entry whose promised
+   `finished: false` would never arrive. Both halves are pinned by tests; either
+   one alone reopens the leak.
    JS-side, the strong `statesById` index is attached in the effect and
    detached in cleanup (render only touches the WeakMap), making discarded
    renders leak-free and effect replays crash-free.
@@ -144,7 +158,7 @@ These are the load-bearing design choices added while fixing the defects:
 | Mutex-guarded completion sink (JS-thread writes vs main-thread invokes) | both registries |
 | Android runtime teardown: listener reset on reinstall + `invalidate()` hook | `SmoothClipBindings.cpp`, `SmoothClipAndroid.h`, `SmoothClipBindings.kt`, `SmoothClipModule.kt` |
 | Off-main fail-defined policy replacing `dispatch_sync(main)` (deadlock) | `ios/SmoothClipRegistry.mm`, `android/.../SmoothClipRegistry.cpp` |
-| Remount/StrictMode safety: WeakMap-only render state, effect attach/detach, authoritative re-seed, tombstone destroy, `find()` guards on all animate/begin/reject entries | `src/driverState.ts`, `src/drivers.ios.ts`, `src/drivers.ts`, both registries |
+| Remount/StrictMode safety: WeakMap-only render state, effect attach/detach, ownership-aware re-seed, UI-bookkeeping reset after tombstone destroy, authoritative-start-only animation creation | `src/driverState.ts`, `src/drivers.native.ts`, both registries |
 
 ### P1 — functional bugs
 
@@ -153,7 +167,7 @@ These are the load-bearing design choices added while fixing the defects:
 | iOS spring `initialVelocity` normalized (pass λ unchanged; deltas removed) | `ios/SmoothClipView.mm` |
 | Native-rejected `animateTo` now funnels through `rejectAnimation`, so every call on a live driver yields exactly one `finished:false` completion (completion-driven loops no longer stall); returns the standalone completion id | `src/drivers.ios.ts` |
 | CA delegate `invalidated` flag (replaces same-tick `_ignoreAnimationCallback` reliance) | `ios/SmoothClipView.mm` |
-| Spring rebuilds (layout change, foreground resume) run their own settling duration instead of being truncated by `MIN(remaining, settling)` and snapping mid-oscillation | `ios/SmoothClipView.mm` |
+| Spring rebuilds (layout/lifecycle resume) preserve the sampled analytic continuation velocity and run their own settling duration | `ios/SmoothClipRegistry.mm`, `ios/SmoothClipView.mm` |
 | Listener `last` cache records only values native actually observed — values dropped during native ownership stay eligible for re-delivery (no more silently stuck clip after completions) | `src/drivers.ios.ts` |
 | `scalarsStale` flag: `animateTo` after `setScalars` starts from native's latest value | `src/drivers.ios.ts` |
 | Android spring substepping + non-finite bail | `android/.../SmoothClipRegistry.cpp` |
@@ -200,10 +214,10 @@ These are the load-bearing design choices added while fixing the defects:
 | --- | --- |
 | `npm run typecheck` | ✅ clean |
 | `npm run lint` | ✅ 0 errors (9 pre-existing stress-harness warnings) |
-| `npm test` | ✅ 37/37 |
+| `npm test` | ✅ 53/53 |
 | `npm run pack:check` | ✅ `cpp/SmoothClipRegistry.h` in the tarball |
-| `npm run test:android` | ✅ build + JVM tests |
-| Android NDK compile (`externalNativeBuildDebug`, arm64) | ✅ |
+| `npm run test:android` | ✅ helper + Robolectric real-view tests |
+| Android NDK compile | ✅ arm64 debug + all four release ABIs in CI |
 | iOS example app build (xcodebuild, arm64 + x86_64 sim) | ✅ |
 | Simulator runtime smoke (iPhone 17 Pro): interactive 10-host oscillation, mode switching (driver teardown/re-create), native CA loop, 3× rapid grab→update→spring handoffs, background mid-spring → resume | ✅ no crashes, no assertions, no JS errors |
 | Physical-device Release profiling (120 Hz) | ⏳ still the open gate for numeric performance claims |
@@ -238,25 +252,33 @@ lifetime.
   frame later — e.g. inside a transparentModal route whose Fabric mount runs
   after the consumer's effect — statically applied the target and the clip
   jumped.~~ **Fixed in 0.2.1**: the built animation is now latched
-  (`started = false`, held out of the render/frame path) and the first view
-  registration rebases its clock and starts it with the full duration.
+  (`started = false`, held out of the render/frame path) and the first
+  displayable view rebases its clock and starts it with the full duration.
+  **Hardened in 0.2.7**: a valid interactive start can create the state before
+  the hook seed, and losing the sole displayable peer re-latches even while a
+  detached/unsized peer remains registered.
   Freeze-style cancellation of a never-started animation uses its start
   presentation (iOS: `canonicalFrozenPresentation`; Android falls out of
   `current = start`), and replacing a latch resolves the new start from the
   latch's start rather than `latest` (iOS: `resolvedAnimationStart` latch
   branch). A latch whose host never mounts completes `finished: false` on
-  replacement, cancel, take-ownership write, or driver destruction. Full
+  replacement, cancel, explicit `animation.from`, or driver destruction. Full
   write-up — the race, the frame-by-frame behaviour on both platforms, the
   cost analysis, and the comparison with Reanimated's entering animations —
   in [`pending-animation-latch.md`](./pending-animation-latch.md).
-- Spring joins for late-mounting views restart with the original launch
-  velocity (visual-only, brief).
-- The registry join clock is not rebased after long backgrounding (a
-  late-joining view can snap if the app was suspended mid-transition).
+- Displayability now means attached, foreground/window-visible, laid out, and
+  positive-sized. Detach/background/zero-size transitions suspend installed
+  participants and re-latch when no host remains displayable; foreground and
+  reattach resume from a registry-rebased remainder under the same animation ID.
 - Process-global registry: multi-`RCTHost` (brownfield, two instances) shares
   one namespace; single-instance apps are unaffected.
 - `beginInteraction` returns host-clamped geometry (documented contract).
-- The CocoaPods test spec has no runnable scheme wired yet, so the XCTests
-  compile with the pod but need scheme wiring to execute in CI.
-- No Robolectric on Android (SDK 36 support was uncertain); the C++ registry
-  logic is exercised through the shared-shape iOS XCTests instead.
+- The CocoaPods XCTest scheme and Kotlin/Robolectric suites run in CI. Shared
+  pure C++ continuation math is executed by XCTest; the Android registry is
+  compiled as arm64 debug and all four release ABIs. Robolectric exercises the
+  real Kotlin `SmoothClipView` visibility, accessibility, and touch-cancel path.
+  The library compiles against API 36; because Robolectric 4.16's API 36
+  sandbox requires Java 21, the Java 17 CI worker runs those API-stable view
+  tests in its API 35 sandbox.
+  The fbjni-bound registry translation unit itself remains compile- and
+  integration-tested rather than directly unit-linked.

@@ -84,6 +84,69 @@ static std::array<double, 7> Channels(double x, double y) {
       smoothclip::inheritedVelocity(history, Channels(0, 100), 0.2), 0.0);
 }
 
+- (void)testStalenessCreditIsUndiminishedInsideTheGraceWindow {
+  // An ordinary fling issues animateTo in the same input batch as, or one
+  // frame after, the last drag write. That handoff must not be scaled at all.
+  XCTAssertEqual(smoothclip::velocityStalenessCredit(0), 1.0);
+  XCTAssertEqual(smoothclip::velocityStalenessCredit(1.0 / 120.0), 1.0);
+  XCTAssertEqual(
+      smoothclip::velocityStalenessCredit(smoothclip::kVelocityFullCreditS),
+      1.0);
+}
+
+- (void)testStalenessCreditDecaysToZeroWithoutAStep {
+  // The pre-0.2.7 cliff: a release after a 99 ms still-hold inherited the
+  // full drag velocity, 101 ms inherited none. The two ends now meet.
+  XCTAssertEqualWithAccuracy(
+      smoothclip::velocityStalenessCredit(0.05), 0.6, 1e-12);
+  XCTAssertEqualWithAccuracy(
+      smoothclip::velocityStalenessCredit(0.099), 0.012, 1e-12);
+  XCTAssertEqual(
+      smoothclip::velocityStalenessCredit(smoothclip::kVelocityStalenessS),
+      0.0);
+  XCTAssertEqual(smoothclip::velocityStalenessCredit(0.5), 0.0);
+
+  // Monotone and continuous across the whole range: sweeping the hold in 1 ms
+  // steps may never increase the credit, and may never move it by more than
+  // one step's worth — which is what "no step the hand can feel" means.
+  const double maxStep =
+      0.001 / (smoothclip::kVelocityStalenessS -
+               smoothclip::kVelocityFullCreditS);
+  double previous = 1.0;
+  for (int step = 0; step <= 200; step += 1) {
+    const double credit = smoothclip::velocityStalenessCredit(step * 0.001);
+    XCTAssertLessThanOrEqual(credit, previous + 1e-12);
+    XCTAssertLessThanOrEqual(std::fabs(credit - previous), maxStep + 1e-12);
+    previous = credit;
+  }
+  XCTAssertEqual(previous, 0.0);
+}
+
+- (void)testHoldBeforeReleaseScalesTheInheritedVelocity {
+  smoothclip::VelocitySampleHistory history;
+  smoothclip::recordVelocitySample(history, Channels(0, 0), 0.0);
+  smoothclip::recordVelocitySample(history, Channels(0, 8), 0.016);
+  const double undecayed = 8.0 / 0.016 / 92.0;
+
+  // Released in the same frame as the last drag write: untouched.
+  XCTAssertEqualWithAccuracy(
+      smoothclip::inheritedVelocity(history, Channels(0, 100), 0.0165),
+      undecayed,
+      1e-9);
+  // Held still for 50 ms first: 60% of the drag velocity, not all of it.
+  XCTAssertEqualWithAccuracy(
+      smoothclip::inheritedVelocity(history, Channels(0, 100), 0.066),
+      undecayed * 0.6,
+      1e-9);
+  // 99 ms: nearly dead, but arrived at smoothly rather than off a cliff.
+  XCTAssertEqualWithAccuracy(
+      smoothclip::inheritedVelocity(history, Channels(0, 100), 0.115),
+      undecayed * 0.012,
+      1e-9);
+  XCTAssertEqual(
+      smoothclip::inheritedVelocity(history, Channels(0, 100), 0.116), 0.0);
+}
+
 - (void)testSingleObservationInheritsZeroVelocity {
   smoothclip::VelocitySampleHistory history;
   // A fresh history (view init / prepareForRecycle) holds at most one
@@ -98,22 +161,18 @@ static std::array<double, 7> Channels(double x, double y) {
       smoothclip::inheritedVelocity(history, Channels(0, 100), 0.003), 0.0);
 }
 
-// beginInteraction on both platforms records the frozen presentation as a
-// plain sample (Android used to reset the history here, launching an
-// instant grab-and-refling dead). The frozen value pairs with the last real
-// sample: bounded momentum continuity, diluted over the true elapsed time.
-- (void)testGrabRecordPairsFrozenValueWithLastRealSample {
+// A real interactive write after a pause remains a normal sample: it pairs
+// with the prior write and still uses the true elapsed time.
+- (void)testRecentInteractiveWriteAfterPausePairsWithThePriorSample {
   smoothclip::VelocitySampleHistory history;
   smoothclip::recordVelocitySample(history, Channels(0, 0), 0.0);
   smoothclip::recordVelocitySample(history, Channels(0, 8), 0.016);
-  // A native animation runs for 60 ms; the grab freezes mid-flight at y=30
-  // and records it — identical call on iOS (freeze) and Android
-  // (beginInteraction).
+  // The user pauses for 60 ms, then drags to y=30.
   smoothclip::recordVelocitySample(history, Channels(0, 30), 0.076);
   XCTAssertTrue(history.hasPrevious);
   XCTAssertEqual(history.previousTimeS, 0.016);
 
-  // Instant refling: 22 DIP since the last real sample over 60 ms projected
+  // Instant release: 22 DIP since the last sample over 60 ms projected
   // onto the remaining 70 DIP — bounded, not zero, no explosion.
   const double velocity =
       smoothclip::inheritedVelocity(history, Channels(0, 100), 0.077);

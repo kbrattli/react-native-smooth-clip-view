@@ -39,6 +39,7 @@ class SmoothClipModule(context: ReactApplicationContext) :
         contentTranslateX: Double,
         contentTranslateY: Double,
         takeOwnership: Boolean,
+        overridePendingAnimation: Boolean,
     ) = Unit
 
     override fun beginInteraction(driverId: Double): WritableArray =

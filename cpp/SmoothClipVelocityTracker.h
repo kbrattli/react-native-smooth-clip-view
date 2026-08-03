@@ -27,9 +27,16 @@ struct VelocitySampleHistory {
 // batch spacing and below the 8.33 ms 120 Hz frame, so legitimate
 // consecutive-frame samples never coalesce.
 inline constexpr double kSampleCoalesceWindowS = 0.004;
-// A latest sample older than this no longer describes the finger; 'inherit'
-// yields zero instead of replaying stale motion.
+// A latest sample this old no longer describes the finger at all; 'inherit'
+// yields zero rather than replaying stale motion. It is the far end of the
+// decay below, not a cliff.
 inline constexpr double kVelocityStalenessS = 0.1;
+// Below this age the sample is still "now": an ordinary fling calls animateTo
+// in the same input batch as, or one frame after, the last drag write, and
+// must inherit its motion undiminished. Decaying from zero age instead would
+// shave ~17% off every normal handoff at 60 Hz — a regression in the case that
+// matters most, in exchange for fixing the case that barely happens.
+inline constexpr double kVelocityFullCreditS = 1.0 / 60.0;
 
 inline void recordVelocitySample(
     VelocitySampleHistory &history,
@@ -60,15 +67,27 @@ inline void recordVelocitySample(
   history.latestTimeS = nowS;
 }
 
-// beginInteraction on both platforms records the frozen presentation as a
-// plain sample: a grab mid-animation pairs the frozen value with the last
-// real sample, so an instant refling inherits bounded recent motion instead
-// of launching dead, and a grab at an unchanged value dedupes to a no-op
-// whose staleness keeps aging. There is deliberately no reset primitive —
-// the 100 ms staleness guard is the forgetting mechanism.
+// Only explicit interactive writes route through this recorder. Native
+// freeze/join/resume/static-finalization paths deliberately do not, so an
+// animation cannot manufacture a later inherited velocity. During ordinary
+// interaction, the staleness decay below is the forgetting mechanism and it
+// forgets gradually rather than all at once.
 
 inline void clearVelocitySamples(VelocitySampleHistory &history) {
   history = VelocitySampleHistory{};
+}
+
+// Age of the newest sample expressed as a credit multiplier: full inside the
+// grace window, decaying linearly to zero at the staleness bound. The old
+// binary cutoff meant a release after a 99 ms still-hold launched at the full
+// drag velocity while 101 ms launched dead — a step the hand can feel, and one
+// RNGH's own windowed event.velocity* does not have. Continuous and monotone
+// in holdS, so no hold duration produces a discontinuity in launch speed.
+inline double velocityStalenessCredit(double holdS) {
+  if (holdS <= kVelocityFullCreditS) return 1;
+  if (holdS >= kVelocityStalenessS) return 0;
+  return (kVelocityStalenessS - holdS) /
+      (kVelocityStalenessS - kVelocityFullCreditS);
 }
 
 // Normalized velocity of the recorded motion projected onto the
@@ -82,7 +101,8 @@ inline double inheritedVelocity(
     double nowS) {
   if (!history.hasPrevious || !history.hasLatest) return 0;
   const double elapsed = history.latestTimeS - history.previousTimeS;
-  if (elapsed <= 0 || nowS - history.latestTimeS > kVelocityStalenessS) {
+  const double credit = velocityStalenessCredit(nowS - history.latestTimeS);
+  if (elapsed <= 0 || credit <= 0) {
     return 0;
   }
   double numerator = 0;
@@ -94,7 +114,7 @@ inline double inheritedVelocity(
     denominator += destinationDelta * destinationDelta;
   }
   if (denominator <= 1e-12) return 0;
-  const double result = numerator / elapsed / denominator;
+  const double result = numerator / elapsed / denominator * credit;
   return std::isfinite(result) ? result : 0;
 }
 

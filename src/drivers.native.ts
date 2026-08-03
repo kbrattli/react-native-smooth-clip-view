@@ -211,6 +211,14 @@ export function useSmoothClipDriver(
   // so animateTo must start from the native registry's latest value instead
   // of snapping back to the stale SharedValue.
   const scalarsStale = useSharedValue(0);
+  // Non-zero between the effect cleanup's native teardown and the next effect
+  // run. Native cannot tell "this driver was never seeded" from "this driver
+  // was destroyed and erased" — both are a missing registry entry — so the
+  // animation entry points would happily create a fresh state for a call that
+  // arrives after the hook is gone, leaving a latch that no view starts and no
+  // destroy cancels. Only the UI side knows the difference, so it is decided
+  // here.
+  const disposed = useSharedValue(0);
   const callbackRef = useRef(options.onAnimationComplete);
   const driverRef = useRef<SmoothClipDriver | null>(null);
   callbackRef.current = options.onAnimationComplete;
@@ -221,14 +229,21 @@ export function useSmoothClipDriver(
 
     const seedPresentation = (next: SmoothClipPresentation) => {
       'worklet';
-      if (!clipPresentationEquals(presentation.value, next)) {
-        suppressDeliveries.value += 1;
-        presentation.value = next;
-      }
+      if (clipPresentationEquals(presentation.value, next)) return;
+      suppressDeliveries.value += 1;
+      presentation.value = next;
+      // The listener runs synchronously inside that assignment, so the credit
+      // is either spent by now or was never spendable. deliver() returns before
+      // the decrement whenever the value dedupes against `last` — which happens
+      // exactly when native already holds it, e.g. freezing a latch back to the
+      // value it started from. An unspent credit would then swallow the next
+      // real declarative write and leave native a geometry behind for good.
+      if (suppressDeliveries.value > 0) suppressDeliveries.value -= 1;
     };
 
     const beginOnUI = (): SmoothClipPresentation => {
       'worklet';
+      if (disposed.value !== 0) return presentation.value;
       const current = presentationFromNative(
         beginInteractionHostFunction(driverId),
         presentation.value
@@ -242,7 +257,7 @@ export function useSmoothClipDriver(
 
     const setOnUI = (next: SmoothClipPresentation): void => {
       'worklet';
-      if (!isFiniteClipPresentation(next)) return;
+      if (disposed.value !== 0 || !isFiniteClipPresentation(next)) return;
       activeAnimationId.value = 0;
       ownership.value = INTERACTIVE;
       scalarsStale.value = 0;
@@ -256,7 +271,8 @@ export function useSmoothClipDriver(
         clip.radius,
         contentTranslateX,
         contentTranslateY,
-        true
+        true,
+        false
       );
       seedPresentation(next);
     };
@@ -268,10 +284,12 @@ export function useSmoothClipDriver(
       height: number,
       radius: number,
       contentTranslateX: number,
-      contentTranslateY: number
+      contentTranslateY: number,
+      overridePendingAnimation = false
     ): void => {
       'worklet';
       if (
+        disposed.value !== 0 ||
         !Number.isFinite(x) ||
         !Number.isFinite(y) ||
         !Number.isFinite(width) ||
@@ -294,7 +312,8 @@ export function useSmoothClipDriver(
         radius,
         contentTranslateX,
         contentTranslateY,
-        true
+        true,
+        overridePendingAnimation
       );
     };
 
@@ -303,13 +322,22 @@ export function useSmoothClipDriver(
       animation: SmoothClipAnimation
     ): number => {
       'worklet';
+      // Cleanup owns the terminal state. Check it before validation so even an
+      // invalid stale call cannot mint a native rejection id/completion against
+      // a driver whose listener and registry entry are already gone.
+      if (disposed.value !== 0) return 0;
       if (
         !isFiniteClipPresentation(target) ||
         !animationIsFinite(target, animation)
       ) {
         return rejectAnimationHostFunction(driverId);
       }
-
+      // Past the hook's cleanup the native entry is gone for good, and an
+      // interactive start here would recreate it as a latch nothing can ever
+      // start or cancel. Reject before any side effect — not via
+      // rejectAnimation, which would mint an id and a completion for a driver
+      // whose JS state is already detached. This is the "unsupported dispatch"
+      // arm of the documented 0 contract.
       const from = animation.from;
       if (from !== undefined) {
         // Fused hot write: exactly setScalars(from…) issued immediately
@@ -324,7 +352,8 @@ export function useSmoothClipDriver(
           from.clip.height,
           from.clip.radius,
           from.contentTranslateX,
-          from.contentTranslateY
+          from.contentTranslateY,
+          true
         );
       }
 
@@ -444,12 +473,12 @@ export function useSmoothClipDriver(
         );
       }
       if (animationId === 0) {
-        // The 0 sentinel: the driver entry no longer exists (destroyed) or
-        // the call ran off the main thread — validation failures never get
-        // here (they reject before any side effect with a fresh id and one
-        // finished:false completion). Restore the two-call-desugar state and
-        // forward the registry's rejection result, which is 0 again in both
-        // reachable cases, with no completion — exactly the README contract.
+        // The 0 sentinel: off-main, invalid-id, or otherwise unsupported
+        // dispatch. A missing driver is accepted when this call carries the
+        // authoritative interactive start above; a start-less missing-state
+        // request remains unsupported rather than inventing zero geometry.
+        // Validation failures never get here (they reject before any side
+        // effect with a fresh id and one finished:false completion).
         ownership.value = INTERACTIVE;
         presentation.value = start;
         if (scalarsWereStale) scalarsStale.value = 1;
@@ -465,6 +494,10 @@ export function useSmoothClipDriver(
       behavior: 'current' | 'target' = 'current'
     ): SmoothClipPresentation => {
       'worklet';
+      // Past the hook's cleanup the native entry is gone; the call would fail
+      // defined (handled=false) but it is the last driver.ui path that still
+      // crosses into native after the tombstone. Guard it like the rest.
+      if (disposed.value !== 0) return presentation.value;
       const values = cancelAnimationHostFunction(
         driverId,
         animationId,
@@ -630,9 +663,14 @@ export function useSmoothClipDriver(
         suppressed: SharedValue<number>,
         active: SharedValue<number>,
         stale: SharedValue<number>,
+        gone: SharedValue<number>,
         setter: typeof setPresentationHostFunction
       ) => {
         'worklet';
+        // First, before the listener or the seed: this effect run owns the
+        // driver again, so a StrictMode/<Activity> replay must clear the
+        // previous cleanup's tombstone or every later write would be rejected.
+        gone.value = 0;
         let last: SmoothClipPresentation | null = null;
         const deliver = (next: SmoothClipPresentation) => {
           if (
@@ -662,15 +700,19 @@ export function useSmoothClipDriver(
             clip.radius,
             contentTranslateX,
             contentTranslateY,
+            false,
             false
           );
         };
         source.addListener(listenerId, deliver);
         // Authoritative take-ownership seed. Creates the native entry before
-        // any view mounts on the first run, and revives a driver destroyed by
-        // an effect-replay cleanup (StrictMode/<Activity>) on later runs.
+        // any view mounts on the ordinary path, and revives a driver destroyed
+        // by an effect-replay cleanup (StrictMode/<Activity>) on later runs.
+        // An animation worklet can win the scheduling race and create a latch
+        // first; Native ownership then marks that intent as newer, so this
+        // passive seed must not clear its active id or replay the target value.
         const current = source.value;
-        if (isFiniteClipPresentation(current)) {
+        if (owner.value === INTERACTIVE && isFiniteClipPresentation(current)) {
           active.value = 0;
           owner.value = INTERACTIVE;
           stale.value = 0;
@@ -684,7 +726,8 @@ export function useSmoothClipDriver(
             current.clip.radius,
             current.contentTranslateX,
             current.contentTranslateY,
-            true
+            true,
+            false
           );
         }
       },
@@ -695,6 +738,7 @@ export function useSmoothClipDriver(
       suppressDeliveries,
       activeAnimationId,
       scalarsStale,
+      disposed,
       setPresentationHostFunction
     );
 
@@ -707,20 +751,46 @@ export function useSmoothClipDriver(
           source: SharedValue<SmoothClipPresentation>,
           listenerId: number,
           nativeDriverId: number,
+          owner: SharedValue<number>,
+          active: SharedValue<number>,
+          stale: SharedValue<number>,
+          suppressed: SharedValue<number>,
+          gone: SharedValue<number>,
           destroy: typeof destroyDriverHostFunction
         ) => {
           'worklet';
           source.removeListener(listenerId);
           destroy(nativeDriverId);
+          // StrictMode replays the effect with these same SharedValues. Reset
+          // the UI-side tombstone only after native teardown so the next setup
+          // can seed or animate without inheriting stale Native ownership.
+          active.value = 0;
+          owner.value = INTERACTIVE;
+          stale.value = 0;
+          // Defensive: seedPresentation now reclaims its own unspent credit at
+          // the point of issue, so this should already be 0. Kept because the
+          // failure mode — one declarative write silently dropped for the rest
+          // of the next hook's life — is invisible until someone reports a
+          // stale clip rect.
+          suppressed.value = 0;
+          // Last: the native entry is now erased, so until the next effect run
+          // clears this, any call that would recreate it is rejected instead.
+          gone.value = 1;
         },
         presentation,
         driverId,
         driverId,
+        ownership,
+        activeAnimationId,
+        scalarsStale,
+        suppressDeliveries,
+        disposed,
         destroyDriverHostFunction
       );
     };
   }, [
     activeAnimationId,
+    disposed,
     ownership,
     presentation,
     scalarsStale,

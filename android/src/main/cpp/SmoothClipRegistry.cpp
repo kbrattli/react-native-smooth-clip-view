@@ -1,4 +1,5 @@
 #include "SmoothClipAndroid.h"
+#include "SmoothClipAnimationId.h"
 #include "SmoothClipAnimationCurve.h"
 #include "SmoothClipVelocityTracker.h"
 
@@ -25,6 +26,7 @@ using facebook::jni::global_ref;
 
 enum class Ownership { Interactive, Native };
 enum class AnimationKind { Timing, Spring, Keyframes };
+enum class ViewParticipation { Deferred, Active, Suspended };
 
 // Load-bearing invariant, not just a convenience clock: advance()'s frame-clock
 // anchor compares this value ABSOLUTELY against a choreographer frame stamp
@@ -59,19 +61,17 @@ struct ActiveAnimation {
   KeyframeCurve keyframes;
   double durationS = 0;
   double startedAtS = 0;
-  // Wall-clock twin of startedAtS: stamped together with it, NEVER moved by
-  // the frame-clock anchor. The unregister re-latch remainder needs honest
-  // wall elapsed and reads this; the animation curve itself paces on the
-  // anchored startedAtS frame axis.
-  double wallStartedAtS = 0;
   // Integrated spring state (channels: x, y, width, height, radius, tx, ty).
   std::array<double, 7> springPosition{};
   std::array<double, 7> springVelocity{};
   double lastFrameS = 0;
   bool finished = true;
-  // False while the animation is latched: built before any host view
-  // registered, held un-rendered (and out of animatingDrivers()) until the
-  // first registerViewAndroid rebases the clock and starts it.
+  // False while the animation is latched, and held out of animatingDrivers()
+  // so it cannot tick. Two ways in: built before any host view could display
+  // (pre-registration, or a detached/unsized host), or re-latched by
+  // unregisterViewAndroid when the last DISPLAYABLE host left mid-flight.
+  // Started by whichever lifecycle/geometry update first sees a displayable
+  // entry; each rebases the clock through startLatchedAnimation.
   bool started = false;
   // False until the first advance() translates the wall-clock start stamp
   // onto the choreographer frame-time axis (elapsed-preserving). Every
@@ -89,6 +89,8 @@ struct ViewEntry {
   double density = 0;
   double hostWidthPx = 0;
   double hostHeightPx = 0;
+  bool lifecycleVisible = false;
+  ViewParticipation participation = ViewParticipation::Deferred;
 };
 
 struct DriverState {
@@ -97,7 +99,6 @@ struct DriverState {
   Ownership ownership = Ownership::Interactive;
   std::vector<ViewEntry> views;
   std::optional<ActiveAnimation> animation;
-  int32_t nextAnimationId = 0;
   // Set by destroyDriver while views are still registered (StrictMode effect
   // replay, hosts mounted in another subtree). The entry is erased when the
   // last view leaves and revived by a take-ownership setPresentation.
@@ -215,31 +216,6 @@ void scheduleFrame() {
 // keyframe curve now live in cpp/SmoothClipAnimationCurve.h so a test binary can
 // reach them without linking fbjni; ios/tests pins their behavior.
 
-double cubicBezier(
-    double x1,
-    double y1,
-    double x2,
-    double y2,
-    double input) {
-  double low = 0;
-  double high = 1;
-  for (int iteration = 0; iteration < 14; iteration += 1) {
-    const double t = (low + high) / 2;
-    const double inverse = 1 - t;
-    const double x = 3 * inverse * inverse * t * x1 +
-        3 * inverse * t * t * x2 + t * t * t;
-    if (x < input) {
-      low = t;
-    } else {
-      high = t;
-    }
-  }
-  const double t = (low + high) / 2;
-  const double inverse = 1 - t;
-  return 3 * inverse * inverse * t * y1 + 3 * inverse * t * t * y2 +
-      t * t * t;
-}
-
 // Springs settle below these per-channel thresholds (DIP and DIP/s).
 constexpr double kSpringSettleDisplacement = 0.05;
 constexpr double kSpringSettleVelocity = 1.0;
@@ -319,14 +295,6 @@ void emitCompletion(uint64_t driverId, int32_t animationId, bool finished) {
   }
 }
 
-int32_t allocateAnimationId(DriverState &state) {
-  state.nextAnimationId =
-      state.nextAnimationId == std::numeric_limits<int32_t>::max()
-      ? 1
-      : state.nextAnimationId + 1;
-  return state.nextAnimationId;
-}
-
 // Terminal per-frame delivery: scale DIP -> px and normalize against the
 // pushed host metrics in C++, so the JNI call carries final pixel floats and
 // the Kotlin side reduces to field stores + invalidateOutline().
@@ -378,6 +346,9 @@ std::vector<uint64_t> &animatingDrivers() {
 // erase/recreate cycle would let one frame integrate the animation twice.
 void clearActiveAnimation(uint64_t driverId, DriverState &state) {
   state.animation.reset();
+  for (ViewEntry &entry : state.views) {
+    entry.participation = ViewParticipation::Deferred;
+  }
   auto &active = animatingDrivers();
   active.erase(
       std::remove(active.begin(), active.end(), driverId), active.end());
@@ -417,7 +388,7 @@ Presentation prepareAnimation(
 // no one can see (the transparentModal mount pattern).
 bool entryDisplayable(const ViewEntry &entry) {
   return entry.hostWidthPx > 0 && entry.hostHeightPx > 0 &&
-      entry.view->isViewAttachedToWindow();
+      entry.lifecycleVisible;
 }
 
 bool anyDisplayableView(const DriverState &state) {
@@ -434,7 +405,6 @@ void startLatchedAnimation(uint64_t driverId, DriverState &state) {
   animation.started = true;
   animation.startedAtS = nowSeconds();
   animation.lastFrameS = animation.startedAtS;
-  animation.wallStartedAtS = animation.startedAtS;
   // Load-bearing for re-latch resumes: unregisterViewAndroid rewrites this
   // ActiveAnimation in place, so a stale anchor would replay the fraction-0
   // first frame the anchor exists to remove.
@@ -442,6 +412,11 @@ void startLatchedAnimation(uint64_t driverId, DriverState &state) {
   auto &active = animatingDrivers();
   if (std::find(active.begin(), active.end(), driverId) == active.end()) {
     active.push_back(driverId);
+  }
+  for (ViewEntry &entry : state.views) {
+    if (entryDisplayable(entry)) {
+      entry.participation = ViewParticipation::Active;
+    }
   }
   applyToViews(state, animation.start);
   scheduleFrame();
@@ -464,10 +439,6 @@ int32_t startAnimation(
   const StartStamp stamp = resolveStartStamp(startedAtHintS, wallNow);
   animation.startedAtS = stamp.startedAtS;
   animation.lastFrameS = stamp.startedAtS;
-  // Wall axis for the re-latch remainder keeps the native call stamp: the
-  // hint is at most a frame older and the remainder math wants honest wall
-  // elapsed from when the animation actually began integrating.
-  animation.wallStartedAtS = wallNow;
   animation.frameClockAnchored = stamp.frameClockAnchored;
   // current = start even while latched is load-bearing: cancelAnimation,
   // beginInteraction, prepareAnimation's visibleBefore and registerView's
@@ -476,6 +447,11 @@ int32_t startAnimation(
   animation.current = animation.start;
   animation.started = anyDisplayableView(state);
   state.animation = std::move(animation);
+  for (ViewEntry &entry : state.views) {
+    entry.participation = state.animation->started && entryDisplayable(entry)
+        ? ViewParticipation::Active
+        : ViewParticipation::Deferred;
+  }
   if (!state.animation->started) {
     // Latch: no host view can display yet (animateTo raced the mount, or
     // every host is detached/unsized). The first displayable registration,
@@ -493,21 +469,90 @@ int32_t startAnimation(
   return state.animation->id;
 }
 
+void relatchIfNoDisplayable(uint64_t driverId, DriverState &state) {
+  if (!state.animation.has_value() || !state.animation->started ||
+      anyDisplayableView(state)) {
+    return;
+  }
+  auto &animation = *state.animation;
+  for (ViewEntry &entry : state.views) {
+    if (entry.participation == ViewParticipation::Active) {
+      entry.participation = ViewParticipation::Suspended;
+    }
+  }
+
+  if (animation.kind == AnimationKind::Timing) {
+    const TimingContinuation continuation = timingContinuationAtFrame(
+        animation.timing,
+        animation.start,
+        animation.target,
+        animation.lastFrameS,
+        animation.startedAtS,
+        animation.durationS);
+    animation.current = continuation.start;
+    animation.timing = continuation.animation;
+    animation.durationS = continuation.animation.durationMs / 1000.0;
+  } else if (animation.kind == AnimationKind::Keyframes) {
+    const KeyframeContinuation continuation = keyframeContinuationAtFrame(
+        animation.keyframes.frames(),
+        animation.current,
+        animation.target,
+        animation.lastFrameS,
+        animation.startedAtS,
+        animation.durationS);
+    animation.current = continuation.start;
+    animation.keyframes.reset(continuation.frames);
+    animation.durationS = continuation.durationMs / 1000.0;
+  }
+
+  if (state.destroyed ||
+      (animation.kind != AnimationKind::Spring && animation.durationS <= 0)) {
+    state.ownership = Ownership::Interactive;
+    finishActive(driverId, state, false);
+    return;
+  }
+
+  animation.start = animation.current;
+  animation.started = false;
+  animation.frameClockAnchored = false;
+  auto &active = animatingDrivers();
+  active.erase(
+      std::remove(active.begin(), active.end(), driverId), active.end());
+}
+
+void reconcileViewDisplayability(
+    uint64_t driverId,
+    DriverState &state,
+    ViewEntry &entry) {
+  if (!state.animation.has_value()) return;
+  if (!state.animation->started) {
+    if (entryDisplayable(entry)) startLatchedAnimation(driverId, state);
+    return;
+  }
+
+  if (entryDisplayable(entry)) {
+    if (entry.participation != ViewParticipation::Active) {
+      entry.participation = ViewParticipation::Active;
+      deliverToView(entry, state.animation->current);
+    }
+  } else if (entry.participation == ViewParticipation::Active) {
+    entry.participation = ViewParticipation::Suspended;
+  }
+  relatchIfNoDisplayable(driverId, state);
+}
+
 void advance(uint64_t driverId, DriverState &state, double now) {
   ActiveAnimation &animation = *state.animation;
 
   if (!animation.frameClockAnchored) {
-    // startedAtS/lastFrameS hold nowSeconds() sampled mid-frame at the
-    // animateTo call / latch attach, but `now` is the frame's vsync
-    // timestamp — the same CLOCK_MONOTONIC timebase at an earlier sampling
-    // point. Reanimated stamps a parallel withTiming with
-    // `global.__frameTimestamp || wallNow` and then paces it on frame stamps,
-    // so min() reproduces both of its branches exactly and the two curves
-    // stay phase-identical: a call issued between frames keeps its wall stamp
-    // (the frame that dispatches us is later, so the first fraction is
-    // already positive — no duplicated start frame), and a call issued inside
-    // the very frame that dispatches us adopts that frame's stamp instead of
-    // clamping to 0.
+    // This is the stamp-less/latch fallback. Worklet-issued animations carry
+    // Reanimated's exact `__frameTimestamp || _getAnimationTimestamp()` value
+    // and arrive pre-anchored, so they skip this approximation — including the
+    // CALLBACK_INPUT case where the current frame stamp predates the call.
+    // Here startedAtS/lastFrameS hold nowSeconds() sampled at native latch
+    // attach or by an older caller, while `now` is the frame's vsync stamp on
+    // the same CLOCK_MONOTONIC timebase. Taking the earlier stamp prevents a
+    // mid-frame native start from duplicating fraction zero.
     //
     // Deliberately NOT a wall-elapsed rebase (`now - (nowSeconds() -
     // startedAtS)`): that bakes THIS frame's dispatch latency into the curve
@@ -522,13 +567,15 @@ void advance(uint64_t driverId, DriverState &state, double now) {
     animation.startedAtS = anchorStartTime(animation.startedAtS, now);
     animation.lastFrameS = animation.startedAtS;
     animation.frameClockAnchored = true;
-    // wallStartedAtS deliberately keeps the wall axis (re-latch remainder).
   }
 
   bool done = false;
   if (animation.kind == AnimationKind::Spring) {
     done = advanceSpring(animation, now);
   } else {
+    // This is the frame whose presentation is delivered below. Lifecycle
+    // re-latch must trim from this timestamp, never from a later wall sample.
+    animation.lastFrameS = now;
     const double fraction =
         timingFraction(now, animation.startedAtS, animation.durationS);
     if (animation.kind == AnimationKind::Keyframes) {
@@ -550,7 +597,13 @@ void advance(uint64_t driverId, DriverState &state, double now) {
 
   if (done) {
     const int32_t animationId = animation.id;
-    const bool finished = animation.finished;
+    bool finished = animation.finished;
+    for (const ViewEntry &entry : state.views) {
+      if (entry.participation == ViewParticipation::Suspended) {
+        finished = false;
+        break;
+      }
+    }
     const Presentation target = animation.target;
     clearActiveAnimation(driverId, state);
     state.latest = target;
@@ -621,7 +674,8 @@ void clearCompletionCallback(const void *owner) {
 void setPresentation(
     uint64_t driverId,
     Presentation presentation,
-    bool takeOwnership) {
+    bool takeOwnership,
+    bool overridePendingAnimation) {
   if (!isOnMainThread()) return;
   auto iterator = registry().find(driverId);
   if (!takeOwnership) {
@@ -637,13 +691,11 @@ void setPresentation(
   if (!takeOwnership && state.ownership != Ownership::Interactive) return;
   if (takeOwnership) {
     state.destroyed = false;
-    // A held latch is strictly newer intent than this write: the latch was
-    // created after whatever value the caller read (the hook's seed replays
-    // a SharedValue that an earlier animateTo already advanced to its
-    // target). Cancelling it here would seed the target and turn the pending
-    // animation into a static jump. Callers that want to override a latch
-    // cancel it explicitly first.
-    if (state.animation.has_value() && !state.animation->started) {
+    // Passive seeds and public setters must not displace newer pending intent.
+    // The fused animation.from write is different: it is the caller's newest,
+    // authoritative start and explicitly opts in to cancelling the old latch.
+    if (state.animation.has_value() && !state.animation->started &&
+        !overridePendingAnimation) {
       return;
     }
     finishActive(driverId, state, false);
@@ -671,12 +723,8 @@ Presentation beginInteraction(uint64_t driverId) {
   state.latest = current;
   state.hasLatest = true;
   state.ownership = Ownership::Interactive;
-  // Plain record, not a reset — iOS parity (smoothClipFreezePresentation
-  // records the frozen value). Pairing the frozen mid-flight presentation
-  // with the last real sample lets a grab-and-instant-refling inherit
-  // bounded recent motion instead of launching dead; an unchanged value
-  // dedupes to a no-op and ages out through the staleness guard.
-  recordVelocitySample(state.samples, toChannels(current), nowSeconds());
+  // The frozen frame came from native animation movement, not an interactive
+  // write. Do not let it become a later `initialVelocity: inherit` sample.
   applyToViews(state, current);
   emitCompletion(driverId, animationId, false);
   return current;
@@ -689,10 +737,15 @@ int32_t animateTiming(
     TimingAnimation animation) {
   if (!isOnMainThread()) return 0;
   auto iterator = registry().find(driverId);
-  if (iterator == registry().end()) return 0;
+  if (iterator == registry().end()) {
+    if (!start.hasInteractiveStart) return 0;
+    iterator = registry().try_emplace(driverId).first;
+    iterator->second.latest = start.interactiveStart;
+    iterator->second.hasLatest = true;
+  }
   auto &state = iterator->second;
   state.destroyed = false;
-  const int32_t animationId = allocateAnimationId(state);
+  const int32_t animationId = allocateAnimationId();
   const Presentation resolvedStart =
       prepareAnimation(driverId, state, start, presentation);
   if (shouldReduceMotion(animation.reduceMotion) || animation.durationMs <= 0) {
@@ -717,10 +770,15 @@ int32_t animateSpring(
     SpringAnimation animation) {
   if (!isOnMainThread()) return 0;
   auto iterator = registry().find(driverId);
-  if (iterator == registry().end()) return 0;
+  if (iterator == registry().end()) {
+    if (!start.hasInteractiveStart) return 0;
+    iterator = registry().try_emplace(driverId).first;
+    iterator->second.latest = start.interactiveStart;
+    iterator->second.hasLatest = true;
+  }
   auto &state = iterator->second;
   state.destroyed = false;
-  const int32_t animationId = allocateAnimationId(state);
+  const int32_t animationId = allocateAnimationId();
   // Scalar velocity along the current-to-target trajectory; each channel is
   // seeded with velocity·displacement to match the iOS CASpringAnimation
   // per-keypath behavior.
@@ -762,10 +820,15 @@ int32_t animateKeyframes(
     int32_t reduceMotion) {
   if (!isOnMainThread()) return 0;
   auto iterator = registry().find(driverId);
-  if (iterator == registry().end()) return 0;
+  if (iterator == registry().end()) {
+    if (!start.hasInteractiveStart) return 0;
+    iterator = registry().try_emplace(driverId).first;
+    iterator->second.latest = start.interactiveStart;
+    iterator->second.hasLatest = true;
+  }
   auto &state = iterator->second;
   state.destroyed = false;
-  const int32_t animationId = allocateAnimationId(state);
+  const int32_t animationId = allocateAnimationId();
   const Presentation resolvedStart =
       prepareAnimation(driverId, state, start, presentation);
   if (shouldReduceMotion(reduceMotion) || durationMs <= 0 ||
@@ -788,7 +851,7 @@ int32_t rejectAnimation(uint64_t driverId) {
   if (!isOnMainThread()) return 0;
   auto iterator = registry().find(driverId);
   if (iterator == registry().end()) return 0;
-  const int32_t animationId = allocateAnimationId(iterator->second);
+  const int32_t animationId = allocateAnimationId();
   emitCompletion(driverId, animationId, false);
   return animationId;
 }
@@ -840,12 +903,6 @@ void destroyDriver(uint64_t driverId) {
 
 // --- Android view lifecycle ----------------------------------------------
 
-bool JSmoothClipView::isViewAttachedToWindow() const {
-  static const auto method =
-      javaClassStatic()->getMethod<jboolean()>("isAttachedToWindow");
-  return method(self());
-}
-
 void JSmoothClipView::applyClip(const Presentation &presentation) const {
   static const auto method =
       javaClassStatic()
@@ -889,7 +946,8 @@ void registerViewAndroid(
     Presentation initialPresentation,
     double density,
     double hostWidthPx,
-    double hostHeightPx) {
+    double hostHeightPx,
+    bool lifecycleVisible) {
   auto &state = registry()[driverId];
   state.destroyed = false;
   if (!state.hasLatest) {
@@ -905,32 +963,24 @@ void registerViewAndroid(
       existing.density = density;
       existing.hostWidthPx = hostWidthPx;
       existing.hostHeightPx = hostHeightPx;
+      existing.lifecycleVisible = lifecycleVisible;
       deliverToView(existing, visible);
-      if (state.animation.has_value() && !state.animation->started &&
-          entryDisplayable(existing)) {
-        startLatchedAnimation(driverId, state);
-      }
+      reconcileViewDisplayability(driverId, state, existing);
       return;
     }
   }
   ViewEntry entry{
-      facebook::jni::make_global(view), density, hostWidthPx, hostHeightPx};
+      facebook::jni::make_global(view),
+      density,
+      hostWidthPx,
+      hostHeightPx,
+      lifecycleVisible,
+      ViewParticipation::Deferred};
   // `visible` above already delivered animation->current (= start) to the
   // registering view — the correct first frame for a latched animation.
   deliverToView(entry, visible);
   state.views.push_back(std::move(entry));
-  if (state.animation.has_value() && !state.animation->started &&
-      entryDisplayable(state.views.back())) {
-    // Start the latched animation: rebase the clock so the first frame
-    // integrates from now, not from the pre-mount animateTo call. Gated on
-    // displayability — a mount-time registration from a detached subtree
-    // holds the latch until window attach / first host geometry.
-    // Note this function has no isOnMainThread() guard (Kotlin calls it from
-    // the view's main-thread attach path); scheduleFrame() is itself
-    // main-thread-gated, so an off-main register cannot bind the
-    // choreographer to the wrong thread.
-    startLatchedAnimation(driverId, state);
-  }
+  reconcileViewDisplayability(driverId, state, state.views.back());
 }
 
 void setViewHostGeometryAndroid(
@@ -955,29 +1005,24 @@ void setViewHostGeometryAndroid(
           state.animation.has_value() ? state.animation->current
                                       : state.latest);
     }
-    if (state.animation.has_value() && !state.animation->started &&
-        entryDisplayable(entry)) {
-      // First real host geometry made this view displayable.
-      startLatchedAnimation(driverId, state);
-    }
+    reconcileViewDisplayability(driverId, state, entry);
     return;
   }
 }
 
-void viewBecameDisplayableAndroid(
+void setViewLifecycleVisibilityAndroid(
     uint64_t driverId,
-    alias_ref<JSmoothClipView> view) {
+    alias_ref<JSmoothClipView> view,
+    bool lifecycleVisible) {
   if (!isOnMainThread()) return;
   auto iterator = registry().find(driverId);
   if (iterator == registry().end()) return;
   auto &state = iterator->second;
-  if (!state.animation.has_value() || state.animation->started) return;
   JNIEnv *env = facebook::jni::Environment::current();
   for (auto &entry : state.views) {
     if (!env->IsSameObject(entry.view.get(), view.get())) continue;
-    if (entryDisplayable(entry)) {
-      startLatchedAnimation(driverId, state);
-    }
+    entry.lifecycleVisible = lifecycleVisible;
+    reconcileViewDisplayability(driverId, state, entry);
     return;
   }
 }
@@ -989,9 +1034,12 @@ void unregisterViewAndroid(
   if (iterator == registry().end()) return;
   auto &state = iterator->second;
   bool removed = false;
+  bool removedParticipant = false;
   JNIEnv *env = facebook::jni::Environment::current();
   for (auto view_it = state.views.begin(); view_it != state.views.end();) {
     if (env->IsSameObject(view_it->view.get(), view.get())) {
+      removedParticipant = removedParticipant ||
+          view_it->participation != ViewParticipation::Deferred;
       view_it = state.views.erase(view_it);
       removed = true;
     } else {
@@ -999,66 +1047,24 @@ void unregisterViewAndroid(
     }
   }
   if (removed && state.animation.has_value()) {
-    state.animation->finished = false;
-    if (state.views.empty() && !state.animation->started) {
-      // A held latch returns to its original zero-view state; the next
-      // displayable registration still starts it (or destroyDriver cancels
-      // it). Completing it here would betray the pending intent.
-    } else if (state.views.empty()) {
-      auto &animation = *state.animation;
-      // wallStartedAtS, not startedAtS: post-anchor the latter lives on the
-      // shifted frame axis and would overstate elapsed by the first
-      // callback's dispatch latency, shortening the resumed remainder and
-      // advancing the keyframe rebase past the rendered position.
-      const double elapsedS = nowSeconds() - animation.wallStartedAtS;
-      const double remainingS = std::max(0.0, animation.durationS - elapsedS);
-      const bool canResume = !state.destroyed &&
-          (animation.kind == AnimationKind::Spring || remainingS > 0);
-      if (!canResume) {
-        // The animation ends here; release ownership so a later remount's
-        // interactive updates are not dropped.
-        state.ownership = Ownership::Interactive;
-        finishActive(driverId, state, false);
-      } else {
-        // The last rendering host left mid-flight (remount, screen swap).
-        // Completing here would leave `latest` at the target and statically
-        // snap any re-registering host straight to it. Re-latch instead:
-        // freeze the remaining animation at its current geometry so the
-        // next displayable host resumes it with the true remaining time.
-        // destroyDriver cancels a latch that never finds a host, so the
-        // completion cannot hang.
-        if (animation.kind == AnimationKind::Timing) {
-          animation.durationS = remainingS;
-        } else if (animation.kind == AnimationKind::Keyframes) {
-          const double progress = animation.durationS <= 0
-              ? 1.0
-              : clamp01(elapsedS / animation.durationS);
-          std::vector<Keyframe> remaining;
-          remaining.push_back({0, animation.current});
-          for (const Keyframe &frame : animation.keyframes.frames()) {
-            if (frame.offset <= progress) continue;
-            remaining.push_back(
-                {(frame.offset - progress) / (1 - progress),
-                 frame.presentation});
-          }
-          if (remaining.size() == 1) {
-            remaining.push_back({1, animation.target});
-          }
-          // reset() re-solves the tangents for the pruned curve and rewinds
-          // the segment cursor; the resumed run must not inherit either.
-          animation.keyframes.reset(std::move(remaining));
-          animation.durationS = remainingS;
-        }
-        animation.start = animation.current;
-        animation.started = false;
-        // A held latch must not tick: leave animatingDrivers() without
-        // resetting the animation (the eager-removal rule the choreographer
-        // loop depends on).
-        auto &active = animatingDrivers();
-        active.erase(
-            std::remove(active.begin(), active.end(), driverId),
-            active.end());
-      }
+    // Only a host that actually joined (or is unresolved after suspension)
+    // affects completion. A detached/unsized registration that stayed deferred
+    // never installed or rendered this animation.
+    if (removedParticipant) state.animation->finished = false;
+    if (!isOnMainThread()) {
+      // Blast-radius reduction, NOT a synchronization fix — be clear about
+      // which. Both call sites (SmoothClipViewManager.onAfterUpdateTransaction
+      // and onDropViewInstance) are Fabric mount operations, so this branch is
+      // unreachable in supported usage; the erase above and participant-based
+      // `finished` write are still unsynchronized if that ever stops holding. The erase
+      // cannot be skipped — dropping it would leak this view's global_ref for
+      // the process lifetime — but everything below can be, and should be: it
+      // mutates animatingDrivers(), the vector the choreographer callback walks
+      // on the main thread. Record the unfinished flag and leave the animation
+      // for the next main-thread event (attach, host geometry, destroy) to
+      // resolve.
+    } else {
+      relatchIfNoDisplayable(driverId, state);
     }
   }
   if (state.destroyed && state.views.empty()) {
