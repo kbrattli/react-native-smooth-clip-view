@@ -1,6 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import { useState } from 'react';
 import { SafeAreaView, ScrollView, StyleSheet } from 'react-native';
+import { DismissHarness } from './components/DismissHarness';
 import { Header } from './components/Header';
 import { ImplementationSwitcher } from './components/ImplementationSwitcher';
 import {
@@ -15,6 +16,7 @@ export default function App() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
+      <DismissHarness />
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
