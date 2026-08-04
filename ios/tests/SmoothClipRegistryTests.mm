@@ -2058,6 +2058,77 @@ static UIWindow *TestWindow(void) {
   smoothclip::destroyDriver(driverId);
 }
 
+// The freeze that accompanies a registry re-latch clears _activeAnimationId,
+// which happens to keep the relayout rebuild away from its stale local clock
+// on the resuming pass. That is a side effect, not a contract. If a host
+// enters a layout pass still holding an animation id while that pass's own
+// displayability notification resumes the held latch, the rebuild would
+// overwrite the fresh install with a remainder measured ACROSS the suspension
+// — shorter than the trimmed remainder, possibly zero. The id cannot detect
+// this (a resume keeps the animation id), so the view compares its install
+// generation. Restore the stale id by hand to simulate the accidental guard
+// being absent and pin the invariant directly: the install that happened
+// inside the layout pass survives it.
+- (void)testResumeInstallInsideALayoutPassSurvivesTheStaleLocalRebuild {
+  constexpr uint64_t driverId = 9063;
+  UIWindow *window = TestWindow();
+  SmoothClipView *host = DisplayableView(window, CGRectMake(0, 0, 120, 120));
+  [host setValue:@(driverId) forKey:@"driverId"];
+  const smoothclip::Presentation initial = Presentation(0, 0, 40, 40, 20);
+  const smoothclip::Presentation target = Presentation(0, 0, 100, 100, 12);
+  const smoothclip::TimingAnimation timing{600, 0.42, 0, 0.58, 1, 2};
+  smoothclip::registerView(driverId, host, initial);
+  const int32_t animationId = smoothclip::animateTiming(
+      driverId, {true, initial}, target, timing);
+  XCTAssertGreaterThan(animationId, 0);
+
+  // Headless stand-in for the mid-flight presentation layer (see the
+  // zero-sized relayout test above).
+  UIView *container = [host valueForKey:@"clipContainer"];
+  container.layer.bounds = CGRectMake(0, 0, 70, 70);
+  container.layer.position = CGPointMake(35, 35);
+  container.layer.cornerRadius = 16;
+
+  // Let a slice of the curve elapse so the re-latch trims a remainder that is
+  // clearly distinguishable from the stale wall-clock arithmetic below.
+  usleep(50000);
+  facebook::react::LayoutMetrics zeroMetrics;
+  zeroMetrics.frame = facebook::react::Rect{
+      facebook::react::Point{0, 0}, facebook::react::Size{0, 0}};
+  [host updateLayoutMetrics:zeroMetrics
+           oldLayoutMetrics:facebook::react::LayoutMetrics{}];
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+  // Held, not ticking. The local `_animationStartedAt` is NOT rebased while
+  // held, so a stale rebuild on the resuming pass would measure this sleep as
+  // consumed duration.
+  usleep(300000);
+
+  // Simulate the freeze side-effect being absent: hand the view back the id
+  // and kind it held before the suspension. The clocks stay stale — exactly
+  // the state a reordering of the freeze would produce.
+  [host setValue:@(animationId) forKey:@"activeAnimationId"];
+  [host setValue:@1 forKey:@"activeAnimationKind"];
+
+  facebook::react::LayoutMetrics metrics;
+  metrics.frame = facebook::react::Rect{
+      facebook::react::Point{0, 0}, facebook::react::Size{120, 120}};
+  [host updateLayoutMetrics:metrics oldLayoutMetrics:zeroMetrics];
+
+  CAAnimationGroup *group = (CAAnimationGroup *)[container.layer
+      animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(group);
+  // The registry's trimmed remainder (~550ms of the 600ms curve): the stale
+  // rebuild would have re-installed ~250ms or less (600 minus the held wall
+  // clock), a full restart would be 600ms.
+  XCTAssertGreaterThan(group.duration, 0.35);
+  XCTAssertLessThan(group.duration, 0.58);
+
+  smoothclip::viewAnimationDidStop(driverId, animationId, host, true);
+  smoothclip::unregisterView(driverId, host);
+  [host setValue:@0 forKey:@"driverId"];
+  smoothclip::destroyDriver(driverId);
+}
+
 // destroyDriver must clear the 'inherit' history: a revived incarnation's
 // passive seed would otherwise pair with the dead driver's samples and
 // refresh the staleness clock with motion no finger produced.

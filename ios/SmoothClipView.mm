@@ -87,6 +87,12 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   BOOL _pendingAnimationInstall;
   CFTimeInterval _animationStartedAt;
   CFTimeInterval _animationDuration;
+  // Bumped on every CA install. updateLayoutMetrics captures it on entry so a
+  // registry-driven install that happens inside its own lifecycle notification
+  // (a latch resume during that very layout pass) is detectable: the local
+  // rebuild must then be skipped, because its captured remaining time predates
+  // the suspension and would shorten — or zero out — the fresh install.
+  uint32_t _animationInstallGeneration;
   smoothclip::TimingAnimation _timingAnimation;
   smoothclip::SpringAnimation _springAnimation;
   SmoothClipAnimationDelegate *_animationDelegate;
@@ -146,6 +152,7 @@ static std::array<double, 7> SmoothClipVelocityChannels(
     _activeAnimationId = 0;
     _activeAnimationKind = 0;
     _pendingAnimationInstall = NO;
+    _animationInstallGeneration = 0;
     smoothclip::clearVelocitySamples(_velocitySamples);
     // App-state transitions are observed by the registry itself (see
     // installApplicationStateObservers): the active flag is process-global,
@@ -624,6 +631,7 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   [layer addAnimation:group forKey:@"smoothClip.geometry"];
   [_contentContainer.layer addAnimation:contentGroup
                                  forKey:@"smoothClip.content"];
+  _animationInstallGeneration += 1;
 }
 
 - (BOOL)startAnimationToRequestedGeometryWithDuration:(CFTimeInterval)duration {
@@ -780,6 +788,7 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   [_clipContainer.layer addAnimation:group forKey:@"smoothClip.geometry"];
   [_contentContainer.layer addAnimation:contentGroup
                                  forKey:@"smoothClip.content"];
+  _animationInstallGeneration += 1;
   return YES;
 }
 
@@ -866,6 +875,7 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   CGFloat visibleRadius = 0;
   const BOOL wasAnimating = _activeAnimationId != 0;
   const BOOL wasPending = _pendingAnimationInstall;
+  const uint32_t installGenerationAtEntry = _animationInstallGeneration;
   const smoothclip::Presentation visible = wasAnimating && !wasPending
       ? [self smoothClipCurrentPresentation]
       : smoothclip::Presentation{{0, 0, 0, 0, 0}, 0, 0};
@@ -906,6 +916,14 @@ static std::array<double, 7> SmoothClipVelocityChannels(
     // registry above. Its non-recording freeze is already the correct model
     // state for the new lifecycle; do not resurrect a local timer.
     if (_activeAnimationId == 0 || ![self smoothClipCanDisplay]) return;
+    // The lifecycle notification above may itself have installed this
+    // animation from the registry's trimmed remainder (a latch resume inside
+    // this very layout pass). That install rebased the clocks; the `remaining`
+    // captured on entry predates the suspension and would rebuild a shorter —
+    // possibly zero-duration — run on top of the fresh one. The id alone
+    // cannot detect this (a resume keeps the animation id), so compare the
+    // install generation.
+    if (_animationInstallGeneration != installGenerationAtEntry) return;
     const int32_t animationId = _activeAnimationId;
     const NSInteger animationKind = _activeAnimationKind;
     [self stopLayerAnimationWithoutCallback];
