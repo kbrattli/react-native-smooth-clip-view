@@ -1,16 +1,21 @@
 {
   "name": "react-native-smooth-clip-view-example",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "expo-router/entry",
   "dependencies": {
     "@expo/metro-runtime": "~57.0.7",
     "@shopify/react-native-skia": "2.6.2",
     "expo": "~57.0.8",
+    "expo-constants": "~57.0.10",
+    "expo-linking": "~57.0.5",
+    "expo-router": "~57.0.12",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.0",
     "react-native-reanimated": "4.5.0",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.0",
     "react-native-smooth-clip-view": "*",
     "react-native-svg": "15.15.4",
     "react-native-web": "~0.21.0",
@@ -29,6 +34,7 @@
   "devDependencies": {
     "@babel/core": "^7.29.7",
     "@react-native/metro-config": "0.86.0",
+    "babel-preset-expo": "~57.0.6",
     "expo-dev-client": "~57.0.9",
     "react-native-builder-bob": "^0.43.0",
     "react-native-monorepo-config": "^0.4.0"

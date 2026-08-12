@@ -1,21 +1,20 @@
-import { StatusBar } from 'expo-status-bar';
 import { useState } from 'react';
-import { SafeAreaView, ScrollView, StyleSheet } from 'react-native';
-import { DismissHarness } from './components/DismissHarness';
-import { Header } from './components/Header';
-import { ImplementationSwitcher } from './components/ImplementationSwitcher';
+import { ScrollView, StyleSheet } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { DismissHarness } from '../components/DismissHarness';
+import { Header } from '../components/Header';
+import { ImplementationSwitcher } from '../components/ImplementationSwitcher';
 import {
   StressTestScreen,
   type StressImplementation,
-} from './components/StressTestScreen';
+} from '../components/StressTestScreen';
 
-export default function App() {
+export default function BenchmarkScreen() {
   const [implementation, setImplementation] =
     useState<StressImplementation>('smooth-clip');
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar style="light" />
+    <SafeAreaView edges={['bottom']} style={styles.safeArea}>
       <DismissHarness />
       <ScrollView
         contentContainerStyle={styles.scrollContent}
@@ -37,11 +36,6 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#07111F',
-  },
-  scrollContent: {
-    paddingBottom: 28,
-  },
+  safeArea: { flex: 1, backgroundColor: '#07111F' },
+  scrollContent: { paddingBottom: 28 },
 });
