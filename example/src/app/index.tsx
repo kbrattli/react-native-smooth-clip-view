@@ -3,6 +3,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { RouteCard } from '../components/RouteCard';
 
 const ROUTES = [
+  { href: '/zoom-transition', title: 'Zoom transition' },
   { href: '/benchmark-screen', title: 'Stress benchmark' },
 ] as const;
 
