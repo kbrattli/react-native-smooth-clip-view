@@ -1,5 +1,7 @@
 const path = require('path');
-const { getDefaultConfig } = require('@expo/metro-config');
+// `expo/metro-config` is the documented entry point and resolves through the
+// declared `expo` dependency; `@expo/metro-config` only ever worked by hoisting.
+const { getDefaultConfig } = require('expo/metro-config');
 const { withMetroConfig } = require('react-native-monorepo-config');
 
 const root = path.resolve(__dirname, '..');

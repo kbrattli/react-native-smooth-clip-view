@@ -3,6 +3,7 @@
     "name": "SmoothClipView Example",
     "slug": "react-native-smooth-clip-view-example",
     "version": "1.0.0",
+    "scheme": "smoothclipviewexample",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
