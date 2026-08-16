@@ -28,6 +28,7 @@ export default function RootLayout() {
               name="zoom-transition"
               options={{ title: 'Zoom transition' }}
             />
+            <Stack.Screen name="clip-bench" options={{ title: 'Clip bench' }} />
             {/*
               The overlay is a real route. `transparentModal` keeps the card
               list mounted and visible beneath it, and `animation: 'none'`
