@@ -52,18 +52,13 @@ const NATIVE = 1;
 // Resolved once at module scope; the worklet captures the primitive.
 const NEEDS_START_STAMP = Platform.OS === 'android';
 
-// Android's registry only records 'inherit' velocity samples on hot writes
-// when the driver opted in (SmoothClipDriverOptions.velocityTracking); iOS
-// always records. Gates the dev-mode warning below.
-const VELOCITY_SAMPLING_IS_OPT_IN = Platform.OS === 'android';
-
 // Widened like the animate* functions below: one trailing argument beyond the
 // TurboModule spec — whether this write should record an `'inherit'` velocity
 // sample. Android's JSI bindings read it (absent means record, the pre-flag
 // behavior); the iOS TurboModule reads its declared parameters positionally
 // and drops it, so iOS always records.
 type WithRecordVelocity<F> = F extends (...args: infer A) => infer R
-  ? (...args: [...A, recordVelocity: boolean]) => R
+  ? (...args: [...A, recordVelocity?: boolean]) => R
   : never;
 const setPresentationHostFunction: WithRecordVelocity<
   typeof NativeSmoothClipModule.setClipPresentation
@@ -255,8 +250,6 @@ export function useSmoothClipDriver(
   // so animateTo must start from the native registry's latest value instead
   // of snapping back to the stale SharedValue.
   const scalarsStale = useSharedValue(0);
-  // Once-per-driver latch for the dev-mode 'inherit' warning below.
-  const inheritWarned = useSharedValue(0);
   // Non-zero between the effect cleanup's native teardown and the next effect
   // run. Native cannot tell "this driver was never seeded" from "this driver
   // was destroyed and erased" — both are a missing registry entry — so the
@@ -277,13 +270,6 @@ export function useSmoothClipDriver(
     // declarative deliveries always record, so every once-per-call channel
     // keeps its pre-flag 'inherit' behavior.
     const velocityTracking = options.velocityTracking === true;
-    // The dev-mode 'inherit' warning below is armed only where it can fire:
-    // dev builds, on the platform where sampling is opt-in, for drivers that
-    // did not opt in. A captured false folds its staleness read away, so
-    // release builds and iOS pay nothing for it.
-    const warnInheritMiss =
-      __DEV__ && VELOCITY_SAMPLING_IS_OPT_IN && !velocityTracking;
-
     const seedPresentation = (next: SmoothClipPresentation) => {
       'worklet';
       if (clipPresentationEquals(presentation.value, next)) return;
@@ -332,8 +318,7 @@ export function useSmoothClipDriver(
         contentTranslateX,
         contentTranslateY,
         true,
-        false,
-        true
+        false
       );
       seedPresentation(next);
     };
@@ -421,13 +406,6 @@ export function useSmoothClipDriver(
       // whose JS state is already detached. This is the "unsupported dispatch"
       // arm of the documented 0 contract.
       const from = animation.from;
-      // Captured before the fused `from` seed: the seed marks the scalars
-      // stale for start resolution below, but it records its own velocity
-      // sample, so it must not by itself flip the inherit warning on for a
-      // consumer whose history is intact (set()/declarative writes).
-      // warnInheritMiss is a captured constant, so release builds and iOS
-      // skip the SharedValue read entirely.
-      const staleBeforeFromSeed = warnInheritMiss && scalarsStale.value !== 0;
       if (from !== undefined) {
         // Fused hot write: exactly setScalars(from…) issued immediately
         // before the handoff, so native's latest value — the animation
@@ -521,29 +499,6 @@ export function useSmoothClipDriver(
         const inheritVelocity =
           animation.initialVelocity === undefined ||
           animation.initialVelocity === 'inherit';
-        // Best-effort dev diagnostic for the documented release shapes (drag
-        // -> animateTo, drag -> animateTo{from}): a hot write left the
-        // staleness flag set, so this inherit spring launches from history
-        // the drag invalidated. KNOWN LIMITATION, accepted deliberately: a
-        // drag routed through set()/declarative/cancel before the spring
-        // resets the flag and slips past unwarned even though the native
-        // history is equally empty — closing that gap needs a write ledger
-        // on the per-frame hot path, which costs more than the warning is
-        // worth (README and docs carry the contract). Latched once per
-        // driver; set()-only consumers never trip it.
-        if (
-          __DEV__ &&
-          inheritVelocity &&
-          staleBeforeFromSeed &&
-          inheritWarned.value === 0
-        ) {
-          inheritWarned.value = 1;
-          console.warn(
-            "[SmoothClipView] spring initialVelocity 'inherit' needs " +
-              'velocityTracking: true on useSmoothClipDriver to sample drag ' +
-              'velocity on Android; inheriting 0.'
-          );
-        }
         animationId = animateSpringHostFunction(
           driverId,
           hasInteractiveStart,
@@ -838,8 +793,7 @@ export function useSmoothClipDriver(
             contentTranslateX,
             contentTranslateY,
             false,
-            false,
-            true
+            false
           );
         };
         source.addListener(listenerId, deliver);
@@ -865,8 +819,7 @@ export function useSmoothClipDriver(
             current.contentTranslateX,
             current.contentTranslateY,
             true,
-            false,
-            true
+            false
           );
         }
       },

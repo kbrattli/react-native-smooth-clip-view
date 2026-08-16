@@ -680,8 +680,6 @@ void setPresentation(
     bool overridePendingAnimation,
     bool recordVelocity) {
   if (!isOnMainThread()) return;
-  // After the thread guard: the macro's function-local SectionStats is
-  // main-thread confined, so an off-main call must not touch it.
   SMOOTH_CLIP_TRACE("SmoothClip.setPresentation");
   auto iterator = registry().find(driverId);
   if (!takeOwnership) {
@@ -712,12 +710,7 @@ void setPresentation(
   if (recordVelocity) {
     recordVelocitySample(state.samples, toChannels(presentation), nowSeconds());
   } else if (state.samples.hasLatest) {
-    // An unrecorded hot write still moved the geometry, so any recorded pair
-    // no longer describes the finger: without this, a pre-drag pair inside
-    // the staleness window would launch a later 'inherit' spring with motion
-    // the drag never produced. No clock read, and the hasLatest guard (false
-    // implies the history is already default) makes the steady-state cost of
-    // an untracked drag stream one load and a predictable branch per frame.
+    // Untracked movement invalidates the recorded velocity pair.
     clearVelocitySamples(state.samples);
   }
   applyToViews(state, presentation);

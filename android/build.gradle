@@ -103,7 +103,7 @@ android {
     debug {
       externalNativeBuild {
         cmake {
-          // Hot-path tracing (ATrace + logcat stats); see SmoothClipTrace.h.
+          // Hot-path ATrace slices; see SmoothClipTrace.h.
           arguments "-DSMOOTH_CLIP_ENABLE_ATRACE=ON"
         }
       }

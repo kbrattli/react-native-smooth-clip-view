@@ -33,22 +33,13 @@ const CARD = {
   radius: 24,
 } as const;
 
-// Long enough that two ~3s screenshot round-trips land INSIDE one block, so a
-// moving (or frozen) clip across them is conclusive evidence.
+// Long enough for two screenshot round trips inside one block.
 const BLOCK_MS = 6000;
 
-// One leg of the card↔fullscreen sweep. Strictly longer than BLOCK_MS so a
-// block pressed at any moment lands entirely inside a running animation — the
-// block buttons then demonstrate (not just claim) which thread each mode
-// depends on. If a leg could end mid-block, the native mode's re-arm (which
-// legitimately rides the blocked JS/main thread) would freeze the clip at the
-// leg boundary and masquerade as a stalled animation.
+// Longer than BLOCK_MS so the native leg cannot end during a block.
 const LEG_MS = BLOCK_MS + 2000;
 
-// The radius animates too (card radius → 0 at fullscreen) on purpose: a
-// changing radius defeats the integer-outline dedupe in SmoothClipView.kt, so
-// every mode pays the worst-case invalidateOutline-per-frame cost and the
-// comparison is not flattered by the pure-translation fast path.
+// Animated radius defeats integer-outline dedupe on every frame.
 function presentationAt(progress: number): SmoothClipPresentation {
   'worklet';
   const x = CARD.x * (1 - progress);
@@ -78,10 +69,7 @@ function BenchSheet({ label }: { label: string }) {
   );
 }
 
-// Mode 1 — the open/close path: native timing animations ping-ponging
-// card↔fullscreen. Each leg is dispatched from the UI runtime; the completion
-// hop that re-arms the next leg rides the JS thread, so a JS block delays the
-// turnaround but never the animation in flight.
+// Native animation; only the completion re-arm returns through JS.
 function NativeAnimBench() {
   const nextTargetRef = useRef(0);
   const aliveRef = useRef(true);
@@ -133,9 +121,7 @@ function NativeAnimBench() {
   );
 }
 
-// Mode 2 — the drag path: one driver.ui.setScalars per frame from a UI-runtime
-// frame callback, sweeping a triangle wave. No JS involvement at all after
-// mount, so this keeps streaming through a JS block.
+// Per-frame UI-runtime setScalars stream with no JS after mount.
 function ScalarsStreamBench() {
   const driver = useSmoothClipDriver({
     clip: { ...CARD },
@@ -171,16 +157,7 @@ function ScalarsStreamBench() {
   );
 }
 
-// Mode 3 — the naive baseline: what this screen would be without the library.
-// An overflow:'hidden' Animated.View whose left/top/width/height/borderRadius
-// animate via useAnimatedStyle. The content carries NO transform: inside a
-// container already positioned at the clip origin, untransformed content has
-// its top-left riding the clip — exactly what the library modes' fullscreen
-// host + contentTranslate = clip origin renders, so the comparison is
-// like-for-like (a counter-translation would pin the sheet to screen (0,0)
-// and animate a mask-reveal the other modes don't). On Fabric the size
-// channels are layout props, so every frame pays a ShadowTree commit + layout
-// instead of RenderNode property writes.
+// Naive overflow:hidden baseline; Fabric size changes pay layout each frame.
 function ReanimatedBench() {
   const progress = useSharedValue(0);
 
@@ -222,116 +199,21 @@ function ReanimatedBench() {
   );
 }
 
-// Tight-loop microbench: 10k setScalars calls in one UI task, reported as
-// ns/call to logcat. Run once with velocityTracking on and once off — the
-// whole loop shares one scheduling context, so the difference between the two
-// isolates the velocity-sample cost that wall-clock section stats cannot
-// resolve under emulator noise.
-function MicroBench({
-  onDone,
-  velocityTracking,
-}: {
-  onDone: () => void;
-  velocityTracking: boolean;
-}) {
-  const aliveRef = useRef(true);
-  const driver = useSmoothClipDriver(
-    {
-      clip: { ...CARD },
-      contentTranslateX: CARD.x,
-      contentTranslateY: CARD.y,
-    },
-    { velocityTracking }
-  );
-
-  useEffect(() => {
-    aliveRef.current = true;
-    const finish = (message: string) => {
-      // clearTimeout below cannot cancel a worklet already queued on the UI
-      // runtime; guard here so a stale run can neither log a bogus ns/call
-      // measured against a disposed driver's no-op writes nor setRunning(null)
-      // over a mode the user has since started.
-      if (!aliveRef.current) return;
-      logBench(message);
-      onDone();
-    };
-    const timer = setTimeout(() => {
-      scheduleOnUI(() => {
-        'worklet';
-        const globals = globalThis as unknown as {
-          _getAnimationTimestamp: () => number;
-        };
-        const a = presentationAt(1);
-        const b = presentationAt(0.9);
-        const apply = (p: SmoothClipPresentation) => {
-          driver.ui.setScalars(
-            p.clip.x,
-            p.clip.y,
-            p.clip.width,
-            p.clip.height,
-            p.clip.radius,
-            p.contentTranslateX,
-            p.contentTranslateY
-          );
-        };
-        const ITERATIONS = 10000;
-        for (let index = 0; index < 500; index += 1) {
-          apply(index % 2 === 0 ? a : b);
-        }
-        const start = globals._getAnimationTimestamp();
-        for (let index = 0; index < ITERATIONS; index += 1) {
-          apply(index % 2 === 0 ? a : b);
-        }
-        const end = globals._getAnimationTimestamp();
-        scheduleOnRN(
-          finish,
-          `ubench velocityTracking=${velocityTracking} ` +
-            `iterations=${ITERATIONS} ` +
-            `alternating=${Math.round(((end - start) / ITERATIONS) * 1e6)}ns/call`
-        );
-      });
-    }, 300);
-    return () => {
-      aliveRef.current = false;
-      clearTimeout(timer);
-    };
-  }, [driver, onDone, velocityTracking]);
-
-  return (
-    <View pointerEvents="none" style={styles.overlay}>
-      <SmoothClipView driver={driver} style={styles.host} testID="bench-micro">
-        <BenchSheet label="setScalars µbench" />
-      </SmoothClipView>
-    </View>
-  );
-}
-
-type BenchMode =
-  'native-anim' | 'scalars-stream' | 'reanimated' | 'ubench-off' | 'ubench-on';
+type BenchMode = 'native-anim' | 'scalars-stream' | 'reanimated';
 
 const MODES: ReadonlyArray<{ mode: BenchMode; label: string }> = [
   { mode: 'native-anim', label: 'Native animateTo loop' },
   { mode: 'scalars-stream', label: 'setScalars stream (drag path)' },
   { mode: 'reanimated', label: 'Naive Reanimated baseline' },
-  { mode: 'ubench-off', label: 'setScalars µbench (tracking off)' },
-  { mode: 'ubench-on', label: 'setScalars µbench (tracking on)' },
 ];
 
-// A JS block never stalls any mode on either platform (no JS on the frame
-// path). A main block diverges: Android's frame loop and View writes are
-// main-thread-only, so everything stalls together; iOS's render server keeps
-// advancing installed Core Animations, so only the modes driven from the
-// main-thread UI runtime (setScalars stream, Reanimated baseline) freeze.
 const BLOCK_HINT = Platform.select({
   ios:
     'Expected: a JS block never stalls any mode. A main block freezes the ' +
     'setScalars stream and the Reanimated baseline (the UI runtime lives on ' +
     'the main thread) but NOT a running native animateTo — the render ' +
-    'server keeps animating it. The two µbench modes measure identical ' +
-    'native code here (velocityTracking is Android-only); run them on ' +
-    'Android for a meaningful on/off delta.',
+    'server keeps animating it.',
   default:
-    'Watch logcat tag SmoothClipTrace for per-call stats (debug builds). ' +
     'Expected: a JS block never stalls any mode; a main block stalls all of ' +
     'them (Android animates views on the main thread).',
 });
@@ -342,8 +224,6 @@ export function ClipBench() {
   const toggle = useCallback((mode: BenchMode) => {
     setRunning((current) => (current === mode ? null : mode));
   }, []);
-
-  const stopRunning = useCallback(() => setRunning(null), []);
 
   const blockJsThread = useCallback(() => {
     logBench(`js block begin t=${Date.now()}`);
@@ -422,12 +302,6 @@ export function ClipBench() {
       {running === 'native-anim' ? <NativeAnimBench /> : null}
       {running === 'scalars-stream' ? <ScalarsStreamBench /> : null}
       {running === 'reanimated' ? <ReanimatedBench /> : null}
-      {running === 'ubench-off' ? (
-        <MicroBench onDone={stopRunning} velocityTracking={false} />
-      ) : null}
-      {running === 'ubench-on' ? (
-        <MicroBench onDone={stopRunning} velocityTracking />
-      ) : null}
     </>
   );
 }

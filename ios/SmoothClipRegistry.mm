@@ -792,16 +792,6 @@ void setPresentation(
     cancelActive(driverId, state, false);
   }
   applyPresentation(state, presentation, recordVelocity);
-  if (!recordVelocity) {
-    // Shared contract with the Android registry: an unrecorded hot write
-    // moved the geometry, so surviving sample pairs would describe motion the
-    // finger never produced — invalidate them. Unreachable from the
-    // TurboModule (it never passes false); internal freeze/join paths bypass
-    // setPresentation and keep their deliberate skip-without-clear semantics.
-    for (const ViewKey key : state.views) {
-      [viewForKey(key) smoothClipClearVelocitySamples];
-    }
-  }
 #if defined(SMOOTH_CLIP_ENABLE_SIGNPOSTS) && SMOOTH_CLIP_ENABLE_SIGNPOSTS
   if (signpostsEnabled) {
     os_signpost_interval_end(
