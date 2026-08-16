@@ -166,17 +166,21 @@ void installBindings(
   Object bindings(runtime);
 
   setHostFunction(
-      runtime, bindings, "setClipPresentation", 10,
+      runtime, bindings, "setClipPresentation", 11,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
         if (count < 9) return Value::undefined();
         const double driverId = args[0].asNumber();
         const Presentation presentation = presentationFromArgs(args, 1);
         const bool takeOwnership = boolArg(args, count, 8);
         const bool overridePendingAnimation = boolArg(args, count, 9);
+        // Optional trailing flag; absent means record (the pre-flag
+        // behavior), so only an explicit false skips the velocity sample.
+        const bool recordVelocity =
+            !(count > 10 && args[10].isBool() && !args[10].getBool());
         if (validDriverId(driverId) && finitePresentation(presentation)) {
           setPresentation(
               static_cast<uint64_t>(driverId), presentation, takeOwnership,
-              overridePendingAnimation);
+              overridePendingAnimation, recordVelocity);
         }
         return Value::undefined();
       });
