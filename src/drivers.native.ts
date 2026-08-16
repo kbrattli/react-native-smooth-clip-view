@@ -4,6 +4,7 @@
 // `./smoothClipNative` import below is platform-split. drivers.ts (no
 // suffix) is the web/Reanimated fallback, not this driver's sibling.
 import { useEffect, useRef } from 'react';
+import { Platform } from 'react-native';
 import { useSharedValue, type SharedValue } from 'react-native-reanimated';
 import { isRNRuntime, scheduleOnRN, scheduleOnUI } from 'react-native-worklets';
 import NativeSmoothClipModule from './smoothClipNative';
@@ -43,6 +44,13 @@ import {
 
 const INTERACTIVE = 0;
 const NATIVE = 1;
+
+// Only Android consumes the Reanimated start stamp (its frame-clock anchor —
+// docs/android-frame-clock-anchor.md). iOS's TurboModule reads its declared
+// parameters positionally and drops the trailing argument, so capturing the
+// stamp there is a wasted native _getAnimationTimestamp() call per animateTo.
+// Resolved once at module scope; the worklet captures the primitive.
+const NEEDS_START_STAMP = Platform.OS === 'android';
 
 const setPresentationHostFunction = NativeSmoothClipModule.setClipPresentation;
 const beginInteractionHostFunction = NativeSmoothClipModule.beginInteraction;
@@ -93,10 +101,7 @@ function reduceMotionCode(value: ClipReduceMotion): number {
   }
 }
 
-function animationIsFinite(
-  target: SmoothClipPresentation,
-  animation: SmoothClipAnimation
-): boolean {
+function animationIsFinite(animation: SmoothClipAnimation): boolean {
   'worklet';
   if (
     animation.from !== undefined &&
@@ -132,30 +137,12 @@ function animationIsFinite(
         : (animation.initialVelocity ?? 0),
     ].every(Number.isFinite);
   }
-  if (!Number.isFinite(animation.duration) || animation.frames.length < 2) {
-    return false;
-  }
-  let previousOffset = -1;
-  for (const frame of animation.frames) {
-    if (
-      !Number.isFinite(frame.offset) ||
-      frame.offset < 0 ||
-      frame.offset > 1 ||
-      frame.offset <= previousOffset ||
-      !isFiniteClipPresentation(frame.presentation)
-    ) {
-      return false;
-    }
-    previousOffset = frame.offset;
-  }
-  return (
-    animation.frames[0]?.offset === 0 &&
-    previousOffset === 1 &&
-    clipPresentationEquals(
-      animation.frames[animation.frames.length - 1]?.presentation ?? null,
-      target
-    )
-  );
+  // Keyframe frames validate inside flattenFiniteKeyframes — one traversal
+  // both checks and flattens, instead of walking every frame twice. The type
+  // check is statically always-true for the TS union but load-bearing for JS
+  // callers: an unrecognized type must reject here, or it would skip the
+  // keyframe gate entirely and hand native a null frames array.
+  return animation.type === 'keyframes';
 }
 
 function presentationFromNative(
@@ -179,13 +166,35 @@ function presentationFromNative(
   return isFiniteClipPresentation(presentation) ? presentation : fallback;
 }
 
-function flattenedKeyframes(animation: KeyframedClipAnimation): number[] {
+// Validates and flattens the keyframe list in one traversal (the flat number
+// array is the wire format the native side reads back positionally). Returns
+// null when any frame is invalid — same rejection contract the two-pass
+// validate-then-flatten had.
+function flattenFiniteKeyframes(
+  target: SmoothClipPresentation,
+  animation: KeyframedClipAnimation
+): number[] | null {
   'worklet';
+  if (!Number.isFinite(animation.duration) || animation.frames.length < 2) {
+    return null;
+  }
   const values: number[] = [];
+  let previousOffset = -1;
   for (const frame of animation.frames) {
-    const { clip, contentTranslateX, contentTranslateY } = frame.presentation;
+    const { offset, presentation } = frame;
+    if (
+      !Number.isFinite(offset) ||
+      offset < 0 ||
+      offset > 1 ||
+      offset <= previousOffset ||
+      !isFiniteClipPresentation(presentation)
+    ) {
+      return null;
+    }
+    previousOffset = offset;
+    const { clip, contentTranslateX, contentTranslateY } = presentation;
     values.push(
-      frame.offset,
+      offset,
       clip.x,
       clip.y,
       clip.width,
@@ -194,6 +203,16 @@ function flattenedKeyframes(animation: KeyframedClipAnimation): number[] {
       contentTranslateX,
       contentTranslateY
     );
+  }
+  if (
+    animation.frames[0]?.offset !== 0 ||
+    previousOffset !== 1 ||
+    !clipPresentationEquals(
+      animation.frames[animation.frames.length - 1]?.presentation ?? null,
+      target
+    )
+  ) {
+    return null;
   }
   return values;
 }
@@ -336,9 +355,14 @@ export function useSmoothClipDriver(
       // invalid stale call cannot mint a native rejection id/completion against
       // a driver whose listener and registry entry are already gone.
       if (disposed.value !== 0) return 0;
+      const keyframeValues =
+        animation.type === 'keyframes'
+          ? flattenFiniteKeyframes(target, animation)
+          : null;
       if (
         !isFiniteClipPresentation(target) ||
-        !animationIsFinite(target, animation)
+        !animationIsFinite(animation) ||
+        (animation.type === 'keyframes' && keyframeValues === null)
       ) {
         return rejectAnimationHostFunction(driverId);
       }
@@ -390,16 +414,19 @@ export function useSmoothClipDriver(
       // its rAF flush where __frameTimestamp is cleared, keeps the wall
       // clock — a lead lasting the whole animation. NaN when the globals are
       // absent (tests, non-worklets runtimes): native then falls back to its
-      // own clock plus the min() anchor, the pre-stamp behavior.
+      // own clock plus the min() anchor, the pre-stamp behavior. On iOS the
+      // stamp is always NaN: Core Animation anchors at commit time and the
+      // TurboModule discards the argument, so the capture would only cost.
       const workletGlobal = globalThis as {
         __frameTimestamp?: number;
         _getAnimationTimestamp?: () => number;
       };
-      const startedAtMs =
-        workletGlobal.__frameTimestamp ||
-        (typeof workletGlobal._getAnimationTimestamp === 'function'
-          ? workletGlobal._getAnimationTimestamp()
-          : Number.NaN);
+      const startedAtMs = !NEEDS_START_STAMP
+        ? Number.NaN
+        : workletGlobal.__frameTimestamp ||
+          (typeof workletGlobal._getAnimationTimestamp === 'function'
+            ? workletGlobal._getAnimationTimestamp()
+            : Number.NaN);
       let animationId: number;
 
       if (animation.type === 'timing') {
@@ -477,7 +504,9 @@ export function useSmoothClipDriver(
           target.contentTranslateX,
           target.contentTranslateY,
           Math.max(0, animation.duration),
-          flattenedKeyframes(animation),
+          // Non-null here: the validation gate above rejected null before any
+          // side effect.
+          keyframeValues as number[],
           reduceMotion,
           startedAtMs
         );
