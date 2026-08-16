@@ -170,7 +170,8 @@ describe('hybrid native driver (iOS + Android)', () => {
       target.contentTranslateX,
       target.contentTranslateY,
       false,
-      false
+      false,
+      true
     );
   });
 
@@ -189,10 +190,300 @@ describe('hybrid native driver (iOS + Android)', () => {
       6,
       7,
       true,
+      false,
       false
     );
     // The SharedValue intentionally stays stale on the hot path.
     expect(driver.presentation.value).toBe(initial);
+  });
+
+  it('setScalars records velocity samples when velocityTracking is on', () => {
+    const driver = useSmoothClipDriver(initial, { velocityTracking: true });
+
+    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
+
+    expect(mockNative.setClipPresentation).toHaveBeenLastCalledWith(
+      expect.any(Number),
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      true,
+      false,
+      true
+    );
+  });
+
+  it('set() always records velocity samples', () => {
+    // Only the setScalars hot path is gated by velocityTracking; set() pays
+    // full validation and a SharedValue seed per call already.
+    const driver = useSmoothClipDriver(initial);
+
+    driver.ui.set(target);
+
+    expect(mockNative.setClipPresentation).toHaveBeenLastCalledWith(
+      expect.any(Number),
+      target.clip.x,
+      target.clip.y,
+      target.clip.width,
+      target.clip.height,
+      target.clip.radius,
+      target.contentTranslateX,
+      target.contentTranslateY,
+      true,
+      false,
+      true
+    );
+  });
+
+  it('always records the fused from seed, even without velocityTracking', () => {
+    // One write per animateTo, not the per-frame stream the flag gates. An
+    // unrecorded seed would invalidate the history a set()-driven drag just
+    // recorded and break its 'inherit' handoff.
+    const driver = useSmoothClipDriver(initial);
+
+    driver.ui.animateTo(target, { ...timing, from: fromPresentation });
+
+    expect(mockNative.setClipPresentation).toHaveBeenLastCalledWith(
+      expect.any(Number),
+      2,
+      4,
+      60,
+      50,
+      8,
+      1,
+      3,
+      true,
+      true,
+      true
+    );
+  });
+
+  it('treats a non-finite setScalars write as a full no-op', () => {
+    const driver = useSmoothClipDriver(initial);
+    const driverId = mockNative.setClipPresentation.mock
+      .calls[0]?.[0] as number;
+    const completionListener = mockNative.onClipAnimationComplete.mock
+      .calls[0]?.[0] as (result: {
+      driverId: number;
+      animationId: number;
+      finished: boolean;
+    }) => void;
+    const animationId = driver.ui.animateTo(target, timing);
+
+    jest.clearAllMocks();
+    driver.ui.setScalars(1, 2, Number.NaN, 4, 5, 6, 7);
+    driver.ui.setScalars(1, 2, 3, 4, Number.POSITIVE_INFINITY, 6, 7);
+    // Non-number types too: arithmetic would coerce these past a fused
+    // (v - v) gate and into a UI-runtime throw from the binding's asNumber,
+    // so the gate must reject on type, not just on finiteness.
+    driver.ui.setScalars('3' as unknown as number, 2, 3, 4, 5, 6, 7);
+    driver.ui.setScalars(1, true as unknown as number, 3, 4, 5, 6, 7);
+    driver.ui.setScalars(1, 2, null as unknown as number, 4, 5, 6, 7);
+    // Dropped on this side of the bridge (native re-validates anyway)...
+    expect(mockNative.setClipPresentation).not.toHaveBeenCalled();
+
+    // ...and without flipping ownership: a declarative write during the still
+    // running animation must stay dropped-and-eligible, not be recorded as
+    // native-observed and then swallowed by the dedupe cache for good.
+    const dragged: SmoothClipPresentation = {
+      clip: { x: 1, y: 2, width: 90, height: 70, radius: 10 },
+      contentTranslateX: 0,
+      contentTranslateY: 0,
+    };
+    driver.presentation.value = dragged;
+    expect(mockNative.setClipPresentation).not.toHaveBeenCalled();
+
+    // The completion still matches the untouched active id, releases
+    // ownership, and the same value then fans out.
+    completionListener({ driverId, animationId, finished: true });
+    driver.presentation.value = {
+      clip: { ...dragged.clip },
+      contentTranslateX: 0,
+      contentTranslateY: 0,
+    };
+    expect(mockNative.setClipPresentation).toHaveBeenCalledWith(
+      driverId,
+      1,
+      2,
+      90,
+      70,
+      10,
+      0,
+      0,
+      false,
+      false,
+      true
+    );
+  });
+
+  it('warns for an inherit spring only after an untracked hot write', () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const driver = useSmoothClipDriver(initial);
+
+    // Declarative-only: the presentation channel always records, so inherit
+    // works and a warning would demand an option that changes nothing.
+    driver.ui.animateTo(target, { type: 'spring' });
+    expect(warn).not.toHaveBeenCalled();
+
+    // A hot write skipped the sample recording, so this inherit spring
+    // launches from invalidated history — that is worth flagging.
+    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
+    driver.ui.animateTo(initial, {
+      type: 'spring',
+      initialVelocity: 'inherit',
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    // Explicit numeric velocity never inherits, stale or not.
+    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
+    driver.ui.animateTo(target, { type: 'spring', initialVelocity: 0.5 });
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    warn.mockRestore();
+  });
+
+  it('does not warn when only the fused from seed staled the scalars', () => {
+    // The seed records its own velocity sample, so a set()/declarative
+    // consumer handing off through `from` inherits correctly — the warning
+    // reads the inherit-history ledger as it stood before the seed, and a
+    // driver that never hot-wrote carries no debt.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const driver = useSmoothClipDriver(initial);
+
+    driver.ui.set(fromPresentation);
+    driver.ui.animateTo(target, {
+      type: 'spring',
+      initialVelocity: 'inherit',
+      from: fromPresentation,
+    });
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('warns when an untracked drag precedes a fused from handoff', () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const driver = useSmoothClipDriver(initial);
+
+    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
+    driver.ui.animateTo(target, {
+      type: 'spring',
+      initialVelocity: 'inherit',
+      from: fromPresentation,
+    });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('warns when a set() release follows an untracked drag', () => {
+    // set() resets the staleness flag but records only ONE sample into a
+    // history the drag just cleared — no pair, so inherit still yields 0.
+    // The debt ledger (2 after a hot write, minus 1 per recorded write)
+    // keeps the warning honest where the old staleness proxy went silent.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const driver = useSmoothClipDriver(initial);
+
+    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
+    driver.ui.set(fromPresentation);
+    driver.ui.animateTo(target, { type: 'spring' });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('warns when a declarative write follows an untracked drag', () => {
+    // Same shape through the presentation.value channel: the delivery
+    // records one sample and resets staleness, but cannot rebuild a pair.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const driver = useSmoothClipDriver(initial);
+
+    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
+    driver.presentation.value = fromPresentation;
+    driver.ui.animateTo(target, { type: 'spring' });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('warns when an inherit spring follows an untracked drag and a cancel', () => {
+    // cancel() re-seeds the SharedValue and resets staleness, but native
+    // records nothing on cancelAnimation — the cleared history stays cleared.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const driver = useSmoothClipDriver(initial);
+
+    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
+    driver.ui.cancel();
+    driver.ui.animateTo(target, { type: 'spring' });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('stops warning once two recorded writes rebuild the history', () => {
+    // Two recorded writes are exactly what the native tracker needs for an
+    // inheritable pair (hasPrevious && hasLatest), so the debt is paid off
+    // and the inherit spring launches from real history — no warning.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const driver = useSmoothClipDriver(initial);
+
+    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
+    driver.ui.set(fromPresentation);
+    driver.ui.set(target);
+    driver.ui.animateTo(initial, { type: 'spring' });
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('warns at most once per driver', () => {
+    // The latch: the first miss is reported, repeats of the same
+    // misconfiguration on the same driver stay quiet instead of logging on
+    // every fling from the UI runtime.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const driver = useSmoothClipDriver(initial);
+
+    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
+    driver.ui.animateTo(target, { type: 'spring' });
+    driver.ui.setScalars(2, 3, 4, 5, 6, 7, 8);
+    driver.ui.animateTo(initial, { type: 'spring' });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('does not warn about inherit velocity when velocityTracking is on', () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const driver = useSmoothClipDriver(initial, { velocityTracking: true });
+
+    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
+    driver.ui.animateTo(target, { type: 'spring' });
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('never warns about inherit velocity on iOS', () => {
+    // iOS records on every write; the opt-in and its warning are Android-only.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mockPlatformOS = 'ios';
+    let iosUseSmoothClipDriver: typeof useSmoothClipDriver | undefined;
+    jest.isolateModules(() => {
+      iosUseSmoothClipDriver = (
+        require('../drivers.native') as typeof import('../drivers.native')
+      ).useSmoothClipDriver;
+    });
+    const driver = iosUseSmoothClipDriver!(initial);
+
+    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
+    driver.ui.animateTo(target, { type: 'spring' });
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('restores interactive ownership when native rejects a transition', () => {
@@ -220,7 +511,8 @@ describe('hybrid native driver (iOS + Android)', () => {
       target.contentTranslateX,
       target.contentTranslateY,
       false,
-      false
+      false,
+      true
     );
   });
 
@@ -374,7 +666,8 @@ describe('hybrid native driver (iOS + Android)', () => {
       dragged.contentTranslateX,
       dragged.contentTranslateY,
       false,
-      false
+      false,
+      true
     );
   });
 
@@ -403,7 +696,8 @@ describe('hybrid native driver (iOS + Android)', () => {
       target.contentTranslateX,
       target.contentTranslateY,
       true,
-      false
+      false,
+      true
     );
 
     // ...and the driver remains fully operational afterwards.
@@ -418,7 +712,8 @@ describe('hybrid native driver (iOS + Android)', () => {
       initial.contentTranslateX,
       initial.contentTranslateY,
       false,
-      false
+      false,
+      true
     );
   });
 
@@ -523,6 +818,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       1,
       3,
       true,
+      true,
       true
     );
     const seedOrder =
@@ -560,6 +856,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       8,
       1,
       3,
+      true,
       true,
       true
     );
@@ -887,6 +1184,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       8,
       1,
       3,
+      true,
       true,
       true
     );

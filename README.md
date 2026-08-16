@@ -126,6 +126,20 @@ vsync clock with registry fanout; outline calculation and invalidation still
 run on its UI thread. Springs are physically integrated per geometry channel
 and finish when they settle below sub-pixel thresholds on both platforms.
 Retargeting starts from visible state.
+
+Blocked-thread behavior: a blocked JS thread never stalls a running
+transition on either platform — no JS runs on the frame path. A blocked
+main thread stalls it on Android (the frame loop and the View property
+writes are main-thread-only by platform design; the RenderThread only
+replays what the main thread records) but not on iOS, where the render
+server advances installed Core Animations out of process. The Android
+behavior is not recoverable through public APIs — RenderThread-driven
+property animation (`RenderNodeAnimator`, what ripples use) is hidden API —
+and it is also the coherent choice for this library: parallel Reanimated
+content runs on the main thread on both platforms, so on Android the clip
+and its content stall and resume together, while on iOS a main-thread stall
+lets the natively animated channels keep moving past any Reanimated-driven
+ones.
 The same driver can be grabbed by a gesture without a visual jump:
 
 ```tsx
@@ -146,6 +160,9 @@ const gesture = Gesture.Pan()
     // geometry as `from` so the animation starts from exactly that value —
     // it fuses a setScalars hot write with the handoff in one call.
     const clip = geometryForDrag(dragStart.value, event.translationY);
+    // 'inherit' projects launch speed from the drag's last two samples. On
+    // Android that sampling is opt-in — create the driver with
+    // useSmoothClipDriver(initial, { velocityTracking: true }).
     driver.ui.animateTo(createClipPresentation(expandedClip), {
       type: 'spring',
       initialVelocity: 'inherit',
@@ -200,7 +217,16 @@ puts on screen, which is the property worth keeping identical.
   same normalized rate, so grab/release preserves the felt direction and
   speed. `'inherit'` (the default) estimates the scalar from the last two
   interactive samples on iOS and Android; the web fallback always inherits
-  zero. How long the finger has been still since that last sample scales the
+  zero. On Android, sampling on the `setScalars` hot path is **opt-in**: pass
+  `velocityTracking: true` to `useSmoothClipDriver` or `'inherit'` inherits
+  zero after a hot-write drag (a dev-mode warning flags this). **Behavior
+  change:** earlier releases always recorded on Android, so an existing
+  `setScalars`-drag → inherit-spring handoff keeps its momentum only after
+  adding the flag. The recording
+  is a clock read plus channel copies on every per-frame write, so drivers
+  that never hand off into an inherit spring skip it by default. iOS always
+  records, and Android's declarative `presentation.value` channel always
+  records too. How long the finger has been still since that last sample scales the
   result: full credit for one frame (16.7 ms), then a linear decay to zero at
   100 ms. A release straight out of a drag is therefore untouched, and holding
   still before releasing bleeds the momentum off smoothly instead of keeping

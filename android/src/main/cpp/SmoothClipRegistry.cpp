@@ -1,6 +1,7 @@
 #include "SmoothClipAndroid.h"
 #include "SmoothClipAnimationId.h"
 #include "SmoothClipAnimationCurve.h"
+#include "SmoothClipTrace.h"
 #include "SmoothClipVelocityTracker.h"
 
 #include <fbjni/fbjni.h>
@@ -615,6 +616,7 @@ void advance(uint64_t driverId, DriverState &state, double now) {
 }
 
 void onFrameImpl(double now) {
+  SMOOTH_CLIP_TRACE("SmoothClip.frame");
   gFrameScheduled = false;
   // Snapshot: advance() clears live-list entries on completion. advance()
   // never erases registry entries and never starts animations (completion
@@ -675,8 +677,12 @@ void setPresentation(
     uint64_t driverId,
     Presentation presentation,
     bool takeOwnership,
-    bool overridePendingAnimation) {
+    bool overridePendingAnimation,
+    bool recordVelocity) {
   if (!isOnMainThread()) return;
+  // After the thread guard: the macro's function-local SectionStats is
+  // main-thread confined, so an off-main call must not touch it.
+  SMOOTH_CLIP_TRACE("SmoothClip.setPresentation");
   auto iterator = registry().find(driverId);
   if (!takeOwnership) {
     if (iterator == registry().end() || iterator->second.destroyed) {
@@ -703,7 +709,17 @@ void setPresentation(
   state.latest = presentation;
   state.hasLatest = true;
   state.ownership = Ownership::Interactive;
-  recordVelocitySample(state.samples, toChannels(presentation), nowSeconds());
+  if (recordVelocity) {
+    recordVelocitySample(state.samples, toChannels(presentation), nowSeconds());
+  } else if (state.samples.hasLatest) {
+    // An unrecorded hot write still moved the geometry, so any recorded pair
+    // no longer describes the finger: without this, a pre-drag pair inside
+    // the staleness window would launch a later 'inherit' spring with motion
+    // the drag never produced. No clock read, and the hasLatest guard (false
+    // implies the history is already default) makes the steady-state cost of
+    // an untracked drag stream one load and a predictable branch per frame.
+    clearVelocitySamples(state.samples);
+  }
   applyToViews(state, presentation);
 }
 

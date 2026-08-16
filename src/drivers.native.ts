@@ -52,7 +52,22 @@ const NATIVE = 1;
 // Resolved once at module scope; the worklet captures the primitive.
 const NEEDS_START_STAMP = Platform.OS === 'android';
 
-const setPresentationHostFunction = NativeSmoothClipModule.setClipPresentation;
+// Android's registry only records 'inherit' velocity samples on hot writes
+// when the driver opted in (SmoothClipDriverOptions.velocityTracking); iOS
+// always records. Gates the dev-mode warning below.
+const VELOCITY_SAMPLING_IS_OPT_IN = Platform.OS === 'android';
+
+// Widened like the animate* functions below: one trailing argument beyond the
+// TurboModule spec — whether this write should record an `'inherit'` velocity
+// sample. Android's JSI bindings read it (absent means record, the pre-flag
+// behavior); the iOS TurboModule reads its declared parameters positionally
+// and drops it, so iOS always records.
+type WithRecordVelocity<F> = F extends (...args: infer A) => infer R
+  ? (...args: [...A, recordVelocity: boolean]) => R
+  : never;
+const setPresentationHostFunction: WithRecordVelocity<
+  typeof NativeSmoothClipModule.setClipPresentation
+> = NativeSmoothClipModule.setClipPresentation;
 const beginInteractionHostFunction = NativeSmoothClipModule.beginInteraction;
 
 // The animate* host functions take one argument beyond the TurboModule spec:
@@ -240,6 +255,17 @@ export function useSmoothClipDriver(
   // so animateTo must start from the native registry's latest value instead
   // of snapping back to the stale SharedValue.
   const scalarsStale = useSharedValue(0);
+  // Dev-only ledger for the 'inherit' warning below, mirroring the native
+  // tracker's actual pair requirement instead of the staleness flag (which
+  // set()/deliver/begin/cancel/animate reset without the native history
+  // regaining a pair): an untracked hot write clears the registry's sample
+  // history, and rebuilding an inheritable pair takes TWO recorded writes.
+  // Untracked hot writes set the debt to 2; every recording write pays one
+  // down; nothing else resets it. Only written when trackInheritDebt is true,
+  // so release builds and iOS never touch it.
+  const inheritHistoryDebt = useSharedValue(0);
+  // Once-per-driver latch for that warning.
+  const inheritWarned = useSharedValue(0);
   // Non-zero between the effect cleanup's native teardown and the next effect
   // run. Native cannot tell "this driver was never seeded" from "this driver
   // was destroyed and erased" — both are a missing registry entry — so the
@@ -255,6 +281,16 @@ export function useSmoothClipDriver(
   if (driverRef.current === null) {
     const driverId = allocateDriverId();
     const reduceMotion = reduceMotionCode(options.reduceMotion ?? 'system');
+    // Captured once, like reduceMotion. Only the per-frame setScalars stream
+    // consults it; set(), the fused animateTo `from` seed, and the effect's
+    // declarative deliveries always record, so every once-per-call channel
+    // keeps its pre-flag 'inherit' behavior.
+    const velocityTracking = options.velocityTracking === true;
+    // The inherit-history ledger is maintained only where the warning can
+    // fire: dev builds, on the platform where sampling is opt-in, for drivers
+    // that did not opt in. A captured false folds every ledger write away.
+    const trackInheritDebt =
+      __DEV__ && VELOCITY_SAMPLING_IS_OPT_IN && !velocityTracking;
 
     const seedPresentation = (next: SmoothClipPresentation) => {
       'worklet';
@@ -290,7 +326,16 @@ export function useSmoothClipDriver(
       activeAnimationId.value = 0;
       ownership.value = INTERACTIVE;
       scalarsStale.value = 0;
+      // set() records a velocity sample, paying one unit of inherit-history
+      // debt: after an untracked drag cleared the native history, one set()
+      // provides a single sample (no pair yet), a second completes the pair.
+      if (trackInheritDebt && inheritHistoryDebt.value > 0) {
+        inheritHistoryDebt.value -= 1;
+      }
       const { clip, contentTranslateX, contentTranslateY } = next;
+      // Always records: only the per-frame setScalars hot path is gated by
+      // velocityTracking. set() already pays full validation and a SharedValue
+      // seed per call, so the sample recording is noise here.
       setPresentationHostFunction(
         driverId,
         clip.x,
@@ -301,7 +346,8 @@ export function useSmoothClipDriver(
         contentTranslateX,
         contentTranslateY,
         true,
-        false
+        false,
+        true
       );
       seedPresentation(next);
     };
@@ -314,9 +360,24 @@ export function useSmoothClipDriver(
       radius: number,
       contentTranslateX: number,
       contentTranslateY: number,
-      overridePendingAnimation = false
+      overridePendingAnimation = false,
+      forceRecordVelocity = false
     ): void => {
       'worklet';
+      // Resolved in the body, not as a default-parameter initializer: the
+      // worklets Babel plugin only captures closure variables referenced
+      // inside the function body, so `= velocityTracking` up in the parameter
+      // list would throw "Property 'velocityTracking' doesn't exist" on the
+      // UI runtime.
+      const recordVelocity = forceRecordVelocity || velocityTracking;
+      // Number.isFinite (not a fused arithmetic gate): it also rejects
+      // non-number types, which arithmetic would coerce past the gate and
+      // into a UI-runtime throw from the binding's asNumber. The gate must
+      // stay on this side of the bridge: the native binding drops non-finite
+      // writes silently, and flipping the ownership SharedValues below for a
+      // write native never applied would let the deliver listener record
+      // values native has not observed — a later identical declarative write
+      // then dedupes against them and is swallowed for good.
       if (
         disposed.value !== 0 ||
         !Number.isFinite(x) ||
@@ -332,6 +393,17 @@ export function useSmoothClipDriver(
       if (activeAnimationId.value !== 0) activeAnimationId.value = 0;
       if (ownership.value !== INTERACTIVE) ownership.value = INTERACTIVE;
       if (scalarsStale.value === 0) scalarsStale.value = 1;
+      if (trackInheritDebt) {
+        if (!recordVelocity) {
+          // This write clears the native sample history (see the registry's
+          // invalidation contract); an inheritable pair now needs two
+          // recorded writes to exist again.
+          if (inheritHistoryDebt.value !== 2) inheritHistoryDebt.value = 2;
+        } else if (inheritHistoryDebt.value > 0) {
+          // The fused `from` seed records a sample and pays one unit down.
+          inheritHistoryDebt.value -= 1;
+        }
+      }
       setPresentationHostFunction(
         driverId,
         x,
@@ -342,7 +414,8 @@ export function useSmoothClipDriver(
         contentTranslateX,
         contentTranslateY,
         true,
-        overridePendingAnimation
+        overridePendingAnimation,
+        recordVelocity
       );
     };
 
@@ -373,12 +446,23 @@ export function useSmoothClipDriver(
       // whose JS state is already detached. This is the "unsupported dispatch"
       // arm of the documented 0 contract.
       const from = animation.from;
+      // Captured before the fused `from` seed: the seed records its own
+      // velocity sample (paying one unit of debt), so the warning must read
+      // the ledger as the caller left it. trackInheritDebt is a captured
+      // constant, so release builds and iOS skip the SharedValue read.
+      const inheritDebtBeforeSeed =
+        trackInheritDebt && inheritHistoryDebt.value > 0;
       if (from !== undefined) {
         // Fused hot write: exactly setScalars(from…) issued immediately
         // before the handoff, so native's latest value — the animation
         // start below — is the caller's explicit presentation. Also
         // re-grabs from a running animation, which the implicit
-        // interactive-start path would silently skip.
+        // interactive-start path would silently skip. Always records a
+        // velocity sample regardless of velocityTracking: this is one write
+        // per animateTo, not the per-frame stream the flag exists to keep
+        // cheap, and an unrecorded seed would invalidate the history a
+        // set()-driven drag just recorded (the tracker's coalesce and
+        // identical-re-record rules were designed for exactly this write).
         setScalarsOnUI(
           from.clip.x,
           from.clip.y,
@@ -387,6 +471,7 @@ export function useSmoothClipDriver(
           from.clip.radius,
           from.contentTranslateX,
           from.contentTranslateY,
+          true,
           true
         );
       }
@@ -460,6 +545,26 @@ export function useSmoothClipDriver(
         const inheritVelocity =
           animation.initialVelocity === undefined ||
           animation.initialVelocity === 'inherit';
+        // Warn only when this spring genuinely launches from an invalidated
+        // history: the ledger tracks the native tracker's pair requirement,
+        // so drag -> set()/declarative/cancel -> inherit spring warns even
+        // though those paths reset the staleness flag, and it goes quiet once
+        // two recorded writes rebuild a real pair. set()-only consumers never
+        // accrue debt, so they are never warned toward an option that would
+        // change nothing. Latched once per driver.
+        if (
+          __DEV__ &&
+          inheritVelocity &&
+          inheritDebtBeforeSeed &&
+          inheritWarned.value === 0
+        ) {
+          inheritWarned.value = 1;
+          console.warn(
+            "[SmoothClipView] spring initialVelocity 'inherit' needs " +
+              'velocityTracking: true on useSmoothClipDriver to sample drag ' +
+              'velocity on Android; inheriting 0.'
+          );
+        }
         animationId = animateSpringHostFunction(
           driverId,
           hasInteractiveStart,
@@ -715,6 +820,7 @@ export function useSmoothClipDriver(
         active: SharedValue<number>,
         stale: SharedValue<number>,
         gone: SharedValue<number>,
+        debt: SharedValue<number>,
         setter: typeof setPresentationHostFunction
       ) => {
         'worklet';
@@ -742,6 +848,8 @@ export function useSmoothClipDriver(
           last = next;
           if (stale.value !== 0) stale.value = 0;
           const { clip, contentTranslateX, contentTranslateY } = next;
+          // Declarative deliveries always record velocity samples — only the
+          // setScalars hot path is gated by the velocityTracking option.
           setter(
             nativeDriverId,
             clip.x,
@@ -752,8 +860,13 @@ export function useSmoothClipDriver(
             contentTranslateX,
             contentTranslateY,
             false,
-            false
+            false,
+            true
           );
+          // A recorded write pays one unit of inherit-history debt (see the
+          // ledger's declaration). Never non-zero unless the driver tracks
+          // the debt, so this is a no-op read everywhere else.
+          if (debt.value > 0) debt.value -= 1;
         };
         source.addListener(listenerId, deliver);
         // Authoritative take-ownership seed. Creates the native entry before
@@ -778,8 +891,11 @@ export function useSmoothClipDriver(
             current.contentTranslateX,
             current.contentTranslateY,
             true,
-            false
+            false,
+            true
           );
+          // The seed records a sample too (see the deliver note above).
+          if (debt.value > 0) debt.value -= 1;
         }
       },
       presentation,
@@ -790,6 +906,7 @@ export function useSmoothClipDriver(
       activeAnimationId,
       scalarsStale,
       disposed,
+      inheritHistoryDebt,
       setPresentationHostFunction
     );
 
@@ -842,6 +959,7 @@ export function useSmoothClipDriver(
   }, [
     activeAnimationId,
     disposed,
+    inheritHistoryDebt,
     ownership,
     presentation,
     scalarsStale,

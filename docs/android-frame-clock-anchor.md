@@ -467,13 +467,25 @@ explicit two-call form, `setScalars(...)` then `animateTo(...)`, remains valid
 and is exactly what `from` desugars to.)
 
 The native velocity tracker makes this pattern safe with
-`initialVelocity: 'inherit'` as well: a release-sample seed recorded in the
-same frame as the last drag write **coalesces** into one observation, and an
-**identical** seed is deduplicated (keeping the last real motion aging through
-the 100 ms staleness guard), so the inherited velocity stays honest instead of
-zeroing (dead spring) or dividing sub-frame displacement by microseconds
-(wild overshoot). The logic is shared verbatim by both platforms in
-`cpp/SmoothClipVelocityTracker.h`.
+`initialVelocity: 'inherit'` as well — with one Android caveat. For every
+*recording* write, a release-sample seed recorded in the same frame as the
+last drag write **coalesces** into one observation, and an **identical** seed
+is deduplicated (keeping the last real motion aging through the 100 ms
+staleness guard), so the inherited velocity stays honest instead of zeroing
+(dead spring) or dividing sub-frame displacement by microseconds (wild
+overshoot). The tracker logic itself is shared verbatim by both platforms in
+`cpp/SmoothClipVelocityTracker.h` — but *which writes feed it* now differs:
+iOS records on every write, while on Android the per-frame `setScalars` hot
+path records **only when the driver opts in** via
+`useSmoothClipDriver(initial, { velocityTracking: true })`. Without the flag,
+an untracked drag write not only skips recording but **invalidates** any
+surviving sample pair (the geometry moved without being sampled, so a stale
+pre-drag pair must not launch the spring with motion the drag never
+produced), and `'inherit'` after a `setScalars` drag inherits 0 — a dev-mode
+warning flags exactly this. `set()`, the fused `from` seed, and the
+declarative `presentation.value` channel always record on both platforms, so
+this pattern needs the flag only when the drag itself streams through
+`setScalars`.
 
 ## Does 0.2.3 affect iOS?
 

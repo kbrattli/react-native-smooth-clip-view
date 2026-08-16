@@ -2,6 +2,7 @@ package com.smoothclipview
 
 import android.content.res.Configuration
 import android.graphics.Outline
+import android.os.Trace
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewOutlineProvider
@@ -138,12 +139,19 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         contentTranslateX: Float,
         contentTranslateY: Float,
     ) {
-        // Stored only; applyNormalizedClipPx computes the clip residual and
-        // applyClipPlacement writes both translations together, because the
-        // content's final offset depends on the residual as well.
-        requestedContentTranslateX = contentTranslateX
-        requestedContentTranslateY = contentTranslateY
-        applyNormalizedClipPx(left, top, right, bottom, radius)
+        // Debug-only Perfetto slice for the Kotlin share of the C++
+        // SmoothClip.setPresentation section (see SmoothClipTrace.h).
+        if (BuildConfig.DEBUG) Trace.beginSection("SmoothClip.applyPx")
+        try {
+            // Stored only; applyNormalizedClipPx computes the clip residual and
+            // applyClipPlacement writes both translations together, because the
+            // content's final offset depends on the residual as well.
+            requestedContentTranslateX = contentTranslateX
+            requestedContentTranslateY = contentTranslateY
+            applyNormalizedClipPx(left, top, right, bottom, radius)
+        } finally {
+            if (BuildConfig.DEBUG) Trace.endSection()
+        }
     }
 
     private fun applyRequestedGeometry() {

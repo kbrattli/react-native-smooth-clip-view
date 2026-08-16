@@ -69,6 +69,20 @@ export type ClipAnimationResult = Readonly<{
 export type SmoothClipDriverOptions = Readonly<{
   reduceMotion?: ClipReduceMotion;
   onAnimationComplete?: (result: ClipAnimationResult) => void;
+  /**
+   * Android only; captured at driver creation. Records two-sample velocity
+   * history on `setScalars` hot writes so a spring `initialVelocity: 'inherit'`
+   * can project its launch speed from the live drag. Off by default: the
+   * recording (a clock read plus channel copies) rides the per-frame
+   * `setScalars` hot path, and drivers that never hand off into an inherit
+   * spring should not pay it. Without this flag, `'inherit'` inherits 0 after
+   * a `setScalars` drag on Android (each skipped write also invalidates older
+   * samples, so stale pre-drag motion never leaks in). `set()`, the fused
+   * `animateTo` `from` seed, and the declarative `presentation.value` channel
+   * always record regardless of the flag. iOS always records; the flag is a
+   * no-op there.
+   */
+  velocityTracking?: boolean;
 }>;
 
 export type SmoothClipUIControls = Readonly<{

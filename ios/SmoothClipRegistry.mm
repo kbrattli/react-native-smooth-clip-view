@@ -731,7 +731,8 @@ void setPresentation(
     uint64_t driverId,
     Presentation presentation,
     bool takeOwnership,
-    bool overridePendingAnimation) {
+    bool overridePendingAnimation,
+    bool recordVelocity) {
   // CALayer writes require the main thread (not main-queue drain context).
   if (!NSThread.isMainThread) {
     // Never block an off-main caller: a synchronous hop can deadlock against
@@ -740,7 +741,8 @@ void setPresentation(
     // same mutex when draining scheduled worklets).
     RCTExecuteOnMainQueue(^{
       setPresentation(
-          driverId, presentation, takeOwnership, overridePendingAnimation);
+          driverId, presentation, takeOwnership, overridePendingAnimation,
+          recordVelocity);
     });
     return;
   }
@@ -789,7 +791,17 @@ void setPresentation(
     }
     cancelActive(driverId, state, false);
   }
-  applyPresentation(state, presentation);
+  applyPresentation(state, presentation, recordVelocity);
+  if (!recordVelocity) {
+    // Shared contract with the Android registry: an unrecorded hot write
+    // moved the geometry, so surviving sample pairs would describe motion the
+    // finger never produced — invalidate them. Unreachable from the
+    // TurboModule (it never passes false); internal freeze/join paths bypass
+    // setPresentation and keep their deliberate skip-without-clear semantics.
+    for (const ViewKey key : state.views) {
+      [viewForKey(key) smoothClipClearVelocitySamples];
+    }
+  }
 #if defined(SMOOTH_CLIP_ENABLE_SIGNPOSTS) && SMOOTH_CLIP_ENABLE_SIGNPOSTS
   if (signpostsEnabled) {
     os_signpost_interval_end(

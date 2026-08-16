@@ -1570,6 +1570,52 @@ static UIWindow *TestWindow(void) {
   smoothclip::destroyDriver(driverId);
 }
 
+// The shared setPresentation contract: a recordVelocity=false hot write moved
+// the geometry without being sampled, so a previously recorded pair no longer
+// describes the finger — it must be invalidated, or a pre-drag pair still
+// inside the staleness window would launch this inherit spring with motion
+// the drag never produced. (Unreachable from the iOS TurboModule, which never
+// passes false; Android's untracked setScalars stream is the production
+// caller of this path. Internal freeze/join applies bypass setPresentation
+// and keep their skip-without-clear semantics.)
+- (void)testUnrecordedWriteInvalidatesTheInheritHistory {
+  constexpr uint64_t driverId = 9048;
+  UIWindow *window = TestWindow();
+  SmoothClipView *view = DisplayableView(window, CGRectMake(0, 0, 120, 120));
+  const smoothclip::Presentation initial = Presentation(0, 0, 40, 40, 8, 0, 0);
+  smoothclip::registerView(driverId, view, initial);
+
+  // A real recorded pair, one frame apart — alone it would still carry
+  // near-full staleness credit at the animateSpring below.
+  smoothclip::setPresentation(driverId, Presentation(0, 1, 40, 40, 8), true);
+  usleep(16000);
+  smoothclip::setPresentation(driverId, Presentation(0, 4, 40, 40, 8), true);
+
+  // The untracked hot write: applied, not sampled, history invalidated.
+  smoothclip::setPresentation(
+      driverId, Presentation(0, 20, 40, 40, 8), true, false,
+      /*recordVelocity=*/false);
+
+  const smoothclip::SpringAnimation spring{1, 180, 18, 0, true, 2};
+  const int32_t animationId = smoothclip::animateSpring(
+      driverId, {false, initial},
+      Presentation(0, 0, 100, 100, 12, -20, -30), spring);
+  XCTAssertGreaterThan(animationId, 0);
+
+  UIView *container = [view valueForKey:@"clipContainer"];
+  CAAnimationGroup *group = (CAAnimationGroup *)[container.layer
+      animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(group);
+  XCTAssertEqual(group.animations.count, 7u);
+  for (CASpringAnimation *animation in group.animations) {
+    XCTAssertEqualWithAccuracy(animation.initialVelocity, 0, 1e-9);
+  }
+
+  smoothclip::cancelAnimation(driverId, 0, false);
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::destroyDriver(driverId);
+}
+
 // A held latch has no installed participants, so a view leaving while it is
 // held must not poison the eventual natural completion: the run that later
 // starts and finishes cleanly reports finished:true. Contract pin for the
