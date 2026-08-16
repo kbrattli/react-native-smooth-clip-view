@@ -3,14 +3,14 @@ import { Stack } from 'expo-router';
 import { StyleSheet } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { ZoomTransitionProvider } from '../ZoomTransitionContext';
+import { SharedElementTransitionProvider } from '../SharedElementTransitionContext';
 
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={styles.root}>
       <SafeAreaProvider>
         <StatusBar style="light" />
-        <ZoomTransitionProvider>
+        <SharedElementTransitionProvider>
           <Stack
             screenOptions={{
               headerStyle: { backgroundColor: '#07111F' },
@@ -28,6 +28,14 @@ export default function RootLayout() {
               name="zoom-transition"
               options={{ title: 'Zoom transition' }}
             />
+            <Stack.Screen
+              name="image-gallery"
+              options={{
+                contentStyle: { backgroundColor: '#000000' },
+                headerStyle: { backgroundColor: '#000000' },
+                title: 'Gallery',
+              }}
+            />
             <Stack.Screen name="clip-bench" options={{ title: 'Clip bench' }} />
             {/*
               The overlay is a real route. `transparentModal` keeps the card
@@ -44,8 +52,17 @@ export default function RootLayout() {
                 presentation: 'transparentModal',
               }}
             />
+            <Stack.Screen
+              name="image-gallery-overlay"
+              options={{
+                animation: 'none',
+                contentStyle: { backgroundColor: 'transparent' },
+                headerShown: false,
+                presentation: 'transparentModal',
+              }}
+            />
           </Stack>
-        </ZoomTransitionProvider>
+        </SharedElementTransitionProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

@@ -17,6 +17,8 @@ export type OverlayClipGeometryInput = Readonly<{
   dragTranslateY: number;
   /** Resting corner radius; the drag ramps up from here. */
   sourceRadius: number;
+  /** Corner radius reached during a full dismiss drag. Defaults to 40. */
+  maximumDragRadius?: number;
 }>;
 
 export type OverlayClipGeometryResult = Readonly<{
@@ -65,13 +67,15 @@ export function resolveDragContentScale(normalizedDrag: number) {
 
 export function resolveDragClipRadius(
   normalizedDrag: number,
-  sourceRadius: number
+  sourceRadius: number,
+  maximumDragRadius = DRAG_MAX_RADIUS
 ) {
   'worklet';
   const safeSourceRadius = Math.max(0, sourceRadius);
+  const safeMaximumRadius = Math.max(0, maximumDragRadius);
   const progress = clamp(normalizedDrag / DRAG_RADIUS_RAMP_END, 0, 1);
 
-  return lerp(safeSourceRadius, DRAG_MAX_RADIUS, progress);
+  return lerp(safeSourceRadius, safeMaximumRadius, progress);
 }
 
 /**
@@ -102,6 +106,7 @@ export function calculateOverlayClipGeometry({
   topClipRatio,
   dragTranslateY,
   sourceRadius,
+  maximumDragRadius,
 }: OverlayClipGeometryInput): OverlayClipGeometryResult {
   'worklet';
 
@@ -133,7 +138,11 @@ export function calculateOverlayClipGeometry({
       y: baseY + topOffset + contentDragY,
       width,
       height,
-      radius: resolveDragClipRadius(normalizedDrag, sourceRadius),
+      radius: resolveDragClipRadius(
+        normalizedDrag,
+        sourceRadius,
+        maximumDragRadius
+      ),
     },
     // React Native scales the fixed fullscreen child around its own centre.
     // These terms re-anchor that scale onto the base rectangle: horizontally

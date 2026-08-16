@@ -59,6 +59,29 @@ describe('overlay clip geometry', () => {
     expect(contentTranslateY).toBeCloseTo(0);
   });
 
+  it('supports a square-cornered drag presentation', () => {
+    const geometry = calculateOverlayClipGeometry({
+      progress: 1,
+      originX: ORIGIN.x,
+      originY: ORIGIN.y,
+      originWidth: ORIGIN.w,
+      originHeight: ORIGIN.h,
+      screenWidth: SCREEN_WIDTH,
+      screenHeight: SCREEN_HEIGHT,
+      translateX: 0,
+      translateY: SCREEN_HEIGHT,
+      dragThreshold: SCREEN_HEIGHT * 0.8,
+      minimumWidth: 200,
+      minimumHeight: 200,
+      topClipRatio: 0.25,
+      dragTranslateY: 400,
+      sourceRadius: 0,
+      maximumDragRadius: 0,
+    });
+
+    expect(geometry.clip.radius).toBe(0);
+  });
+
   it('pins the content translation to the clip origin while undragged', () => {
     const { clip, contentTranslateX, contentTranslateY } = geometryAt({
       progress: 0.5,

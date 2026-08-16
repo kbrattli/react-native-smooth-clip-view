@@ -8,6 +8,7 @@
     "@shopify/react-native-skia": "2.6.2",
     "expo": "~57.0.8",
     "expo-constants": "~57.0.10",
+    "expo-image": "~57.0.3",
     "expo-linking": "~57.0.5",
     "expo-router": "~57.0.12",
     "expo-status-bar": "~57.0.1",
