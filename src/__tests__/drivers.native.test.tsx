@@ -170,8 +170,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       target.contentTranslateX,
       target.contentTranslateY,
       false,
-      false,
-      true
+      false
     );
   });
 
@@ -234,8 +233,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       target.contentTranslateX,
       target.contentTranslateY,
       true,
-      false,
-      true
+      false
     );
   });
 
@@ -315,134 +313,8 @@ describe('hybrid native driver (iOS + Android)', () => {
       0,
       0,
       false,
-      false,
-      true
+      false
     );
-  });
-
-  it('warns for an inherit spring only after an untracked hot write', () => {
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    const driver = useSmoothClipDriver(initial);
-
-    // Declarative-only: the presentation channel always records, so inherit
-    // works and a warning would demand an option that changes nothing.
-    driver.ui.animateTo(target, { type: 'spring' });
-    expect(warn).not.toHaveBeenCalled();
-
-    // A hot write skipped the sample recording, so this inherit spring
-    // launches from invalidated history — that is worth flagging.
-    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
-    driver.ui.animateTo(initial, {
-      type: 'spring',
-      initialVelocity: 'inherit',
-    });
-    expect(warn).toHaveBeenCalledTimes(1);
-
-    // Explicit numeric velocity never inherits, stale or not.
-    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
-    driver.ui.animateTo(target, { type: 'spring', initialVelocity: 0.5 });
-    expect(warn).toHaveBeenCalledTimes(1);
-
-    warn.mockRestore();
-  });
-
-  it('does not warn when only the fused from seed staled the scalars', () => {
-    // The seed records its own velocity sample, so a set()/declarative
-    // consumer handing off through `from` inherits correctly — the warning
-    // reads the staleness captured before the seed.
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    const driver = useSmoothClipDriver(initial);
-
-    driver.ui.set(fromPresentation);
-    driver.ui.animateTo(target, {
-      type: 'spring',
-      initialVelocity: 'inherit',
-      from: fromPresentation,
-    });
-
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
-  });
-
-  it('warns when an untracked drag precedes a fused from handoff', () => {
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    const driver = useSmoothClipDriver(initial);
-
-    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
-    driver.ui.animateTo(target, {
-      type: 'spring',
-      initialVelocity: 'inherit',
-      from: fromPresentation,
-    });
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    warn.mockRestore();
-  });
-
-  it('accepts that an interposed set() release slips past the warning', () => {
-    // KNOWN LIMITATION, pinned on purpose (see the comment in animateOnUI):
-    // set() resets the staleness flag the warning reads, but records only
-    // ONE sample into a history the drag cleared — the spring still inherits
-    // 0, yet the diagnostic stays silent. Closing this gap needs a write
-    // ledger on the per-frame hot path, judged not worth the cost; the
-    // README/docs carry the contract for these shapes. If this pin breaks
-    // because the warning got smarter without hot-path cost, delete it
-    // gladly.
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    const driver = useSmoothClipDriver(initial);
-
-    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
-    driver.ui.set(fromPresentation);
-    driver.ui.animateTo(target, { type: 'spring' });
-
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
-  });
-
-  it('warns at most once per driver', () => {
-    // The latch: the first miss is reported, repeats of the same
-    // misconfiguration on the same driver stay quiet instead of logging on
-    // every fling from the UI runtime.
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    const driver = useSmoothClipDriver(initial);
-
-    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
-    driver.ui.animateTo(target, { type: 'spring' });
-    driver.ui.setScalars(2, 3, 4, 5, 6, 7, 8);
-    driver.ui.animateTo(initial, { type: 'spring' });
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    warn.mockRestore();
-  });
-
-  it('does not warn about inherit velocity when velocityTracking is on', () => {
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    const driver = useSmoothClipDriver(initial, { velocityTracking: true });
-
-    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
-    driver.ui.animateTo(target, { type: 'spring' });
-
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
-  });
-
-  it('never warns about inherit velocity on iOS', () => {
-    // iOS records on every write; the opt-in and its warning are Android-only.
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    mockPlatformOS = 'ios';
-    let iosUseSmoothClipDriver: typeof useSmoothClipDriver | undefined;
-    jest.isolateModules(() => {
-      iosUseSmoothClipDriver = (
-        require('../drivers.native') as typeof import('../drivers.native')
-      ).useSmoothClipDriver;
-    });
-    const driver = iosUseSmoothClipDriver!(initial);
-
-    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
-    driver.ui.animateTo(target, { type: 'spring' });
-
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
   });
 
   it('restores interactive ownership when native rejects a transition', () => {
@@ -470,8 +342,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       target.contentTranslateX,
       target.contentTranslateY,
       false,
-      false,
-      true
+      false
     );
   });
 
@@ -625,8 +496,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       dragged.contentTranslateX,
       dragged.contentTranslateY,
       false,
-      false,
-      true
+      false
     );
   });
 
@@ -655,8 +525,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       target.contentTranslateX,
       target.contentTranslateY,
       true,
-      false,
-      true
+      false
     );
 
     // ...and the driver remains fully operational afterwards.
@@ -671,8 +540,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       initial.contentTranslateX,
       initial.contentTranslateY,
       false,
-      false,
-      true
+      false
     );
   });
 

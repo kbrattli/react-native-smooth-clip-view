@@ -41,7 +41,7 @@ target_link_libraries(
   ReactAndroid::jsi
   ReactAndroid::reactnative)
 
-# Debug-only hot-path tracing (ATrace + logcat stats); see SmoothClipTrace.h.
+# Debug-only hot-path ATrace slices; see SmoothClipTrace.h.
 # Passed from the debug build type in build.gradle, never for release.
 if(SMOOTH_CLIP_ENABLE_ATRACE)
   target_compile_definitions(smoothclipview PRIVATE SMOOTH_CLIP_ENABLE_ATRACE=1)

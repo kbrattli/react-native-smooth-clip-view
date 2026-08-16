@@ -74,10 +74,7 @@ void clearCompletionCallback(const void *owner);
 // Default true (the pre-flag behavior); Android's JS layer passes false for
 // setScalars hot writes on drivers without SmoothClipDriverOptions
 // .velocityTracking, so the per-frame drag stream skips the clock read and
-// channel copies. A false write also invalidates any recorded sample pair —
-// the geometry moved without being recorded, so surviving samples would
-// describe motion the finger never produced. iOS callers never pass it and
-// keep recording always.
+// channel copies. iOS callers never pass it and keep recording always.
 void setPresentation(
     uint64_t driverId,
     Presentation presentation,
