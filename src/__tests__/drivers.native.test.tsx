@@ -349,8 +349,7 @@ describe('hybrid native driver (iOS + Android)', () => {
   it('does not warn when only the fused from seed staled the scalars', () => {
     // The seed records its own velocity sample, so a set()/declarative
     // consumer handing off through `from` inherits correctly — the warning
-    // reads the inherit-history ledger as it stood before the seed, and a
-    // driver that never hot-wrote carries no debt.
+    // reads the staleness captured before the seed.
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     const driver = useSmoothClipDriver(initial);
 
@@ -380,61 +379,21 @@ describe('hybrid native driver (iOS + Android)', () => {
     warn.mockRestore();
   });
 
-  it('warns when a set() release follows an untracked drag', () => {
-    // set() resets the staleness flag but records only ONE sample into a
-    // history the drag just cleared — no pair, so inherit still yields 0.
-    // The debt ledger (2 after a hot write, minus 1 per recorded write)
-    // keeps the warning honest where the old staleness proxy went silent.
+  it('accepts that an interposed set() release slips past the warning', () => {
+    // KNOWN LIMITATION, pinned on purpose (see the comment in animateOnUI):
+    // set() resets the staleness flag the warning reads, but records only
+    // ONE sample into a history the drag cleared — the spring still inherits
+    // 0, yet the diagnostic stays silent. Closing this gap needs a write
+    // ledger on the per-frame hot path, judged not worth the cost; the
+    // README/docs carry the contract for these shapes. If this pin breaks
+    // because the warning got smarter without hot-path cost, delete it
+    // gladly.
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     const driver = useSmoothClipDriver(initial);
 
     driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
     driver.ui.set(fromPresentation);
     driver.ui.animateTo(target, { type: 'spring' });
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    warn.mockRestore();
-  });
-
-  it('warns when a declarative write follows an untracked drag', () => {
-    // Same shape through the presentation.value channel: the delivery
-    // records one sample and resets staleness, but cannot rebuild a pair.
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    const driver = useSmoothClipDriver(initial);
-
-    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
-    driver.presentation.value = fromPresentation;
-    driver.ui.animateTo(target, { type: 'spring' });
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    warn.mockRestore();
-  });
-
-  it('warns when an inherit spring follows an untracked drag and a cancel', () => {
-    // cancel() re-seeds the SharedValue and resets staleness, but native
-    // records nothing on cancelAnimation — the cleared history stays cleared.
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    const driver = useSmoothClipDriver(initial);
-
-    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
-    driver.ui.cancel();
-    driver.ui.animateTo(target, { type: 'spring' });
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    warn.mockRestore();
-  });
-
-  it('stops warning once two recorded writes rebuild the history', () => {
-    // Two recorded writes are exactly what the native tracker needs for an
-    // inheritable pair (hasPrevious && hasLatest), so the debt is paid off
-    // and the inherit spring launches from real history — no warning.
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    const driver = useSmoothClipDriver(initial);
-
-    driver.ui.setScalars(1, 2, 3, 4, 5, 6, 7);
-    driver.ui.set(fromPresentation);
-    driver.ui.set(target);
-    driver.ui.animateTo(initial, { type: 'spring' });
 
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
