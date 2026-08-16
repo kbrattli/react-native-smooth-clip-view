@@ -56,7 +56,6 @@ import {
   SCREEN_WIDTH,
   TIMING_CONFIG,
   TOP_CLIP_RATIO,
-  cityKeyExtractor,
   type OverlayPhase,
 } from '../overlayConstants';
 import type { Rect, ZoomCity } from '../zoomCities';
@@ -69,13 +68,39 @@ type DismissGestureState = Readonly<{
   activated: boolean;
 }>;
 
-type PageProps = {
-  city: ZoomCity;
+export type SharedElementOverlayItem = Readonly<{ id: string }>;
+
+export type SharedElementPageRenderProps = {
+  item: SharedElementOverlayItem;
   index: number;
   originRect: SharedValue<Rect>;
   overlayPhase: SharedValue<OverlayPhase>;
   progress: SharedValue<number>;
 };
+
+export type SharedElementPageRenderer = (
+  props: SharedElementPageRenderProps
+) => ReactNode;
+
+export type SharedElementOverlayChromeProps = Readonly<{
+  progress: SharedValue<number>;
+  requestClose: () => void;
+}>;
+
+type PageProps = SharedElementPageRenderProps & {
+  renderPage: SharedElementPageRenderer;
+};
+
+function PageContent({
+  item,
+  index,
+  originRect,
+  overlayPhase,
+  progress,
+  renderPage,
+}: PageProps) {
+  return renderPage({ item, index, originRect, overlayPhase, progress });
+}
 
 const PagePlaceholder = memo(function PagePlaceholderView() {
   return <View style={styles.placeholder} />;
@@ -136,7 +161,7 @@ const PageWarmup = memo(function PageWarmupView({
   }, [dismissGestureState, overlayPhase, ready]);
 
   if (!ready) return <PagePlaceholder />;
-  return <ZoomCityPage {...props} />;
+  return <PageContent {...props} />;
 });
 PageWarmup.displayName = 'PageWarmup';
 
@@ -146,7 +171,7 @@ const PageWrapper = memo(function PageWrapperView({
   ...props
 }: PageWarmupProps) {
   if (props.index === openingIndex) {
-    return <ZoomCityPage {...props} />;
+    return <PageContent {...props} />;
   }
   return (
     <PageWarmup
@@ -159,8 +184,9 @@ const PageWrapper = memo(function PageWrapperView({
 PageWrapper.displayName = 'PageWrapper';
 
 type OverlayPagerProps = {
-  cities: readonly ZoomCity[];
   dismissGestureState: SharedValue<DismissGestureState>;
+  items: readonly SharedElementOverlayItem[];
+  keyExtractor: (item: SharedElementOverlayItem) => string;
   onMomentumScrollBegin: () => void;
   onMomentumScrollEnd: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
   onScrollBeginDrag: () => void;
@@ -169,11 +195,13 @@ type OverlayPagerProps = {
   originRect: SharedValue<Rect>;
   overlayPhase: SharedValue<OverlayPhase>;
   progress: SharedValue<number>;
+  renderPage: SharedElementPageRenderer;
 };
 
 const OverlayPager = memo(function OverlayPagerView({
-  cities,
   dismissGestureState,
+  items,
+  keyExtractor,
   onMomentumScrollBegin,
   onMomentumScrollEnd,
   onScrollBeginDrag,
@@ -182,34 +210,43 @@ const OverlayPager = memo(function OverlayPagerView({
   originRect,
   overlayPhase,
   progress,
+  renderPage,
 }: OverlayPagerProps) {
   const renderItem = useCallback(
-    ({ item: city, index }: { item: ZoomCity; index: number }) => (
+    ({ item, index }: { item: SharedElementOverlayItem; index: number }) => (
       <PageWrapper
-        city={city}
         dismissGestureState={dismissGestureState}
         index={index}
+        item={item}
         openingIndex={openingIndex}
         originRect={originRect}
         overlayPhase={overlayPhase}
         progress={progress}
+        renderPage={renderPage}
       />
     ),
-    [dismissGestureState, openingIndex, originRect, overlayPhase, progress]
+    [
+      dismissGestureState,
+      openingIndex,
+      originRect,
+      overlayPhase,
+      progress,
+      renderPage,
+    ]
   );
 
   const getFixedItemSize = useCallback(() => SCREEN_WIDTH, []);
 
   return (
     <LegendList
-      data={cities as ZoomCity[]}
+      data={items as SharedElementOverlayItem[]}
       drawDistance={25}
       estimatedItemSize={SCREEN_WIDTH}
       estimatedListSize={{ width: SCREEN_WIDTH, height: SCREEN_HEIGHT }}
       getFixedItemSize={getFixedItemSize}
       horizontal
       initialScrollIndex={openingIndex}
-      keyExtractor={cityKeyExtractor}
+      keyExtractor={keyExtractor}
       onMomentumScrollBegin={onMomentumScrollBegin}
       onMomentumScrollEnd={onMomentumScrollEnd}
       onScrollBeginDrag={onScrollBeginDrag}
@@ -259,23 +296,30 @@ function OverlayClipHost({
   );
 }
 
-const FULLSCREEN_PRESENTATION = calculateOverlayClipGeometry({
-  progress: 1,
-  originX: 0,
-  originY: 0,
-  originWidth: SCREEN_WIDTH,
-  originHeight: SCREEN_HEIGHT,
-  screenWidth: SCREEN_WIDTH,
-  screenHeight: SCREEN_HEIGHT,
-  translateX: 0,
-  translateY: 0,
-  dragThreshold: DRAG_THRESHOLD,
-  minimumWidth: MIN_WIDTH,
-  minimumHeight: MIN_HEIGHT,
-  topClipRatio: TOP_CLIP_RATIO,
-  dragTranslateY: DRAG_TRANSLATE_Y,
-  sourceRadius: OVERLAY_SOURCE_RADIUS,
-});
+function fullscreenPresentation(
+  sourceRadius: number,
+  maximumDragRadius: number
+) {
+  'worklet';
+  return calculateOverlayClipGeometry({
+    progress: 1,
+    originX: 0,
+    originY: 0,
+    originWidth: SCREEN_WIDTH,
+    originHeight: SCREEN_HEIGHT,
+    screenWidth: SCREEN_WIDTH,
+    screenHeight: SCREEN_HEIGHT,
+    translateX: 0,
+    translateY: 0,
+    dragThreshold: DRAG_THRESHOLD,
+    minimumWidth: MIN_WIDTH,
+    minimumHeight: MIN_HEIGHT,
+    topClipRatio: TOP_CLIP_RATIO,
+    dragTranslateY: DRAG_TRANSLATE_Y,
+    sourceRadius,
+    maximumDragRadius,
+  });
+}
 
 function applyPresentationScalars(
   driver: SmoothClipDriver,
@@ -354,7 +398,12 @@ function mixPresentation(
 
 // The two endpoints of the close: the on-screen release state (drag model at
 // full progress with the release translation) and the landing card rect.
-function closeEndpoints(origin: Rect, start: CloseStart) {
+function closeEndpoints(
+  origin: Rect,
+  start: CloseStart,
+  sourceRadius: number,
+  maximumDragRadius: number
+) {
   'worklet';
   const shared = {
     originX: origin.x,
@@ -368,7 +417,8 @@ function closeEndpoints(origin: Rect, start: CloseStart) {
     minimumHeight: MIN_HEIGHT,
     topClipRatio: TOP_CLIP_RATIO,
     dragTranslateY: DRAG_TRANSLATE_Y,
-    sourceRadius: OVERLAY_SOURCE_RADIUS,
+    sourceRadius,
+    maximumDragRadius,
   } as const;
   return {
     release: calculateOverlayClipGeometry({
@@ -387,28 +437,38 @@ function closeEndpoints(origin: Rect, start: CloseStart) {
 }
 
 type OverlayProps = {
-  cities: readonly ZoomCity[];
   hiddenIndex: SharedValue<number>;
   initialIndex: number;
   initialOriginRect: Rect;
+  items: readonly SharedElementOverlayItem[];
+  keyExtractor: (item: SharedElementOverlayItem) => string;
+  maximumDragRadius: number;
   onClosed: () => void;
   onIndexChange: (index: number) => void;
   originRect: SharedValue<Rect>;
+  renderOverlayChrome?: (props: SharedElementOverlayChromeProps) => ReactNode;
+  renderPage: SharedElementPageRenderer;
+  sourceRadius: number;
 };
 
 const Overlay = memo(function OverlayView({
-  cities,
   hiddenIndex,
   initialIndex,
   initialOriginRect,
+  items,
+  keyExtractor,
+  maximumDragRadius,
   onClosed,
   onIndexChange,
   originRect,
+  renderOverlayChrome,
+  renderPage,
+  sourceRadius,
 }: OverlayProps) {
   const safeInitialIndex =
-    cities.length === 0
+    items.length === 0
       ? 0
-      : Math.min(Math.max(initialIndex, 0), cities.length - 1);
+      : Math.min(Math.max(initialIndex, 0), items.length - 1);
   const [openingIndex] = useState(() => safeInitialIndex);
 
   // Native starts with this exact geometry, preventing a fullscreen flash
@@ -418,7 +478,7 @@ const Overlay = memo(function OverlayView({
     y: initialOriginRect.y,
     width: initialOriginRect.w,
     height: initialOriginRect.h,
-    radius: OVERLAY_SOURCE_RADIUS,
+    radius: sourceRadius,
   }));
   const driver = useSmoothClipDriver({
     clip: initialClip,
@@ -466,7 +526,8 @@ const Overlay = memo(function OverlayView({
       minimumHeight: MIN_HEIGHT,
       topClipRatio: TOP_CLIP_RATIO,
       dragTranslateY: DRAG_TRANSLATE_Y,
-      sourceRadius: OVERLAY_SOURCE_RADIUS,
+      sourceRadius,
+      maximumDragRadius,
     });
     scheduleOnUI(() => {
       'worklet';
@@ -479,7 +540,14 @@ const Overlay = memo(function OverlayView({
         })
       );
     });
-  }, [completeOpening, driver, initialOriginRect, progress]);
+  }, [
+    completeOpening,
+    driver,
+    initialOriginRect,
+    maximumDragRadius,
+    progress,
+    sourceRadius,
+  ]);
 
   // Tracked on the JS side so render never reads a shared value.
   const lastIndexRef = useRef<number>(openingIndex);
@@ -490,16 +558,16 @@ const Overlay = memo(function OverlayView({
 
   const commitIndexIfChanged = useCallback(
     (index: number) => {
-      if (cities.length === 0) return;
+      if (items.length === 0) return;
 
-      const clampedIndex = Math.min(Math.max(index, 0), cities.length - 1);
+      const clampedIndex = Math.min(Math.max(index, 0), items.length - 1);
       if (clampedIndex === lastIndexRef.current) return;
 
       lastIndexRef.current = clampedIndex;
       hiddenIndex.set(clampedIndex);
       onIndexChange(clampedIndex);
     },
-    [cities.length, hiddenIndex, onIndexChange]
+    [hiddenIndex, items.length, onIndexChange]
   );
 
   const overlayGeometry = useDerivedValue(() => {
@@ -510,7 +578,12 @@ const Overlay = memo(function OverlayView({
       // Mirror the native close timing: output-space mix so every channel
       // paces identically. progress runs withTiming(0) on the same
       // ease-out-cubic clock, so 1 − progress IS the native eased fraction.
-      const { release, landing } = closeEndpoints(origin, closeStart.get());
+      const { release, landing } = closeEndpoints(
+        origin,
+        closeStart.get(),
+        sourceRadius,
+        maximumDragRadius
+      );
       return mixPresentation(release, landing, 1 - currentProgress);
     }
 
@@ -529,7 +602,8 @@ const Overlay = memo(function OverlayView({
       minimumHeight: MIN_HEIGHT,
       topClipRatio: TOP_CLIP_RATIO,
       dragTranslateY: DRAG_TRANSLATE_Y,
-      sourceRadius: OVERLAY_SOURCE_RADIUS,
+      sourceRadius,
+      maximumDragRadius,
     });
   });
 
@@ -563,7 +637,9 @@ const Overlay = memo(function OverlayView({
     // without the linearization error or the per-frame array marshalling.
     const { release, landing } = closeEndpoints(
       originRect.get(),
-      closeStart.get()
+      closeStart.get(),
+      sourceRadius,
+      maximumDragRadius
     );
     driver.ui.animateTo(landing, {
       ...NATIVE_CLOSE_TIMING,
@@ -585,10 +661,12 @@ const Overlay = memo(function OverlayView({
     closeStart,
     driver,
     hiddenIndex,
+    maximumDragRadius,
     onClosed,
     originRect,
     overlayPhase,
     progress,
+    sourceRadius,
     translateX,
     translateY,
   ]);
@@ -681,28 +759,32 @@ const Overlay = memo(function OverlayView({
             close();
           } else {
             const origin = originRect.get();
-            driver.ui.animateTo(FULLSCREEN_PRESENTATION, {
-              ...NATIVE_FAST_TIMING,
-              // Start from the release sample — the gated reaction never
-              // flushed it natively.
-              from: calculateOverlayClipGeometry({
-                progress: progress.get(),
-                originX: origin.x,
-                originY: origin.y,
-                originWidth: origin.w,
-                originHeight: origin.h,
-                screenWidth: SCREEN_WIDTH,
-                screenHeight: SCREEN_HEIGHT,
-                translateX: release.x,
-                translateY: release.y,
-                dragThreshold: DRAG_THRESHOLD,
-                minimumWidth: MIN_WIDTH,
-                minimumHeight: MIN_HEIGHT,
-                topClipRatio: TOP_CLIP_RATIO,
-                dragTranslateY: DRAG_TRANSLATE_Y,
-                sourceRadius: OVERLAY_SOURCE_RADIUS,
-              }),
-            });
+            driver.ui.animateTo(
+              fullscreenPresentation(sourceRadius, maximumDragRadius),
+              {
+                ...NATIVE_FAST_TIMING,
+                // Start from the release sample — the gated reaction never
+                // flushed it natively.
+                from: calculateOverlayClipGeometry({
+                  progress: progress.get(),
+                  originX: origin.x,
+                  originY: origin.y,
+                  originWidth: origin.w,
+                  originHeight: origin.h,
+                  screenWidth: SCREEN_WIDTH,
+                  screenHeight: SCREEN_HEIGHT,
+                  translateX: release.x,
+                  translateY: release.y,
+                  dragThreshold: DRAG_THRESHOLD,
+                  minimumWidth: MIN_WIDTH,
+                  minimumHeight: MIN_HEIGHT,
+                  topClipRatio: TOP_CLIP_RATIO,
+                  dragTranslateY: DRAG_TRANSLATE_Y,
+                  sourceRadius,
+                  maximumDragRadius,
+                }),
+              }
+            );
             translateX.set(withTiming(0, FAST_TIMING));
             translateY.set(withTiming(0, FAST_TIMING));
             progress.set(withTiming(1, FAST_TIMING));
@@ -714,9 +796,11 @@ const Overlay = memo(function OverlayView({
       completeOpening,
       driver,
       gestureState,
+      maximumDragRadius,
       originRect,
       overlayPhase,
       progress,
+      sourceRadius,
       translateX,
       translateY,
     ]
@@ -747,13 +831,18 @@ const Overlay = memo(function OverlayView({
     [commitIndexIfChanged]
   );
 
+  const requestClose = useCallback(() => {
+    scheduleOnUI(close);
+  }, [close]);
+
   return (
     <View pointerEvents="box-none" style={styles.zIndexWrapper}>
       <GestureDetector gesture={dismissGesture}>
         <OverlayClipHost driver={driver} overlayGeometry={overlayGeometry}>
           <OverlayPager
-            cities={cities}
             dismissGestureState={gestureState}
+            items={items}
+            keyExtractor={keyExtractor}
             onMomentumScrollBegin={onMomentumScrollBegin}
             onMomentumScrollEnd={onMomentumScrollEnd}
             onScrollBeginDrag={onScrollBeginDrag}
@@ -762,7 +851,9 @@ const Overlay = memo(function OverlayView({
             originRect={originRect}
             overlayPhase={overlayPhase}
             progress={progress}
+            renderPage={renderPage}
           />
+          {renderOverlayChrome?.({ progress, requestClose })}
         </OverlayClipHost>
       </GestureDetector>
     </View>
@@ -770,15 +861,83 @@ const Overlay = memo(function OverlayView({
 });
 Overlay.displayName = 'Overlay';
 
-type OverlayContainerProps = {
+export type SharedElementOverlayContainerProps = {
   activeIndex: number | null;
-  cities: readonly ZoomCity[];
   hiddenIndex: SharedValue<number>;
   initialOriginRect: Rect | null;
+  items: readonly SharedElementOverlayItem[];
+  keyExtractor: (item: SharedElementOverlayItem) => string;
+  maximumDragRadius?: number;
   onClosed: () => void;
   onIndexChange: (index: number) => void;
   originRect: SharedValue<Rect>;
+  renderOverlayChrome?: (props: SharedElementOverlayChromeProps) => ReactNode;
+  renderPage: SharedElementPageRenderer;
+  sourceRadius: number;
 };
+
+export const SharedElementOverlayContainer = memo(
+  function SharedElementOverlayContainerView({
+    activeIndex,
+    hiddenIndex,
+    initialOriginRect,
+    items,
+    keyExtractor,
+    maximumDragRadius = 40,
+    onClosed,
+    onIndexChange,
+    originRect,
+    renderOverlayChrome,
+    renderPage,
+    sourceRadius,
+  }: SharedElementOverlayContainerProps) {
+    if (activeIndex === null || initialOriginRect === null) return null;
+
+    return (
+      <Overlay
+        hiddenIndex={hiddenIndex}
+        initialIndex={activeIndex}
+        initialOriginRect={initialOriginRect}
+        items={items}
+        keyExtractor={keyExtractor}
+        maximumDragRadius={maximumDragRadius}
+        onClosed={onClosed}
+        onIndexChange={onIndexChange}
+        originRect={originRect}
+        renderOverlayChrome={renderOverlayChrome}
+        renderPage={renderPage}
+        sourceRadius={sourceRadius}
+      />
+    );
+  }
+);
+SharedElementOverlayContainer.displayName = 'SharedElementOverlayContainer';
+
+type OverlayContainerProps = Omit<
+  SharedElementOverlayContainerProps,
+  | 'items'
+  | 'keyExtractor'
+  | 'maximumDragRadius'
+  | 'renderOverlayChrome'
+  | 'renderPage'
+  | 'sourceRadius'
+> & {
+  cities: readonly ZoomCity[];
+};
+
+const renderZoomCityPage: SharedElementPageRenderer = ({
+  item,
+  originRect,
+  overlayPhase,
+  progress,
+}) => (
+  <ZoomCityPage
+    city={item as ZoomCity}
+    originRect={originRect}
+    overlayPhase={overlayPhase}
+    progress={progress}
+  />
+);
 
 export const OverlayContainer = memo(function OverlayContainerView({
   activeIndex,
@@ -789,17 +948,18 @@ export const OverlayContainer = memo(function OverlayContainerView({
   onIndexChange,
   originRect,
 }: OverlayContainerProps) {
-  if (activeIndex === null || initialOriginRect === null) return null;
-
   return (
-    <Overlay
-      cities={cities}
+    <SharedElementOverlayContainer
+      activeIndex={activeIndex}
       hiddenIndex={hiddenIndex}
-      initialIndex={activeIndex}
       initialOriginRect={initialOriginRect}
+      items={cities}
+      keyExtractor={(item) => item.id}
       onClosed={onClosed}
       onIndexChange={onIndexChange}
       originRect={originRect}
+      renderPage={renderZoomCityPage}
+      sourceRadius={OVERLAY_SOURCE_RADIUS}
     />
   );
 });

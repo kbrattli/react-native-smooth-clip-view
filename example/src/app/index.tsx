@@ -4,6 +4,7 @@ import { RouteCard } from '../components/RouteCard';
 
 const ROUTES = [
   { href: '/zoom-transition', title: 'Zoom transition' },
+  { href: '/image-gallery', title: 'Image gallery' },
   { href: '/benchmark-screen', title: 'Stress benchmark' },
   { href: '/clip-bench', title: 'Clip bench' },
 ] as const;

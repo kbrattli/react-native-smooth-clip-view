@@ -3,23 +3,23 @@ import { useCallback } from 'react';
 import { ScrollView, StyleSheet, Text } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ZoomCardList } from '../components/ZoomCardList';
-import { useZoomTransition } from '../ZoomTransitionContext';
+import { useSharedElementTransition } from '../SharedElementTransitionContext';
 import { ZOOM_CITIES, type Rect } from '../zoomCities';
 
 export default function ZoomTransitionScreen() {
   const router = useRouter();
-  const { hiddenIndex, openCard, originRect, registerCardRef } =
-    useZoomTransition();
+  const { hiddenIndex, openItem, originRect, registerItemRef } =
+    useSharedElementTransition();
 
   // The card measured its own page rect on the UI thread; hand it to the
   // overlay route, which seeds the native clip with it so the first frame is
   // already the card and never a fullscreen flash.
   const onCardMeasured = useCallback(
     (payload: { index: number; rect: Rect }) => {
-      openCard(payload.index, payload.rect);
+      openItem(payload.index, payload.rect);
       router.push('/zoom-overlay');
     },
-    [openCard, router]
+    [openItem, router]
   );
 
   return (
@@ -38,7 +38,7 @@ export default function ZoomTransitionScreen() {
           cities={ZOOM_CITIES}
           hiddenIndex={hiddenIndex}
           onCardMeasured={onCardMeasured}
-          onRegisterRef={registerCardRef}
+          onRegisterRef={registerItemRef}
           originRect={originRect}
         />
       </ScrollView>
