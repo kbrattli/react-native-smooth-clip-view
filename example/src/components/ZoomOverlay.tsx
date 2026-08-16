@@ -45,6 +45,7 @@ import {
   MAX_TRANSLATE_Y,
   MIN_HEIGHT,
   MIN_WIDTH,
+  NATIVE_CLOSE_TIMING,
   NATIVE_FAST_TIMING,
   NATIVE_TIMING,
   OVERLAY_PHASE_CLOSING,
@@ -306,8 +307,6 @@ function dampDragTranslation(translationX: number, translationY: number) {
   };
 }
 
-const CLOSE_KEYFRAME_COUNT = 31;
-
 function mixChannel(from: number, to: number, fraction: number) {
   'worklet';
   return from + (to - from) * fraction;
@@ -385,28 +384,6 @@ function closeEndpoints(origin: Rect, start: CloseStart) {
       translateY: 0,
     }),
   };
-}
-
-function createCloseKeyframes(origin: Rect, start: CloseStart) {
-  'worklet';
-  const { release, landing } = closeEndpoints(origin, start);
-  const frames = [];
-  for (let index = 0; index < CLOSE_KEYFRAME_COUNT; index += 1) {
-    const offset = index / (CLOSE_KEYFRAME_COUNT - 1);
-    const inverse = 1 - offset;
-    // Same ease-out-cubic clock as CLOSE_TIMING_CONFIG's easing:
-    // eased = 1 − (1 − t)³, so frame 0 is exactly the release state and the JS
-    // progress channel stays phase-locked.
-    frames.push({
-      offset,
-      presentation: mixPresentation(
-        release,
-        landing,
-        1 - inverse * inverse * inverse
-      ),
-    });
-  }
-  return frames;
 }
 
 type OverlayProps = {
@@ -530,9 +507,9 @@ const Overlay = memo(function OverlayView({
     const origin = originRect.get();
 
     if (overlayPhase.get() === OVERLAY_PHASE_CLOSING) {
-      // Mirror the native close keyframes: output-space mix so every channel
+      // Mirror the native close timing: output-space mix so every channel
       // paces identically. progress runs withTiming(0) on the same
-      // ease-out-cubic clock, so 1 − progress IS the keyframes' eased fraction.
+      // ease-out-cubic clock, so 1 − progress IS the native eased fraction.
       const { release, landing } = closeEndpoints(origin, closeStart.get());
       return mixPresentation(release, landing, 1 - currentProgress);
     }
@@ -580,19 +557,21 @@ const Overlay = memo(function OverlayView({
       x: translateX.get(),
       y: Math.max(0, translateY.get()),
     });
-    const frames = createCloseKeyframes(originRect.get(), closeStart.get());
-    const target = frames[frames.length - 1]?.presentation;
-    if (target) {
-      driver.ui.animateTo(target, {
-        type: 'keyframes',
-        duration: CLOSE_TIMING_CONFIG.duration,
-        frames,
-        // Keyframes interpolate absolutely, and the final gesture value may
-        // never have flushed through the gated reaction — seed frame 0 so the
-        // animation continues from what is on screen.
-        from: frames[0]?.presentation,
-      });
-    }
+    // The close is an output-space mix of two fixed endpoints under an
+    // ease-out-cubic clock, and ClipEasings.easeOutCubic is that curve's exact
+    // Bézier — so a plain timing animation IS the keyframe list it replaced,
+    // without the linearization error or the per-frame array marshalling.
+    const { release, landing } = closeEndpoints(
+      originRect.get(),
+      closeStart.get()
+    );
+    driver.ui.animateTo(landing, {
+      ...NATIVE_CLOSE_TIMING,
+      // The final gesture value may never have flushed through the gated
+      // reaction — seed the release state so the animation continues from
+      // what is on screen.
+      from: release,
+    });
 
     progress.set(
       withTiming(0, CLOSE_TIMING_CONFIG, (finished) => {

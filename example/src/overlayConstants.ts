@@ -53,6 +53,12 @@ export const NATIVE_FAST_TIMING = {
   controlPoints: ClipEasings.easeOutCubic,
 } as const;
 
+export const NATIVE_CLOSE_TIMING = {
+  type: 'timing',
+  duration: CLOSE_TIMING_CONFIG.duration,
+  controlPoints: ClipEasings.easeOutCubic,
+} as const;
+
 export const MAX_TRANSLATE_Y = SCREEN_HEIGHT;
 export const MIN_WIDTH = 200;
 export const MIN_HEIGHT = 200;
