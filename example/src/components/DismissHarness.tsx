@@ -30,6 +30,14 @@ const DRAG_TRANSLATE_Y = 180;
 const CLOSE_MS = 400;
 const CLOSE_KEYFRAME_COUNT = 31;
 
+// How the close is dispatched and what runs beside it. 'keyframes' is the
+// legacy 31-frame list; 'timing' is the exact-curve replacement (all harness
+// channels are affine in closeProgress, so from→landing under easeOutCubic IS
+// the keyframe list without the linearization); 'timing-stall' additionally
+// blocks the MAIN thread for 500 ms mid-close to prove the animation rides the
+// render server; 'bench' skips the cycle and times setScalars calls.
+export type HarnessMode = 'keyframes' | 'timing' | 'timing-stall' | 'bench';
+
 // progress 1 = fullscreen, 0 = card rect; ty shifts the clip downward the
 // way the drag translation does in the reference overlay.
 function presentationAt(progress: number, ty: number): SmoothClipPresentation {
@@ -62,7 +70,17 @@ function createCloseKeyframes(releaseTy: number) {
   return frames;
 }
 
-function HarnessOverlay({ onDone }: { onDone: () => void }) {
+function logHarness(message: string) {
+  console.log(`[harness] ${message}`);
+}
+
+function HarnessOverlay({
+  mode,
+  onDone,
+}: {
+  mode: Exclude<HarnessMode, 'bench'>;
+  onDone: () => void;
+}) {
   const dispatchRef = useRef({ label: 'none', at: 0 });
   const markDispatch = useCallback((label: string, at: number) => {
     dispatchRef.current = { label, at };
@@ -82,13 +100,45 @@ function HarnessOverlay({ onDone }: { onDone: () => void }) {
           `[harness] complete label=${label} finished=${result.finished} ` +
             `elapsed=${now - at}ms`
         );
-        if (label === 'close') onDone();
+        if (label.startsWith('close')) onDone();
       },
     }
   );
   const dragging = useSharedValue(0);
   const dragTy = useSharedValue(0);
   const openProgress = useSharedValue(0);
+
+  // Blocks the MAIN thread (the worklets UI runtime runs inline on main on
+  // iOS) 100 ms into the close, for 500 ms of a 400 ms animation. A
+  // render-server animation keeps moving; only the didStop callback — and with
+  // it the logged elapsed — lands late.
+  const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const armMainThreadStall = useCallback(() => {
+    stallTimerRef.current = setTimeout(() => {
+      logHarness(`stall arm t=${Date.now()}`);
+      scheduleOnUI(() => {
+        'worklet';
+        const globals = globalThis as unknown as {
+          _getAnimationTimestamp: () => number;
+        };
+        const begin = globals._getAnimationTimestamp();
+        scheduleOnRN(logHarness, `stall begin t=${Date.now()}`);
+        while (globals._getAnimationTimestamp() - begin < 500) {
+          // busy-wait: hold the main thread hostage mid-close
+        }
+        scheduleOnRN(logHarness, `stall end t=${Date.now()}`);
+      });
+    }, 100);
+  }, []);
+
+  // An armed stall must die with the harness: unmounting inside the 100 ms
+  // window would otherwise still block the main thread for 500 ms later.
+  useEffect(
+    () => () => {
+      if (stallTimerRef.current !== null) clearTimeout(stallTimerRef.current);
+    },
+    []
+  );
 
   useAnimatedReaction(
     () => (dragging.get() === 1 ? dragTy.get() : null),
@@ -113,15 +163,28 @@ function HarnessOverlay({ onDone }: { onDone: () => void }) {
       'worklet';
       dragging.set(0);
       const releaseTy = dragTy.get();
-      const frames = createCloseKeyframes(releaseTy);
-      const target = frames[frames.length - 1]!.presentation;
-      scheduleOnRN(markDispatch, 'close', Date.now());
-      driver.ui.animateTo(target, {
-        type: 'keyframes',
-        duration: CLOSE_MS,
-        frames,
-        from: frames[0]!.presentation,
-      });
+      if (mode === 'keyframes') {
+        const frames = createCloseKeyframes(releaseTy);
+        const target = frames[frames.length - 1]!.presentation;
+        scheduleOnRN(markDispatch, 'close-keyframes', Date.now());
+        driver.ui.animateTo(target, {
+          type: 'keyframes',
+          duration: CLOSE_MS,
+          frames,
+          from: frames[0]!.presentation,
+        });
+      } else {
+        scheduleOnRN(markDispatch, `close-${mode}`, Date.now());
+        driver.ui.animateTo(presentationAt(0, 0), {
+          type: 'timing',
+          duration: CLOSE_MS,
+          controlPoints: ClipEasings.easeOutCubic,
+          from: presentationAt(1, releaseTy),
+        });
+        if (mode === 'timing-stall') {
+          scheduleOnRN(armMainThreadStall);
+        }
+      }
     };
     const startDrag = () => {
       'worklet';
@@ -152,7 +215,15 @@ function HarnessOverlay({ onDone }: { onDone: () => void }) {
         })
       );
     });
-  }, [dragTy, dragging, driver, markDispatch, openProgress]);
+  }, [
+    armMainThreadStall,
+    dragTy,
+    dragging,
+    driver,
+    markDispatch,
+    mode,
+    openProgress,
+  ]);
 
   return (
     <View pointerEvents="none" style={styles.overlay}>
@@ -169,33 +240,130 @@ function HarnessOverlay({ onDone }: { onDone: () => void }) {
   );
 }
 
+// Times driver.ui.setScalars on the UI runtime against a mounted host:
+// alternating values that differ on every animated channel except the
+// constant radius — position, bounds, and content translation all move, so
+// each call lands live CALayer writes — vs a repeated value (the dedupe fast
+// path). Logged as ns/call. Caveat: the whole run is one UI task, so the
+// numbers cover the JSI + registry + property-write path and exclude the
+// CATransaction commit that a real per-frame stream would also pay.
+function BenchProbe({ onDone }: { onDone: () => void }) {
+  const driver = useSmoothClipDriver({
+    clip: { ...CARD },
+    contentTranslateX: CARD.x,
+    contentTranslateY: CARD.y,
+  });
+
+  useEffect(() => {
+    const finish = (message: string) => {
+      logHarness(message);
+      onDone();
+    };
+    const timer = setTimeout(() => {
+      scheduleOnUI(() => {
+        'worklet';
+        const globals = globalThis as unknown as {
+          _getAnimationTimestamp: () => number;
+        };
+        // Distinct progress AND ty so x, y, width, height and both content
+        // translations all change between a and b (only radius is constant in
+        // presentationAt) — the alternating loop must exercise the full write
+        // fan-out, not just the position channels.
+        const a = presentationAt(1, 0);
+        const b = presentationAt(0.9, 40);
+        const apply = (p: SmoothClipPresentation) => {
+          driver.ui.setScalars(
+            p.clip.x,
+            p.clip.y,
+            p.clip.width,
+            p.clip.height,
+            p.clip.radius,
+            p.contentTranslateX,
+            p.contentTranslateY
+          );
+        };
+        const ITERATIONS = 10000;
+        for (let index = 0; index < 500; index += 1) {
+          apply(index % 2 === 0 ? a : b);
+        }
+        const alternatingStart = globals._getAnimationTimestamp();
+        for (let index = 0; index < ITERATIONS; index += 1) {
+          apply(index % 2 === 0 ? a : b);
+        }
+        const alternatingEnd = globals._getAnimationTimestamp();
+        // Prime with one untimed write so every timed call below is a true
+        // dedupe (the alternating loop ends on b).
+        apply(a);
+        const dedupedStart = globals._getAnimationTimestamp();
+        for (let index = 0; index < ITERATIONS; index += 1) {
+          apply(a);
+        }
+        const dedupedEnd = globals._getAnimationTimestamp();
+        const perCallNs = (spanMs: number) =>
+          Math.round((spanMs / ITERATIONS) * 1e6);
+        scheduleOnRN(
+          finish,
+          `bench iterations=${ITERATIONS} ` +
+            `alternating=${perCallNs(alternatingEnd - alternatingStart)}ns/call ` +
+            `deduped=${perCallNs(dedupedEnd - dedupedStart)}ns/call`
+        );
+      });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [driver, onDone]);
+
+  return (
+    <View pointerEvents="none" style={styles.overlay}>
+      <SmoothClipView driver={driver} style={styles.host} testID="bench-host">
+        <View style={styles.sheet}>
+          <Text style={styles.sheetLabel}>setScalars bench</Text>
+        </View>
+      </SmoothClipView>
+    </View>
+  );
+}
+
+const MODES: ReadonlyArray<{ mode: HarnessMode; label: string }> = [
+  { mode: 'keyframes', label: 'Close: keyframes' },
+  { mode: 'timing', label: 'Close: timing' },
+  { mode: 'timing-stall', label: 'Close: timing + main stall' },
+  { mode: 'bench', label: 'setScalars bench' },
+];
+
 export function DismissHarness() {
-  const [running, setRunning] = useState(false);
-  const stop = useCallback(() => setRunning(false), []);
+  const [running, setRunning] = useState<HarnessMode | null>(null);
+  const stop = useCallback(() => setRunning(null), []);
   return (
     <>
       <View style={styles.controls}>
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => setRunning(true)}
-          style={({ pressed }) => [
-            styles.runButton,
-            pressed ? styles.runButtonPressed : null,
-          ]}
-          testID="harness-run"
-        >
-          <Text style={styles.runButtonText}>
-            {running ? 'Cycle running…' : 'Run dismiss cycle'}
-          </Text>
-        </Pressable>
+        {MODES.map(({ mode, label }) => (
+          <Pressable
+            accessibilityRole="button"
+            key={mode}
+            onPress={() => setRunning(mode)}
+            style={({ pressed }) => [
+              styles.runButton,
+              pressed ? styles.runButtonPressed : null,
+            ]}
+            testID={`harness-run-${mode}`}
+          >
+            <Text style={styles.runButtonText}>
+              {running === mode ? 'Running…' : label}
+            </Text>
+          </Pressable>
+        ))}
       </View>
-      {running ? <HarnessOverlay onDone={stop} /> : null}
+      {running === 'bench' ? <BenchProbe onDone={stop} /> : null}
+      {running !== null && running !== 'bench' ? (
+        <HarnessOverlay mode={running} onDone={stop} />
+      ) : null}
     </>
   );
 }
 
 const styles = StyleSheet.create({
   controls: {
+    gap: 8,
     paddingHorizontal: 20,
     paddingTop: 12,
   },
