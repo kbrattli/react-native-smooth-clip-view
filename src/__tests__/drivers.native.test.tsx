@@ -2,6 +2,20 @@ import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { SmoothClipPresentation } from '../geometry';
 
 let mockRNRuntime = false;
+// The suite defaults to Android because the start-stamp tests below pin the
+// Android frame-clock anchor; the iOS test re-imports the module under 'ios'.
+// `var` + fallback because the hoisted module imports (and with them the
+// mocked Platform.OS read) run before any initializer in this file.
+
+var mockPlatformOS: string | undefined;
+
+jest.mock('react-native', () => ({
+  Platform: {
+    get OS() {
+      return mockPlatformOS ?? 'android';
+    },
+  },
+}));
 
 function mockUIState() {
   return globalThis as {
@@ -125,6 +139,7 @@ const fromPresentation: SmoothClipPresentation = {
 describe('hybrid native driver (iOS + Android)', () => {
   beforeEach(() => {
     mockRNRuntime = false;
+    mockPlatformOS = 'android';
     mockUIState().__smoothClipTestQueueUI = false;
     mockUIState().__smoothClipTestUITasks = [];
     mockEffects.length = 0;
@@ -223,6 +238,30 @@ describe('hybrid native driver (iOS + Android)', () => {
     expect(animationId).toBe(99);
     expect(mockNative.rejectAnimation).toHaveBeenCalled();
     expect(mockNative.animateTiming).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unrecognized animation type before any side effect', () => {
+    const driver = useSmoothClipDriver(initial);
+    jest.clearAllMocks();
+    mockNative.rejectAnimation.mockReturnValue(99);
+
+    // Only reachable from untyped JS, but the contract must hold there too:
+    // an unknown type skips the keyframe flatten, so letting it through the
+    // gate would hot-write `from` and then hand native a null frames array.
+    const animationId = driver.ui.animateTo(target, {
+      type: 'Keyframes',
+      duration: 300,
+      frames: [
+        { offset: 0, presentation: fromPresentation },
+        { offset: 1, presentation: target },
+      ],
+      from: fromPresentation,
+    } as never);
+
+    expect(animationId).toBe(99);
+    expect(mockNative.rejectAnimation).toHaveBeenCalled();
+    expect(mockNative.setClipPresentation).not.toHaveBeenCalled();
+    expect(mockNative.animateKeyframes).not.toHaveBeenCalled();
   });
 
   it('throws when ui controls are invoked on the RN runtime', () => {
@@ -608,6 +647,35 @@ describe('hybrid native driver (iOS + Android)', () => {
 
     expect(mockNative.animateTiming.mock.calls[0]?.[22]).toBe(5678);
     expect(getAnimationTimestamp).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the start-stamp capture entirely on iOS', () => {
+    // iOS's TurboModule discards the trailing argument positionally (only the
+    // Android frame-clock anchor consumes it), so the capture — including the
+    // native _getAnimationTimestamp() call — must not happen there at all.
+    const getAnimationTimestamp = jest.fn(() => 5678);
+    (globalThis as { __frameTimestamp?: number }).__frameTimestamp = 1234;
+    (
+      globalThis as {
+        _getAnimationTimestamp?: () => number;
+      }
+    )._getAnimationTimestamp = getAnimationTimestamp;
+    mockPlatformOS = 'ios';
+    let iosUseSmoothClipDriver: typeof useSmoothClipDriver | undefined;
+    let iosNative: MockNative | undefined;
+    jest.isolateModules(() => {
+      iosUseSmoothClipDriver = (
+        require('../drivers.native') as typeof import('../drivers.native')
+      ).useSmoothClipDriver;
+      iosNative = (require('../smoothClipNative') as { default: unknown })
+        .default as MockNative;
+    });
+    const driver = iosUseSmoothClipDriver!(initial);
+
+    driver.ui.animateTo(target, timing);
+
+    expect(iosNative!.animateTiming.mock.calls[0]?.[22]).toBeNaN();
+    expect(getAnimationTimestamp).not.toHaveBeenCalled();
   });
 
   it('rejects every call once the driver is disposed', () => {
