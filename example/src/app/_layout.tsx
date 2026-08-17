@@ -3,6 +3,7 @@ import { Stack } from 'expo-router';
 import { StyleSheet } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { GalleryOverlayHost } from '../components/GalleryOverlayHost';
 import { SharedElementTransitionProvider } from '../SharedElementTransitionContext';
 
 export default function RootLayout() {
@@ -52,16 +53,14 @@ export default function RootLayout() {
                 presentation: 'transparentModal',
               }}
             />
-            <Stack.Screen
-              name="image-gallery-overlay"
-              options={{
-                animation: 'none',
-                contentStyle: { backgroundColor: 'transparent' },
-                headerShown: false,
-                presentation: 'transparentModal',
-              }}
-            />
           </Stack>
+          {/*
+            The gallery overlay is NOT a route: it mounts as the navigator's
+            topmost sibling in the root surface, so its first frame composites
+            at the next vsync and the clip transition never waits on (or races)
+            a modal presentation.
+          */}
+          <GalleryOverlayHost />
         </SharedElementTransitionProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

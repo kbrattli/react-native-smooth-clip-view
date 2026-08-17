@@ -1,6 +1,6 @@
 import { LegendList, type LegendListRef } from '@legendapp/list/react-native';
-import { Image } from 'expo-image';
-import { memo, useCallback, useEffect, useRef } from 'react';
+import { Image, useImage, type ImageRef } from 'expo-image';
+import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   StyleSheet,
   useWindowDimensions,
@@ -16,18 +16,28 @@ import Animated, {
 } from 'react-native-reanimated';
 import { scheduleOnRN, scheduleOnUI } from 'react-native-worklets';
 import { galleryImageKeyExtractor, type GalleryImage } from '../galleryImages';
+import {
+  GALLERY_COLUMN_COUNT,
+  galleryCellSize,
+  galleryThumbOptions,
+} from '../galleryThumb';
 import type { Rect } from '../zoomCities';
 
-const COLUMN_COUNT = 3;
-
 type ItemRef = AnimatedRef<HostInstance>;
+
+export type GalleryMeasuredPayload = {
+  index: number;
+  rect: Rect;
+  /** The tapped tile's decoded thumbnail, for the overlay's first frame. */
+  thumbRef: ImageRef | null;
+};
 
 type GalleryTileProps = {
   cellSize: number;
   hiddenIndex: SharedValue<number>;
   image: GalleryImage;
   index: number;
-  onItemMeasured: (payload: { index: number; rect: Rect }) => void;
+  onItemMeasured: (payload: GalleryMeasuredPayload) => void;
   onRegisterRef: (itemId: string, ref: ItemRef | null) => void;
   originRect: SharedValue<Rect>;
 };
@@ -43,10 +53,25 @@ const GalleryTile = memo(function GalleryTileView({
 }: GalleryTileProps) {
   const measureRef = useAnimatedRef();
 
+  const thumbOptions = galleryThumbOptions(image, cellSize);
+  const tileSource = useImage(
+    image.source,
+    { maxWidth: thumbOptions.maxWidth, maxHeight: thumbOptions.maxHeight },
+    [image.id, thumbOptions.cellPixelSize]
+  );
+
   useEffect(() => {
     onRegisterRef(image.id, measureRef);
     return () => onRegisterRef(image.id, null);
   }, [image.id, measureRef, onRegisterRef]);
+
+  // The ImageRef is a JS shared-object handle; attach it after the UI-thread
+  // measure hop lands back on JS — worklets must never capture it.
+  const onMeasuredWithThumb = useCallback(
+    (payload: { index: number; rect: Rect }) =>
+      onItemMeasured({ ...payload, thumbRef: tileSource }),
+    [onItemMeasured, tileSource]
+  );
 
   const openMeasuredItem = useCallback(() => {
     scheduleOnUI(
@@ -71,23 +96,27 @@ const GalleryTile = memo(function GalleryTileView({
       measureRef,
       originRect,
       index,
-      onItemMeasured
+      onMeasuredWithThumb
     );
-  }, [index, measureRef, onItemMeasured, originRect]);
+  }, [index, measureRef, onMeasuredWithThumb, originRect]);
 
-  const tapGesture = Gesture.Tap().onEnd(() => {
-    'worklet';
-    const measured = measure(measureRef);
-    if (!measured) return;
-    const rect: Rect = {
-      x: measured.pageX,
-      y: measured.pageY,
-      w: measured.width,
-      h: measured.height,
-    };
-    originRect.set(rect);
-    scheduleOnRN(onItemMeasured, { index, rect });
-  });
+  const tapGesture = useMemo(
+    () =>
+      Gesture.Tap().onEnd(() => {
+        'worklet';
+        const measured = measure(measureRef);
+        if (!measured) return;
+        const rect: Rect = {
+          x: measured.pageX,
+          y: measured.pageY,
+          w: measured.width,
+          h: measured.height,
+        };
+        originRect.set(rect);
+        scheduleOnRN(onMeasuredWithThumb, { index, rect });
+      }),
+    [index, measureRef, onMeasuredWithThumb, originRect]
+  );
 
   const containerStyle = useAnimatedStyle(() => ({
     opacity: hiddenIndex.get() === index ? 0 : 1,
@@ -119,7 +148,7 @@ const GalleryTile = memo(function GalleryTileView({
             cachePolicy="memory-disk"
             contentFit="cover"
             recyclingKey={image.id}
-            source={image.source}
+            source={tileSource}
             style={styles.image}
             transition={0}
           />
@@ -135,7 +164,7 @@ type GalleryGridProps = {
   hiddenIndex: SharedValue<number>;
   images: readonly GalleryImage[];
   onActiveItemReady: (itemId: string, index: number) => void;
-  onItemMeasured: (payload: { index: number; rect: Rect }) => void;
+  onItemMeasured: (payload: GalleryMeasuredPayload) => void;
   onRegisterRef: (itemId: string, ref: ItemRef | null) => void;
   originRect: SharedValue<Rect>;
 };
@@ -150,7 +179,7 @@ export function GalleryGrid({
   originRect,
 }: GalleryGridProps) {
   const { height, width } = useWindowDimensions();
-  const cellSize = width / COLUMN_COUNT;
+  const cellSize = galleryCellSize(width);
   const listRef = useRef<LegendListRef>(null);
   const previousActiveIndexRef = useRef<number | null>(null);
 
@@ -208,7 +237,7 @@ export function GalleryGrid({
       estimatedListSize={{ width, height }}
       getFixedItemSize={getFixedItemSize}
       keyExtractor={galleryImageKeyExtractor}
-      numColumns={COLUMN_COUNT}
+      numColumns={GALLERY_COLUMN_COUNT}
       recycleItems
       ref={listRef}
       renderItem={renderItem}

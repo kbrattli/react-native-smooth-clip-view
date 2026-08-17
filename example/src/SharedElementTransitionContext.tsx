@@ -1,3 +1,4 @@
+import type { ImageRef } from 'expo-image';
 import {
   createContext,
   useCallback,
@@ -19,6 +20,17 @@ import type { Rect } from './zoomCities';
 
 type ItemRef = AnimatedRef<HostInstance>;
 
+export type GalleryOpenState = Readonly<{
+  /** Tapped index; fixed for the whole overlay session. */
+  openIndex: number;
+  /** Tile rect at tap time; seeds the clip driver's first frame. */
+  openRect: Rect;
+  /** The tapped tile's live decoded thumbnail, borrowed for the first frame. */
+  thumbRef: ImageRef | null;
+  /** The pager's current rest index; drives the grid's follow-scroll. */
+  activeIndex: number;
+}>;
+
 type SharedElementTransitionValue = {
   /** Index of the item currently hidden behind the overlay; -1 when none. */
   hiddenIndex: SharedValue<number>;
@@ -35,14 +47,25 @@ type SharedElementTransitionValue = {
   /** Re-measure an item into `originRect` after the pager settles elsewhere. */
   measureItem: (itemId: string, index?: number) => void;
   registerItemRef: (itemId: string, ref: ItemRef | null) => void;
+  /** Root-hosted gallery overlay session; null while the overlay is closed. */
+  galleryState: GalleryOpenState | null;
+  openGalleryItem: (
+    index: number,
+    rect: Rect,
+    thumbRef: ImageRef | null
+  ) => void;
+  setGalleryActiveIndex: (index: number) => void;
+  closeGallery: () => void;
 };
 
 const SharedElementTransitionContext =
   createContext<SharedElementTransitionValue | null>(null);
 
 /**
- * Shared state for a collection route and its transparent modal overlay. The
- * modal leaves the collection mounted, so registered item refs stay measurable
+ * Shared state for a collection screen and its fullscreen overlay. The zoom
+ * demo hosts its overlay as a transparent modal route; the gallery hosts its
+ * overlay as a root-surface sibling of the navigator. Either way the
+ * collection stays mounted beneath, so registered item refs stay measurable
  * until the close animation finishes.
  */
 export function SharedElementTransitionProvider({
@@ -81,6 +104,40 @@ export function SharedElementTransitionProvider({
     setInitialOriginRect(null);
   }, [originIndex]);
 
+  const [galleryState, setGalleryState] = useState<GalleryOpenState | null>(
+    null
+  );
+  // Synchronous session guard: a second tap in the same JS turn (double-tap,
+  // or a tap on a tile revealed mid-close) must no-op before any state lands.
+  const gallerySessionRef = useRef(false);
+
+  const openGalleryItem = useCallback(
+    (index: number, rect: Rect, thumbRef: ImageRef | null) => {
+      if (gallerySessionRef.current) return;
+      gallerySessionRef.current = true;
+      originIndex.set(index);
+      setGalleryState({
+        activeIndex: index,
+        openIndex: index,
+        openRect: rect,
+        thumbRef,
+      });
+    },
+    [originIndex]
+  );
+
+  const setGalleryActiveIndex = useCallback((index: number) => {
+    setGalleryState((previous) =>
+      previous ? { ...previous, activeIndex: index } : previous
+    );
+  }, []);
+
+  const closeGallery = useCallback(() => {
+    gallerySessionRef.current = false;
+    originIndex.set(-1);
+    setGalleryState(null);
+  }, [originIndex]);
+
   const measureItem = useCallback(
     (itemId: string, index?: number) => {
       const ref = refs.current.get(itemId);
@@ -117,26 +174,34 @@ export function SharedElementTransitionProvider({
   const value = useMemo(
     () => ({
       activeIndex,
+      closeGallery,
       closeOverlay,
+      galleryState,
       hiddenIndex,
       initialOriginRect,
       measureItem,
+      openGalleryItem,
       openItem,
       originIndex,
       originRect,
       registerItemRef,
+      setGalleryActiveIndex,
       updateActiveIndex,
     }),
     [
       activeIndex,
+      closeGallery,
       closeOverlay,
+      galleryState,
       hiddenIndex,
       initialOriginRect,
       measureItem,
+      openGalleryItem,
       openItem,
       originIndex,
       originRect,
       registerItemRef,
+      setGalleryActiveIndex,
       updateActiveIndex,
     ]
   );
