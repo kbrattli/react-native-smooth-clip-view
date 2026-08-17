@@ -1,6 +1,8 @@
 import { LegendList } from '@legendapp/list/react-native';
+import type { ImageRef } from 'expo-image';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  BackHandler,
   Pressable,
   StyleSheet,
   Text,
@@ -66,12 +68,6 @@ type DismissGestureState = Readonly<{
   startX: number;
   startY: number;
 }>;
-
-type OpeningImageReadiness = {
-  displayed: boolean;
-  hostLaidOut: boolean;
-  laidOut: boolean;
-};
 
 const FULLSCREEN_FRAME: GalleryFrame = {
   x: 0,
@@ -194,13 +190,14 @@ function GalleryOverlayChrome({
 }
 
 type GalleryOverlayProps = {
-  activeIndex: number | null;
   hiddenIndex: SharedValue<number>;
   initialOriginRect: Rect | null;
   onClosed: () => void;
   onIndexChange: (index: number) => void;
+  openIndex: number | null;
   originIndex: SharedValue<number>;
   originRect: SharedValue<Rect>;
+  thumbRef: ImageRef | null;
 };
 
 type GalleryOverlayContentProps = {
@@ -209,6 +206,7 @@ type GalleryOverlayContentProps = {
   initialOriginRect: Rect;
   onClosed: () => void;
   onIndexChange: (index: number) => void;
+  openingThumbRef: ImageRef | null;
   originIndex: SharedValue<number>;
   originRect: SharedValue<Rect>;
 };
@@ -219,6 +217,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
   initialOriginRect,
   onClosed,
   onIndexChange,
+  openingThumbRef,
   originIndex,
   originRect,
 }: GalleryOverlayContentProps) {
@@ -274,13 +273,6 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
   const pagingActive = useSharedValue(false);
   const handoffStarted = useSharedValue(false);
   const gestureStartFrame = useSharedValue<GalleryFrame>(sourceFrame);
-  const [openingImageReadiness, setOpeningImageReadiness] =
-    useState<OpeningImageReadiness>({
-      displayed: false,
-      hostLaidOut: false,
-      laidOut: false,
-    });
-  const openingStartedRef = useRef(false);
   const gestureState = useSharedValue<DismissGestureState>({
     activated: false,
     startX: 0,
@@ -307,75 +299,63 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
     onAnimationComplete: onNativeAnimationComplete,
   });
 
-  useEffect(() => {
-    if (
-      openingStartedRef.current ||
-      !openingImageReadiness.displayed ||
-      !openingImageReadiness.hostLaidOut ||
-      !openingImageReadiness.laidOut
-    ) {
-      return;
-    }
-    openingStartedRef.current = true;
-    const openPresentation = resolveGalleryPresentation(
-      openingDestinationFrame,
-      openingDestinationFrame,
-      SCREEN_WIDTH,
-      SCREEN_HEIGHT
-    );
+  const openPresentation = useMemo(
+    () =>
+      resolveGalleryPresentation(
+        openingDestinationFrame,
+        openingDestinationFrame,
+        SCREEN_WIDTH,
+        SCREEN_HEIGHT
+      ),
+    [openingDestinationFrame]
+  );
 
-    scheduleOnUI(() => {
-      'worklet';
-      if (phase.get() !== GALLERY_PHASE_OPENING) return;
-      handoffStarted.set(true);
-      hiddenIndex.set(openingIndex);
-      driver.ui.animateTo(openPresentation, {
-        ...NATIVE_TIMING,
-        from: initialPresentation,
-      });
-      contentScale.set(withTiming(1, TIMING_CONFIG));
-      openingProgress.set(withTiming(1, TIMING_CONFIG));
+  // One readiness signal starts the open: the opening page's thumb layer
+  // reports its pixels applied (onDisplay). The overlay mounts into the
+  // already-composited root surface with the grid tile still visible beneath
+  // the pixel-identical seeded copy, so a frame of skew either way is an
+  // invisible overlap — never a hole. The ref keeps the start once-only when
+  // the thumb's borrowed-to-owned source switch re-fires onDisplay.
+  const openStartedRef = useRef(false);
+  const startOpen = useCallback(() => {
+    if (openStartedRef.current) return;
+    openStartedRef.current = true;
+    handoffStarted.set(true);
+    hiddenIndex.set(openingIndex);
+    driver.react.animateTo(openPresentation, {
+      ...NATIVE_TIMING,
+      from: initialPresentation,
     });
+    contentScale.set(withTiming(1, TIMING_CONFIG));
+    openingProgress.set(withTiming(1, TIMING_CONFIG));
   }, [
     contentScale,
     driver,
     handoffStarted,
     hiddenIndex,
     initialPresentation,
-    openingDestinationFrame,
-    openingImageReadiness.displayed,
-    openingImageReadiness.hostLaidOut,
-    openingImageReadiness.laidOut,
+    openPresentation,
     openingIndex,
     openingProgress,
-    phase,
   ]);
 
-  const onOpeningImageDisplay = useCallback(
-    (imageId: string, index: number) => {
-      if (index !== openingIndex || imageId !== openingImage.id) return;
-      setOpeningImageReadiness((readiness) =>
-        readiness.displayed ? readiness : { ...readiness, displayed: true }
-      );
+  // The pager's initialScrollIndex offset applies a few frames late (the
+  // ScrollView clamps it until the list's content is sized), so the clip
+  // would briefly show page 0's territory — a black hole — if it looked at
+  // the pager during the open. Instead the flight renders a standalone copy
+  // of the opening page above the pager: unconditional pixels from the first
+  // commit, no scroll-state dependency. The pager stays invisible and
+  // scroll-locked until the phase leaves OPENING, by which point its offset
+  // has long settled and the swap is pixel-identical in one commit.
+  const [openSettled, setOpenSettled] = useState(false);
+  const markOpenSettled = useCallback(() => setOpenSettled(true), []);
+  useAnimatedReaction(
+    () => phase.get() !== GALLERY_PHASE_OPENING,
+    (exited, wasExited) => {
+      if (exited && !wasExited) scheduleOnRN(markOpenSettled);
     },
-    [openingImage.id, openingIndex]
+    [markOpenSettled, phase]
   );
-
-  const onOpeningImageLayout = useCallback(
-    (imageId: string, index: number) => {
-      if (index !== openingIndex || imageId !== openingImage.id) return;
-      setOpeningImageReadiness((readiness) =>
-        readiness.laidOut ? readiness : { ...readiness, laidOut: true }
-      );
-    },
-    [openingImage.id, openingIndex]
-  );
-
-  const onClipHostLayout = useCallback(() => {
-    setOpeningImageReadiness((readiness) =>
-      readiness.hostLaidOut ? readiness : { ...readiness, hostLaidOut: true }
-    );
-  }, []);
 
   const startClose = useCallback(() => {
     'worklet';
@@ -756,20 +736,16 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
   const renderItem = useCallback(
     ({ item, index }: { item: GalleryImage; index: number }) => (
       <GalleryImagePage
+        closingIndex={closingIndex}
+        contentScale={contentScale}
+        currentIndex={currentIndex}
         image={item}
         index={index}
-        openingIndex={openingIndex}
-        onOpeningImageDisplay={onOpeningImageDisplay}
-        onOpeningImageLayout={onOpeningImageLayout}
       />
     ),
-    [onOpeningImageDisplay, onOpeningImageLayout, openingIndex]
+    [closingIndex, contentScale, currentIndex]
   );
   const getFixedItemSize = useCallback(() => SCREEN_WIDTH, []);
-
-  const contentStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: contentScale.get() }],
-  }));
 
   const backdropStyle = useAnimatedStyle(() => {
     if (closingIndex.get() >= 0) {
@@ -789,6 +765,24 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
     scheduleOnUI(requestCloseOnUI);
   }, [requestCloseOnUI]);
 
+  // Hardware back (Android) closes with the clip animation instead of popping
+  // the screen beneath the overlay; swallow it even mid-close so a double
+  // press can't escape. Mount-time registration puts this listener ahead of
+  // the navigator's (LIFO).
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener(
+      'hardwareBackPress',
+      () => {
+        requestClose();
+        return true;
+      }
+    );
+    return () => subscription.remove();
+  }, [requestClose]);
+
+  // Whatever unmounts the overlay, never leave a grid tile hidden behind it.
+  useEffect(() => () => hiddenIndex.set(-1), [hiddenIndex]);
+
   return (
     <View pointerEvents="box-none" style={styles.root}>
       <Animated.View
@@ -799,17 +793,13 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
       <GestureDetector gesture={dismissGesture}>
         <SmoothClipView
           driver={driver}
-          onLayout={onClipHostLayout}
           style={styles.clipHost}
           testID="gallery-smooth-clip-host"
         >
-          <Animated.View
-            style={[styles.clipContent, contentStyle]}
-            testID="gallery-smooth-clip-content"
-          >
+          <View style={styles.clipContent} testID="gallery-smooth-clip-content">
             <LegendList
               data={GALLERY_IMAGES as GalleryImage[]}
-              drawDistance={SCREEN_WIDTH * 1.5}
+              drawDistance={SCREEN_WIDTH}
               estimatedItemSize={SCREEN_WIDTH}
               estimatedListSize={{
                 height: SCREEN_HEIGHT,
@@ -826,14 +816,25 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
               pagingEnabled
               recycleItems
               renderItem={renderItem}
-              scrollEnabled={
-                openingImageReadiness.displayed && openingImageReadiness.laidOut
-              }
+              scrollEnabled={openSettled}
               showsHorizontalScrollIndicator={false}
-              style={styles.pager}
+              style={[styles.pager, !openSettled && styles.pagerHidden]}
               testID="gallery-pager"
             />
-          </Animated.View>
+            {!openSettled && (
+              <View pointerEvents="none" style={styles.openingPageHolder}>
+                <GalleryImagePage
+                  closingIndex={closingIndex}
+                  contentScale={contentScale}
+                  currentIndex={currentIndex}
+                  image={openingImage}
+                  index={openingIndex}
+                  onThumbDisplay={startOpen}
+                  openingThumbRef={openingThumbRef}
+                />
+              </View>
+            )}
+          </View>
         </SmoothClipView>
       </GestureDetector>
       <GalleryOverlayChrome
@@ -850,23 +851,25 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
 GalleryOverlayContent.displayName = 'GalleryOverlayContent';
 
 export const GalleryOverlay = memo(function GalleryOverlayView({
-  activeIndex,
   hiddenIndex,
   initialOriginRect,
   onClosed,
   onIndexChange,
+  openIndex,
   originIndex,
   originRect,
+  thumbRef,
 }: GalleryOverlayProps) {
-  if (activeIndex === null || initialOriginRect === null) return null;
+  if (openIndex === null || initialOriginRect === null) return null;
 
   return (
     <GalleryOverlayContent
       hiddenIndex={hiddenIndex}
-      initialIndex={activeIndex}
+      initialIndex={openIndex}
       initialOriginRect={initialOriginRect}
       onClosed={onClosed}
       onIndexChange={onIndexChange}
+      openingThumbRef={thumbRef}
       originIndex={originIndex}
       originRect={originRect}
     />
@@ -896,6 +899,8 @@ const styles = StyleSheet.create({
     width: SCREEN_WIDTH,
   },
   pager: { backgroundColor: 'transparent', flex: 1 },
+  pagerHidden: { opacity: 0 },
+  openingPageHolder: { ...StyleSheet.absoluteFill },
   closeContainer: {
     position: 'absolute',
     right: 12,
