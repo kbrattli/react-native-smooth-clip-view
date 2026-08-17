@@ -87,14 +87,16 @@ const rejectAnimationHostFunction = NativeSmoothClipModule.rejectAnimation;
 const cancelAnimationHostFunction = NativeSmoothClipModule.cancelAnimation;
 const destroyDriverHostFunction = NativeSmoothClipModule.destroyDriver;
 
-// Workaround for react-native-worklets 0.10: the RN-side serialization cache
+// Workaround for react-native-worklets 0.10.0 (fixed upstream in >=0.10.1,
+// which drops the registry/proxy design; kept while the peer range still
+// allows 0.10.0 consumers): the RN-side serialization cache
 // hands out one remote-function registry id per function forever, but the
 // registry entry is deleted as soon as any transient UI-side proxy of that
 // function is garbage collected. A later scheduleOnRN for the same function
 // then reads `undefined` from the registry and aborts in Value::getObject.
 // Pinning one UI-side reference for the app lifetime keeps the proxy — and
-// with it the registry entry — alive. Remove once worklets decouples registry
-// cleanup from proxy lifetime.
+// with it the registry entry — alive. Remove once the peer range requires
+// worklets >=0.10.1.
 scheduleOnUI((resolver: typeof resolveReactRequest) => {
   'worklet';
   (globalThis as Record<string, unknown>).__smoothClipPinnedResolver = resolver;
