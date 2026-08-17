@@ -2,13 +2,9 @@
 
 [![npm version](https://img.shields.io/npm/v/react-native-smooth-clip-view.svg)](https://www.npmjs.com/package/react-native-smooth-clip-view)
 
-<p align="center">
-  <video src="https://github.com/kbrattli/react-native-smooth-clip-view/raw/main/docs/media/smooth-clip-demo.mp4" width="320" controls autoplay loop muted playsinline></video>
-</p>
+https://github.com/user-attachments/assets/899235b3-de69-46d7-b6db-61bc54d80df8
 
-<p align="center">
-  <sub>Video not playing? <a href="https://github.com/kbrattli/react-native-smooth-clip-view/blob/main/docs/media/smooth-clip-demo.mp4">Watch the demo on GitHub.</a></sub>
-</p>
+<sub>Card zoom and shared-element gallery transitions, captured at 60fps — [direct clip](https://github.com/kbrattli/react-native-smooth-clip-view/blob/main/docs/media/smooth-clip-demo.mp4).</sub>
 
 ## High-performance geometry animations for React Native
 
