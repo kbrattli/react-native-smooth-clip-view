@@ -1,3 +1,5 @@
 *.pbxproj -text
 # specific for windows script files
 *.bat text eol=crlf
+# README demo recordings: never text-convert or diff
+*.mp4 binary

@@ -81,3 +81,6 @@ nitrogen/
 
 # argent screen recordings
 .argent/
+
+# demo recordings staged for README upload (hosted on GitHub, never committed)
+/*.mp4

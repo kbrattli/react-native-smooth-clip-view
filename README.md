@@ -2,6 +2,14 @@
 
 [![npm version](https://img.shields.io/npm/v/react-native-smooth-clip-view.svg)](https://www.npmjs.com/package/react-native-smooth-clip-view)
 
+<p align="center">
+  <video src="https://github.com/kbrattli/react-native-smooth-clip-view/raw/main/docs/media/smooth-clip-demo.mp4" width="320" controls autoplay loop muted playsinline></video>
+</p>
+
+<p align="center">
+  <sub>Video not playing? <a href="https://github.com/kbrattli/react-native-smooth-clip-view/blob/main/docs/media/smooth-clip-demo.mp4">Watch the demo on GitHub.</a></sub>
+</p>
+
 ## High-performance geometry animations for React Native
 
 `react-native-smooth-clip-view` lets you animate `x`, `y`, `width`, `height`, and `borderRadius` with Reanimated without triggering expensive layout work on every frame.
