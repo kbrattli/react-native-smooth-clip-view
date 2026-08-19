@@ -2,6 +2,7 @@ import { Image, useImage, type ImageRef } from 'expo-image';
 import { memo } from 'react';
 import { StyleSheet, useWindowDimensions, View } from 'react-native';
 import Animated, {
+  interpolate,
   useAnimatedStyle,
   type SharedValue,
 } from 'react-native-reanimated';
@@ -11,6 +12,7 @@ import { galleryCellSize, galleryThumbOptions } from '../galleryThumb';
 import { SCREEN_HEIGHT, SCREEN_WIDTH } from '../overlayConstants';
 
 type GalleryImagePageProps = {
+  closeProgress: SharedValue<number>;
   closingIndex: SharedValue<number>;
   contentScale: SharedValue<number>;
   currentIndex: SharedValue<number>;
@@ -21,6 +23,7 @@ type GalleryImagePageProps = {
 };
 
 const GalleryImagePage = memo(function GalleryImagePageView({
+  closeProgress,
   closingIndex,
   contentScale,
   currentIndex,
@@ -49,6 +52,7 @@ const GalleryImagePage = memo(function GalleryImagePageView({
     [image.id, thumbOptions.cellPixelSize]
   );
   const thumbSource = ownThumb ?? openingThumbRef ?? null;
+  const hasLandingThumb = thumbSource !== null;
 
   // The aspect-fit frame is centered on screen, so scaling this page about its
   // own center is equivalent to scaling the whole clip content about the
@@ -59,6 +63,12 @@ const GalleryImagePage = memo(function GalleryImagePageView({
       currentIndex.get() === index || closingIndex.get() === index;
     return { transform: [{ scale: isActive ? contentScale.get() : 1 }] };
   });
+  const fullResolutionStyle = useAnimatedStyle(() => ({
+    opacity:
+      closingIndex.get() === index && hasLandingThumb
+        ? interpolate(closeProgress.get(), [0.7, 0.95], [1, 0], 'clamp')
+        : 1,
+  }));
 
   return (
     <View
@@ -94,14 +104,16 @@ const GalleryImagePage = memo(function GalleryImagePageView({
             style={styles.layer}
             transition={0}
           />
-          <Image
-            cachePolicy="memory-disk"
-            contentFit="cover"
-            recyclingKey={image.id}
-            source={image.source}
-            style={styles.layer}
-            transition={0}
-          />
+          <Animated.View style={[styles.layer, fullResolutionStyle]}>
+            <Image
+              cachePolicy="memory-disk"
+              contentFit="cover"
+              recyclingKey={image.id}
+              source={image.source}
+              style={styles.layer}
+              transition={0}
+            />
+          </Animated.View>
         </Animated.View>
       </View>
     </View>
