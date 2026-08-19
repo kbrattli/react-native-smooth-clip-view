@@ -289,7 +289,8 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
           phase.set(GALLERY_PHASE_OPEN);
         } else if (phase.get() === GALLERY_PHASE_CLOSING) {
           hiddenIndex.set(-1);
-          scheduleOnRN(onClosed);
+          // Let the tile's opacity update paint once under the landed overlay.
+          requestAnimationFrame(() => scheduleOnRN(onClosed));
         }
       });
     },
@@ -736,6 +737,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
   const renderItem = useCallback(
     ({ item, index }: { item: GalleryImage; index: number }) => (
       <GalleryImagePage
+        closeProgress={closeProgress}
         closingIndex={closingIndex}
         contentScale={contentScale}
         currentIndex={currentIndex}
@@ -743,7 +745,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
         index={index}
       />
     ),
-    [closingIndex, contentScale, currentIndex]
+    [closeProgress, closingIndex, contentScale, currentIndex]
   );
   const getFixedItemSize = useCallback(() => SCREEN_WIDTH, []);
 
@@ -824,6 +826,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
             {!openSettled && (
               <View pointerEvents="none" style={styles.openingPageHolder}>
                 <GalleryImagePage
+                  closeProgress={closeProgress}
                   closingIndex={closingIndex}
                   contentScale={contentScale}
                   currentIndex={currentIndex}
