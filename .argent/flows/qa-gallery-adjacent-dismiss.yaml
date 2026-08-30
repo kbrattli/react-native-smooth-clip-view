@@ -1,0 +1,64 @@
+steps:
+  - echo: Restart SmoothClip example. Expect the home screen baseline.
+  - launch: smoothclipview.example
+  - await: { visible: { id: route-card-image-gallery }, timeout: 10000 }
+  - await: { idle: true }
+  - echo: On Home, open Image gallery. Expect the gallery grid.
+  - tap: { id: route-card-image-gallery }
+  - await:
+      visible: { id: gallery-tile-coastal-overlook }
+      timeout: 10000
+  - await: { idle: true }
+  - echo: On Gallery, open the first tile. Expect the full-screen coastal page.
+  - tap: { id: gallery-tile-coastal-overlook }
+  - await:
+      visible: { id: gallery-page-coastal-overlook }
+      timeout: 10000
+  - await: { idle: true }
+  - echo: Swipe left to the adjacent misty page. Expect the coastal page off-screen.
+  - tool: gesture-swipe
+    args:
+      fromX: 0.82
+      fromY: 0.5
+      toX: 0.15
+      toY: 0.5
+      durationMs: 550
+      settle: true
+  - await:
+      visible: { id: gallery-page-misty-pasture }
+      timeout: 10000
+  - await: { idle: true }
+  - await:
+      hidden: { id: gallery-page-coastal-overlook }
+      timeout: 10000
+  - echo: Drag the misty page briefly below threshold. Expect only it to reverse to rest.
+  - tool: gesture-swipe
+    args:
+      fromX: 0.48
+      fromY: 0.45
+      toX: 0.52
+      toY: 0.55
+      durationMs: 600
+      settle: true
+  - await:
+      visible: { id: gallery-page-misty-pasture }
+      timeout: 5000
+  - await:
+      hidden: { id: gallery-page-coastal-overlook }
+      timeout: 5000
+  - echo: Dismiss from misty. Expect the overlay to land on and restore its tile.
+  - tool: gesture-swipe
+    args:
+      fromX: 0.48
+      fromY: 0.43
+      toX: 0.55
+      toY: 0.76
+      durationMs: 700
+      settle: true
+  - await:
+      hidden: { id: gallery-page-misty-pasture }
+      timeout: 10000
+  - await:
+      visible: { id: gallery-tile-misty-pasture }
+      timeout: 10000
+  - await: { idle: true }

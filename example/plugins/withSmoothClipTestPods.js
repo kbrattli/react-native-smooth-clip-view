@@ -1,4 +1,4 @@
-const { withPodfile } = require('expo/config-plugins');
+const { withPodfile, withPodfileProperties } = require('expo/config-plugins');
 
 // Autolinking alone does not attach a pod's test specs, and android/ + ios/
 // are CNG outputs — prebuild regenerates the Podfile from the template, so a
@@ -17,6 +17,15 @@ const TEST_POD_BLOCK = [
 ].join('\n');
 
 module.exports = function withSmoothClipTestPods(config) {
+  // Expo's precompiled modules must match React Native's exact Fabric ABI.
+  // This fixture deliberately tracks the workspace RN version, so compile the
+  // Expo modules from source instead of accepting a preregistration crash in
+  // AppContext before SmoothClipView can mount.
+  config = withPodfileProperties(config, (propertiesConfig) => {
+    propertiesConfig.modResults.EXPO_USE_PRECOMPILED_MODULES = 'false';
+    return propertiesConfig;
+  });
+
   return withPodfile(config, (podfileConfig) => {
     const { contents } = podfileConfig.modResults;
     if (!contents.includes(":testspecs => ['Tests']")) {

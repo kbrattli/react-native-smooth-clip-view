@@ -30,12 +30,14 @@ import {
 } from 'react-native-smooth-clip-view';
 import { scheduleOnRN, scheduleOnUI } from 'react-native-worklets';
 import {
+  normalizeGalleryPresentationToHost,
   resolveAspectFitFrame,
   resolveDraggedGalleryFrame,
   resolveGalleryBackdropOpacity,
   resolveGalleryDismissProgress,
   resolveGalleryFrameProgress,
   resolveGalleryPresentation,
+  resolveGalleryPresentationScalars,
   type GalleryFrame,
   type GalleryPresentation,
 } from '../galleryGeometry';
@@ -91,17 +93,20 @@ function frameFromPresentation(
 function applyPresentationScalars(
   driver: SmoothClipDriver,
   presentation: GalleryPresentation
-) {
+): GalleryPresentation {
   'worklet';
-  driver.ui.setScalars(
-    presentation.clip.x,
-    presentation.clip.y,
-    presentation.clip.width,
-    presentation.clip.height,
-    presentation.clip.radius,
-    presentation.contentTranslateX,
-    presentation.contentTranslateY
+  // Stream the same host-visible presentation that an autonomous V2 release
+  // will receive as its authoritative `from`. Passing the off-host request
+  // here and again at release would make strict native preflight reject it.
+  const normalized = normalizeGalleryPresentationToHost(
+    presentation,
+    SCREEN_WIDTH,
+    SCREEN_HEIGHT
   );
+  driver.ui.setPresentationScalars(
+    ...resolveGalleryPresentationScalars(normalized)
+  );
+  return normalized;
 }
 
 function resolveGesturePresentation(
@@ -259,14 +264,14 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
 
   const phase = useSharedValue(GALLERY_PHASE_OPENING);
   const openingProgress = useSharedValue(0);
-  const contentScale = useSharedValue(initialPresentation.contentScale);
   const currentIndex = useSharedValue(openingIndex);
   const currentRestFrame = useSharedValue(openingDestinationFrame);
   const dragTranslateX = useSharedValue(0);
   const dragTranslateY = useSharedValue(0);
   const closingIndex = useSharedValue(-1);
   const closeProgress = useSharedValue(0);
-  const closeStartFrame = useSharedValue<GalleryFrame>(sourceFrame);
+  const closeStartPresentation =
+    useSharedValue<GalleryPresentation>(initialPresentation);
   const closeHasExplicitStart = useSharedValue(false);
   const closeStartBackdropOpacity = useSharedValue(0);
   const closeRequested = useSharedValue(false);
@@ -327,10 +332,8 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
       ...NATIVE_TIMING,
       from: initialPresentation,
     });
-    contentScale.set(withTiming(1, TIMING_CONFIG));
     openingProgress.set(withTiming(1, TIMING_CONFIG));
   }, [
-    contentScale,
     driver,
     handoffStarted,
     hiddenIndex,
@@ -365,12 +368,18 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
     const index = currentIndex.get();
     const destinationFrame = currentRestFrame.get();
     const wasOpening = phase.get() === GALLERY_PHASE_OPENING;
-    const startFrame = closeHasExplicitStart.get()
-      ? closeStartFrame.get()
-      : frameFromPresentation(driver.ui.beginInteraction());
+    const hasExplicitStart = closeHasExplicitStart.get();
+    const startPresentation = hasExplicitStart
+      ? closeStartPresentation.get()
+      : resolveGalleryPresentation(
+          frameFromPresentation(driver.ui.beginInteraction()),
+          destinationFrame,
+          SCREEN_WIDTH,
+          SCREEN_HEIGHT
+        );
+    const startFrame = frameFromPresentation(startPresentation);
 
     cancelAnimation(openingProgress);
-    cancelAnimation(contentScale);
     cancelAnimation(dragTranslateX);
     cancelAnimation(dragTranslateY);
 
@@ -384,12 +393,6 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
       dragTranslateY.get(),
       DISMISS_DISTANCE
     );
-    const startPresentation = resolveGalleryPresentation(
-      startFrame,
-      destinationFrame,
-      SCREEN_WIDTH,
-      SCREEN_HEIGHT
-    );
     const target = originRect.get();
     const targetFrame: GalleryFrame = {
       x: target.x,
@@ -397,9 +400,13 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
       width: target.w,
       height: target.h,
     };
-    const targetPresentation = resolveGalleryPresentation(
-      targetFrame,
-      destinationFrame,
+    const targetPresentation = normalizeGalleryPresentationToHost(
+      resolveGalleryPresentation(
+        targetFrame,
+        destinationFrame,
+        SCREEN_WIDTH,
+        SCREEN_HEIGHT
+      ),
       SCREEN_WIDTH,
       SCREEN_HEIGHT
     );
@@ -411,14 +418,10 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
     closeStartBackdropOpacity.set(
       resolveGalleryBackdropOpacity(openingProgress.get(), dismissProgress)
     );
-    contentScale.set(startPresentation.contentScale);
     driver.ui.animateTo(targetPresentation, {
       ...NATIVE_CLOSE_TIMING,
       from: startPresentation,
     });
-    contentScale.set(
-      withTiming(targetPresentation.contentScale, CLOSE_TIMING_CONFIG)
-    );
     closeProgress.set(0);
     closeProgress.set(withTiming(1, CLOSE_TIMING_CONFIG));
   }, [
@@ -426,9 +429,8 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
     closeProgress,
     closeRequested,
     closeStartBackdropOpacity,
-    closeStartFrame,
+    closeStartPresentation,
     closingIndex,
-    contentScale,
     currentIndex,
     currentRestFrame,
     dragTranslateX,
@@ -510,21 +512,11 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
           const destinationFrame = currentRestFrame.get();
 
           cancelAnimation(openingProgress);
-          cancelAnimation(contentScale);
           cancelAnimation(dragTranslateX);
           cancelAnimation(dragTranslateY);
           gestureStartFrame.set(visibleFrame);
           dragTranslateX.set(0);
           dragTranslateY.set(0);
-          contentScale.set(
-            resolveGalleryPresentation(
-              visibleFrame,
-              destinationFrame,
-              SCREEN_WIDTH,
-              SCREEN_HEIGHT
-            ).contentScale
-          );
-
           if (phase.get() === GALLERY_PHASE_OPENING) {
             openingProgress.set(
               resolveGalleryFrameProgress(
@@ -552,7 +544,6 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
           dragTranslateX.set(translateX);
           dragTranslateY.set(translateY);
           applyPresentationScalars(driver, presentation);
-          contentScale.set(presentation.contentScale);
         })
         .onEnd((event) => {
           gestureState.set({ ...gestureState.get(), activated: false });
@@ -561,7 +552,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
             MAX_DRAG_TRANSLATE_Y,
             Math.max(0, event.translationY)
           );
-          const { frame, presentation } = resolveGesturePresentation(
+          const { presentation } = resolveGesturePresentation(
             gestureStartFrame.get(),
             currentRestFrame.get(),
             translateX,
@@ -570,11 +561,13 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
 
           dragTranslateX.set(translateX);
           dragTranslateY.set(translateY);
-          applyPresentationScalars(driver, presentation);
-          contentScale.set(presentation.contentScale);
+          const normalizedPresentation = applyPresentationScalars(
+            driver,
+            presentation
+          );
 
           if (event.translationY > 120 || event.velocityY > 600) {
-            closeStartFrame.set(frame);
+            closeStartPresentation.set(normalizedPresentation);
             closeHasExplicitStart.set(true);
             closeRequested.set(true);
           } else {
@@ -587,9 +580,8 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
             );
             driver.ui.animateTo(restPresentation, {
               ...NATIVE_FAST_TIMING,
-              from: presentation,
+              from: normalizedPresentation,
             });
-            contentScale.set(withTiming(1, FAST_TIMING));
             openingProgress.set(withTiming(1, FAST_TIMING));
             dragTranslateX.set(withTiming(0, FAST_TIMING));
             dragTranslateY.set(withTiming(0, FAST_TIMING));
@@ -601,8 +593,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
     [
       closeHasExplicitStart,
       closeRequested,
-      closeStartFrame,
-      contentScale,
+      closeStartPresentation,
       currentRestFrame,
       dragTranslateX,
       dragTranslateY,
@@ -651,13 +642,11 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
 
       driver.ui.beginInteraction();
       cancelAnimation(openingProgress);
-      cancelAnimation(contentScale);
       cancelAnimation(dragTranslateX);
       cancelAnimation(dragTranslateY);
       phase.set(GALLERY_PHASE_OPEN);
       pagingActive.set(true);
       openingProgress.set(1);
-      contentScale.set(1);
       dragTranslateX.set(0);
       dragTranslateY.set(0);
       applyPresentationScalars(
@@ -671,7 +660,6 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
       );
     });
   }, [
-    contentScale,
     dragTranslateX,
     dragTranslateY,
     driver,
@@ -684,7 +672,6 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
     (restFrame: GalleryFrame) => {
       scheduleOnUI(() => {
         'worklet';
-        contentScale.set(1);
         applyPresentationScalars(
           driver,
           resolveGalleryPresentation(
@@ -697,7 +684,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
         pagingActive.set(false);
       });
     },
-    [contentScale, driver, pagingActive]
+    [driver, pagingActive]
   );
 
   const momentumStartedRef = useRef(false);
@@ -739,13 +726,11 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
       <GalleryImagePage
         closeProgress={closeProgress}
         closingIndex={closingIndex}
-        contentScale={contentScale}
-        currentIndex={currentIndex}
         image={item}
         index={index}
       />
     ),
-    [closeProgress, closingIndex, contentScale, currentIndex]
+    [closeProgress, closingIndex]
   );
   const getFixedItemSize = useCallback(() => SCREEN_WIDTH, []);
 
@@ -828,8 +813,6 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
                 <GalleryImagePage
                   closeProgress={closeProgress}
                   closingIndex={closingIndex}
-                  contentScale={contentScale}
-                  currentIndex={currentIndex}
                   image={openingImage}
                   index={openingIndex}
                   onThumbDisplay={startOpen}

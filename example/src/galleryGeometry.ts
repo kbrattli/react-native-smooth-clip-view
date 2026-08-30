@@ -12,6 +12,47 @@ export type GalleryPresentation = Readonly<{
   contentTranslateY: number;
 }>;
 
+export type GalleryPresentationScalars = readonly [
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  topLeftRadius: number,
+  topRightRadius: number,
+  bottomRightRadius: number,
+  bottomLeftRadius: number,
+  curveCode: number,
+  contentTranslateX: number,
+  contentTranslateY: number,
+  contentScale: number,
+];
+
+/**
+ * The gallery uses SmoothClip's complete V2 presentation as its sole geometry
+ * owner. Keeping this conversion beside the geometry prevents a gesture path
+ * from accidentally falling back to V1 and dropping the content-scale frame.
+ */
+export function resolveGalleryPresentationScalars(
+  presentation: GalleryPresentation
+): GalleryPresentationScalars {
+  'worklet';
+  const radius = presentation.clip.radius;
+  return [
+    presentation.clip.x,
+    presentation.clip.y,
+    presentation.clip.width,
+    presentation.clip.height,
+    radius,
+    radius,
+    radius,
+    radius,
+    0,
+    presentation.contentTranslateX,
+    presentation.contentTranslateY,
+    presentation.contentScale,
+  ];
+}
+
 function sanitizeDimension(value: number) {
   'worklet';
   return Number.isFinite(value) && value > 0 ? value : 0;
@@ -25,6 +66,43 @@ function sanitizeCoordinate(value: number) {
 function clamp(value: number, minimum: number, maximum: number) {
   'worklet';
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+/**
+ * Converts the requested aperture into the exact host-visible aperture while
+ * leaving the content transform untouched. Native performs the same clipping
+ * for streamed writes, but an autonomous V2 `from` must already be normalized
+ * so preflight can prove that every animation frame is host-independent.
+ */
+export function normalizeGalleryPresentationToHost(
+  presentation: GalleryPresentation,
+  hostWidth: number,
+  hostHeight: number
+): GalleryPresentation {
+  'worklet';
+  const boundedHostWidth = sanitizeDimension(hostWidth);
+  const boundedHostHeight = sanitizeDimension(hostHeight);
+  const requestedX = sanitizeCoordinate(presentation.clip.x);
+  const requestedY = sanitizeCoordinate(presentation.clip.y);
+  const requestedWidth = sanitizeDimension(presentation.clip.width);
+  const requestedHeight = sanitizeDimension(presentation.clip.height);
+  const left = clamp(requestedX, 0, boundedHostWidth);
+  const top = clamp(requestedY, 0, boundedHostHeight);
+  const right = clamp(requestedX + requestedWidth, 0, boundedHostWidth);
+  const bottom = clamp(requestedY + requestedHeight, 0, boundedHostHeight);
+
+  return {
+    clip: {
+      x: left,
+      y: top,
+      width: Math.max(0, right - left),
+      height: Math.max(0, bottom - top),
+      radius: 0,
+    },
+    contentTranslateX: presentation.contentTranslateX,
+    contentTranslateY: presentation.contentTranslateY,
+    contentScale: presentation.contentScale,
+  };
 }
 
 function lerp(from: number, to: number, progress: number) {

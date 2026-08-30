@@ -17,8 +17,10 @@ import Animated, {
 } from 'react-native-reanimated';
 import {
   ClipEasings,
+  getSmoothClipCapabilities,
   SmoothClipView,
   useSmoothClipDriver,
+  useSmoothClipGroupDriver,
   type SmoothClipPresentation,
 } from 'react-native-smooth-clip-view';
 import { scheduleOnRN, scheduleOnUI } from 'react-native-worklets';
@@ -38,6 +40,8 @@ const BLOCK_MS = 6000;
 
 // Longer than BLOCK_MS so the native leg cannot end during a block.
 const LEG_MS = BLOCK_MS + 2000;
+const AUTONOMOUS_COMPLEX_PATH_ANIMATION =
+  getSmoothClipCapabilities().autonomousComplexPathAnimation;
 
 // Animated radius defeats integer-outline dedupe on every frame.
 function presentationAt(progress: number): SmoothClipPresentation {
@@ -57,6 +61,32 @@ function presentationAt(progress: number): SmoothClipPresentation {
   };
 }
 
+function complexPresentationAt(
+  progress: number,
+  mirrored = false
+): SmoothClipPresentation {
+  'worklet';
+  const p = mirrored ? 1 - progress : progress;
+  const inset = 18 + p * 30;
+  return {
+    clip: {
+      x: inset,
+      y: 120 + p * 80,
+      width: SCREEN_WIDTH - inset * 2,
+      height: 150 + p * 110,
+      radius: 18,
+      topLeftRadius: 18 + p * 40,
+      topRightRadius: 42 - p * 20,
+      bottomRightRadius: 12 + p * 46,
+      bottomLeftRadius: 34 - p * 12,
+      curve: 'continuous',
+    },
+    contentTranslateX: inset * 0.35,
+    contentTranslateY: p * 28,
+    contentScale: 0.92 + p * 0.08,
+  };
+}
+
 function logBench(message: string) {
   console.log(`[clip-bench] ${message}`);
 }
@@ -65,58 +95,6 @@ function BenchSheet({ label }: { label: string }) {
   return (
     <View style={styles.sheet}>
       <Text style={styles.sheetLabel}>{label}</Text>
-    </View>
-  );
-}
-
-// Native animation; only the completion re-arm returns through JS.
-function NativeAnimBench() {
-  const nextTargetRef = useRef(0);
-  const aliveRef = useRef(true);
-  const driver = useSmoothClipDriver(
-    {
-      clip: { ...CARD },
-      contentTranslateX: CARD.x,
-      contentTranslateY: CARD.y,
-    },
-    {
-      onAnimationComplete: (result) => {
-        if (!result.finished || !aliveRef.current) return;
-        const target = nextTargetRef.current;
-        nextTargetRef.current = 1 - target;
-        scheduleOnUI(() => {
-          'worklet';
-          driver.ui.animateTo(presentationAt(target), {
-            type: 'timing',
-            duration: LEG_MS,
-            controlPoints: ClipEasings.easeOutCubic,
-          });
-        });
-      },
-    }
-  );
-
-  useEffect(() => {
-    aliveRef.current = true;
-    nextTargetRef.current = 0;
-    scheduleOnUI(() => {
-      'worklet';
-      driver.ui.animateTo(presentationAt(1), {
-        type: 'timing',
-        duration: LEG_MS,
-        controlPoints: ClipEasings.easeOutCubic,
-      });
-    });
-    return () => {
-      aliveRef.current = false;
-    };
-  }, [driver]);
-
-  return (
-    <View pointerEvents="none" style={styles.overlay}>
-      <SmoothClipView driver={driver} style={styles.host} testID="bench-native">
-        <BenchSheet label="Native animateTo" />
-      </SmoothClipView>
     </View>
   );
 }
@@ -152,6 +130,125 @@ function ScalarsStreamBench() {
         testID="bench-scalars"
       >
         <BenchSheet label="setScalars stream" />
+      </SmoothClipView>
+    </View>
+  );
+}
+
+// One worklet computes both V2 presentations and commits them in a single
+// native transaction. This is the correctness-first streaming path used by
+// consumers before a motion plan is eligible for native ownership.
+function BatchStreamBench() {
+  const first = useSmoothClipDriver(complexPresentationAt(0));
+  const second = useSmoothClipDriver(complexPresentationAt(0, true));
+  const group = useSmoothClipGroupDriver();
+
+  useFrameCallback((frameInfo) => {
+    const phase = (frameInfo.timestamp % (2 * LEG_MS)) / (2 * LEG_MS);
+    const progress = phase < 0.5 ? phase * 2 : (1 - phase) * 2;
+    group.ui.setBatch([
+      { driver: first, presentation: complexPresentationAt(progress) },
+      {
+        driver: second,
+        presentation: complexPresentationAt(progress, true),
+      },
+    ]);
+  });
+
+  return (
+    <View pointerEvents="none" style={styles.overlay}>
+      <SmoothClipView driver={first} style={styles.host} testID="bench-batch-a">
+        <BenchSheet label="V2 setBatch · participant A" />
+      </SmoothClipView>
+      <SmoothClipView
+        driver={second}
+        style={styles.host}
+        testID="bench-batch-b"
+      >
+        <BenchSheet label="V2 setBatch · participant B" />
+      </SmoothClipView>
+    </View>
+  );
+}
+
+type BenchController = Readonly<{ stop(): Promise<void> }>;
+
+// Both hosts settle under one process-global native group ID. The parent
+// awaits stop(), which finishes the native group before unmounting either
+// host; teardown is therefore gated by the native leg itself.
+function GroupedNativeBench({
+  registerController,
+}: {
+  registerController(controller: BenchController | null): void;
+}) {
+  const first = useSmoothClipDriver(complexPresentationAt(0));
+  const second = useSmoothClipDriver(complexPresentationAt(0, true));
+  const aliveRef = useRef(true);
+  const targetRef = useRef(1);
+  const activeGroupIdRef = useRef(0);
+  const pendingStartRef = useRef<Promise<void>>(Promise.resolve());
+
+  const startLegRef = useRef<(target: number) => Promise<void>>(async () => {});
+  const launchLegRef = useRef<(target: number) => void>(() => {});
+  const group = useSmoothClipGroupDriver({
+    onAnimationComplete: ({ finished }) => {
+      if (!finished || !aliveRef.current) return;
+      const target = 1 - targetRef.current;
+      targetRef.current = target;
+      launchLegRef.current(target);
+    },
+  });
+
+  startLegRef.current = async (target: number) => {
+    const groupId = await group.react.animateTo(
+      [
+        { driver: first, target: complexPresentationAt(target) },
+        { driver: second, target: complexPresentationAt(target, true) },
+      ],
+      {
+        type: 'timing',
+        duration: LEG_MS,
+        controlPoints: ClipEasings.easeOutCubic,
+        suspensionPolicy: 'pause',
+      }
+    );
+    activeGroupIdRef.current = groupId;
+  };
+  launchLegRef.current = (target: number) => {
+    pendingStartRef.current = startLegRef.current(target).catch((error) => {
+      logBench(`native group failed: ${String(error)}`);
+    });
+  };
+
+  useEffect(() => {
+    aliveRef.current = true;
+    targetRef.current = 1;
+    launchLegRef.current(1);
+    registerController({
+      async stop() {
+        aliveRef.current = false;
+        await pendingStartRef.current;
+        const groupId = activeGroupIdRef.current;
+        if (groupId > 0) await group.react.cancel(groupId, 'finish');
+      },
+    });
+    return () => {
+      aliveRef.current = false;
+      registerController(null);
+    };
+  }, [group, registerController]);
+
+  return (
+    <View pointerEvents="none" style={styles.overlay}>
+      <SmoothClipView driver={first} style={styles.host} testID="bench-group-a">
+        <BenchSheet label="Native group · participant A" />
+      </SmoothClipView>
+      <SmoothClipView
+        driver={second}
+        style={styles.host}
+        testID="bench-group-b"
+      >
+        <BenchSheet label="Native group · participant B" />
       </SmoothClipView>
     </View>
   );
@@ -199,11 +296,13 @@ function ReanimatedBench() {
   );
 }
 
-type BenchMode = 'native-anim' | 'scalars-stream' | 'reanimated';
+type BenchMode =
+  'group-native' | 'batch-stream' | 'scalars-stream' | 'reanimated';
 
 const MODES: ReadonlyArray<{ mode: BenchMode; label: string }> = [
-  { mode: 'native-anim', label: 'Native animateTo loop' },
-  { mode: 'scalars-stream', label: 'setScalars stream (drag path)' },
+  { mode: 'group-native', label: 'Grouped native settlement' },
+  { mode: 'batch-stream', label: 'V2 atomic setBatch stream' },
+  { mode: 'scalars-stream', label: 'Legacy V1 setScalars stream' },
   { mode: 'reanimated', label: 'Naive Reanimated baseline' },
 ];
 
@@ -220,10 +319,26 @@ const BLOCK_HINT = Platform.select({
 
 export function ClipBench() {
   const [running, setRunning] = useState<BenchMode | null>(null);
+  const controllerRef = useRef<BenchController | null>(null);
 
-  const toggle = useCallback((mode: BenchMode) => {
-    setRunning((current) => (current === mode ? null : mode));
-  }, []);
+  const registerController = useCallback(
+    (controller: BenchController | null) => {
+      controllerRef.current = controller;
+    },
+    []
+  );
+
+  const toggle = useCallback(
+    async (mode: BenchMode) => {
+      const current = running;
+      if (current !== null) {
+        await controllerRef.current?.stop();
+        controllerRef.current = null;
+      }
+      setRunning(current === mode ? null : mode);
+    },
+    [running]
+  );
 
   const blockJsThread = useCallback(() => {
     logBench(`js block begin t=${Date.now()}`);
@@ -256,7 +371,11 @@ export function ClipBench() {
           <Pressable
             accessibilityRole="button"
             key={mode}
-            onPress={() => toggle(mode)}
+            onPress={() => {
+              toggle(mode).catch((error) => {
+                logBench(`mode teardown failed: ${String(error)}`);
+              });
+            }}
             style={({ pressed }) => [
               styles.modeButton,
               running === mode ? styles.modeButtonActive : null,
@@ -299,7 +418,14 @@ export function ClipBench() {
         </View>
         <Text style={styles.hint}>{BLOCK_HINT}</Text>
       </View>
-      {running === 'native-anim' ? <NativeAnimBench /> : null}
+      {running === 'group-native' ? (
+        AUTONOMOUS_COMPLEX_PATH_ANIMATION ? (
+          <GroupedNativeBench registerController={registerController} />
+        ) : (
+          <BatchStreamBench />
+        )
+      ) : null}
+      {running === 'batch-stream' ? <BatchStreamBench /> : null}
       {running === 'scalars-stream' ? <ScalarsStreamBench /> : null}
       {running === 'reanimated' ? <ReanimatedBench /> : null}
     </>

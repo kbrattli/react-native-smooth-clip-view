@@ -20,7 +20,7 @@ Use it for transitions that previously struggled with performance when animating
 - React Native Reanimated 4.5 or newer
 - React Native Worklets 0.10 or newer
 - iOS 16.4 or newer
-- Android API 26 or newer
+- Android API 33 or newer
 
 The package supports iOS, Android, and React Native Web. It does not include a
 legacy Paper implementation.
@@ -101,8 +101,9 @@ const styles = StyleSheet.create({
 ```
 
 The same driver can be passed to multiple hosts. One native registry update
-fans the seven-scalar presentation out to all mounted hosts. Interactive
-updates avoid Yoga and ShadowTree commits.
+fans the presentation out to all mounted hosts. The original seven-scalar V1
+protocol remains unchanged; V2 adds per-corner radii, continuous curves, and
+centered content scale. Interactive updates avoid Yoga and ShadowTree commits.
 
 For transitions whose endpoint is known, let Core Animation interpolate on the
 render server:
@@ -215,6 +216,11 @@ puts on screen, which is the property worth keeping identical.
   as `animation.from` — `animateTo` then performs the hot write and the
   handoff in one call. Do not interleave `setScalars` with
   `presentation.value` writes on the same driver.
+- `driver.ui.setPresentationScalars(x, y, width, height, topLeft, topRight,
+  bottomRight, bottomLeft, curveCode, tx, ty, scale)` is the V2 hot path.
+  `curveCode` is `0` for circular and `1` for continuous. V2 values are
+  validated as one transaction; widened values are never silently downgraded
+  onto a V1 native binary.
 - Spring `initialVelocity` is one normalized scalar along the current-to-target
   trajectory, in units of the remaining distance per second (`1` covers the
   remaining distance in one second). Every geometry channel continues with the
@@ -265,10 +271,9 @@ puts on screen, which is the property worth keeping identical.
   starts the replacement from that native value. Passive hook seeds and public
   `set`/`setScalars` writes still leave a held latch intact. `from` behaves the
   same on both platforms (it is driver-layer, not native): on iOS the seed
-  stops any running Core Animation and writes the model layer first; keyframes
-  then start exactly at `from`, while timing/spring sample their from-value off
-  the presentation layer — the last committed frame, at most one frame behind
-  `from` — identical to the explicit two-call pattern.
+  stops any running Core Animation, applies `from` to the model layer, and
+  installs timing, spring, or keyframe playback from that exact presentation in
+  the same start transaction.
 - `cancel()` freezes visible presentation by default. Pass `'target'` as its
   behavior to jump to the requested endpoint.
 - `options.onAnimationComplete` fires exactly once per animation with its ID
@@ -330,6 +335,30 @@ bounds, so a clip that extended beyond the host comes back clamped. Start
 gestures with `beginInteraction()`: interactive writes issued while native
 still owns rendering are dropped.
 
+### Group driver
+
+`useSmoothClipGroupDriver({ reduceMotion, onAnimationComplete })` coordinates
+multiple drivers with one native group ID and one completion. Its worklet-safe
+`ui` and Promise-based `react` interfaces expose:
+
+- `beginInteraction(drivers)` to freeze every overlapping group atomically and
+  return canonical visible snapshots in input order.
+- `snapshotCurrent(drivers)` to sample presentation and readiness without
+  changing ownership.
+- `setBatch(entries)` to validate every entry before committing one native
+  transaction.
+- `animateTo(entries, animation)` for shared timing, spring, or linear
+  keyframe progress. Membership is immutable for that group ID; a replacement
+  is a new atomically installed group.
+- `cancel(groupId, 'freeze' | 'finish')` to return every participant snapshot.
+
+Groups wait until all participants have a visible, attached, laid-out,
+positive-size host. The default `suspensionPolicy: 'pause'` freezes and
+re-latches the whole group if any participant loses readiness; `'finish'`
+applies every target. Complex-path native settlement is capability-gated—use
+`getSmoothClipCapabilities()` and keep streaming with `setBatch` when
+`autonomousComplexPathAnimation` is false.
+
 ### `SmoothClipPresentation`
 
 ```ts
@@ -337,6 +366,7 @@ type SmoothClipPresentation = Readonly<{
   clip: ClipGeometry;
   contentTranslateX: number;
   contentTranslateY: number;
+  contentScale?: number;
 }>;
 ```
 
@@ -353,12 +383,19 @@ type ClipGeometry = Readonly<{
   width: number;
   height: number;
   radius: number;
+  topLeftRadius?: number;
+  topRightRadius?: number;
+  bottomRightRadius?: number;
+  bottomLeftRadius?: number;
+  curve?: 'circular' | 'continuous';
 }>;
 ```
 
 Values use React Native points/DIPs. Native code rejects non-finite updates,
 intersects the requested rectangle with the actual host bounds, prevents
-negative sizes, and clamps `radius` to half of the visible shortest edge.
+negative sizes, and proportionally scales overlapping corners with the CSS
+corner-normalization rule. Content scale is centered on the native content
+container; translation is independent and is not multiplied by scale.
 
 ### `normalizeClipGeometry`
 
@@ -380,9 +417,11 @@ pass it as the `driver` prop, and move per-frame updates from the
 - Give the host its fixed maximum `width` and `height`; clipping never changes
   Yoga layout.
 - Put visual backgrounds inside `SmoothClipView`.
-- Borders, shadows, host corner styles, host `overflow`, per-corner radii, and
-  externally applied anisotropic transforms are unsupported.
-- Version 0.1.0 supports one uniform corner radius.
+- Keep borders, shadows, rotation, and anisotropic transforms on an outer
+  visual carrier rather than the clip host.
+- Uniform circular corners use platform fast paths. Unequal or continuous
+  corners use a fixed-topology portable path; Android/web intentionally do not
+  claim pixel identity with Apple's proprietary continuous curve.
 - On web, the implementation uses CSS `clip-path` on the fixed host, so
   descendant percentages and right/bottom anchoring still resolve against the
   maximum footprint.

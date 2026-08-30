@@ -14,8 +14,6 @@ import { SCREEN_HEIGHT, SCREEN_WIDTH } from '../overlayConstants';
 type GalleryImagePageProps = {
   closeProgress: SharedValue<number>;
   closingIndex: SharedValue<number>;
-  contentScale: SharedValue<number>;
-  currentIndex: SharedValue<number>;
   image: GalleryImage;
   index: number;
   onThumbDisplay?: () => void;
@@ -25,8 +23,6 @@ type GalleryImagePageProps = {
 const GalleryImagePage = memo(function GalleryImagePageView({
   closeProgress,
   closingIndex,
-  contentScale,
-  currentIndex,
   image,
   index,
   onThumbDisplay,
@@ -54,15 +50,6 @@ const GalleryImagePage = memo(function GalleryImagePageView({
   const thumbSource = ownThumb ?? openingThumbRef ?? null;
   const hasLandingThumb = thumbSource !== null;
 
-  // The aspect-fit frame is centered on screen, so scaling this page about its
-  // own center is equivalent to scaling the whole clip content about the
-  // screen center — scoping the transform here keeps sibling pages out of the
-  // re-composited subtree while the clip animates.
-  const scaleStyle = useAnimatedStyle(() => {
-    const isActive =
-      currentIndex.get() === index || closingIndex.get() === index;
-    return { transform: [{ scale: isActive ? contentScale.get() : 1 }] };
-  });
   const fullResolutionStyle = useAnimatedStyle(() => ({
     opacity:
       closingIndex.get() === index && hasLandingThumb
@@ -88,7 +75,7 @@ const GalleryImagePage = memo(function GalleryImagePageView({
           },
         ]}
       >
-        <Animated.View style={[styles.imageFill, scaleStyle]}>
+        <View style={styles.imageFill}>
           {/*
             Two stacked copies of the same picture guarantee the frame is never
             empty: the thumb (aspect-preserved downsample, so it aligns with
@@ -114,7 +101,7 @@ const GalleryImagePage = memo(function GalleryImagePageView({
               transition={0}
             />
           </Animated.View>
-        </Animated.View>
+        </View>
       </View>
     </View>
   );

@@ -1,12 +1,14 @@
 import { describe, expect, it } from '@jest/globals';
 import {
   interpolateGalleryFrame,
+  normalizeGalleryPresentationToHost,
   resolveAspectFitFrame,
   resolveDraggedGalleryFrame,
   resolveGalleryBackdropOpacity,
   resolveGalleryDismissProgress,
   resolveGalleryFrameProgress,
   resolveGalleryPresentation,
+  resolveGalleryPresentationScalars,
 } from '../galleryGeometry';
 
 describe('gallery geometry', () => {
@@ -120,6 +122,54 @@ describe('gallery geometry', () => {
     });
   });
 
+  it('streams scale with the complete V2 presentation instead of dropping it through V1', () => {
+    const presentation = resolveGalleryPresentation(
+      { x: 130, y: 80, width: 130, height: 130 },
+      resolveAspectFitFrame(390, 844, 1180, 1572),
+      390,
+      844
+    );
+
+    expect(resolveGalleryPresentationScalars(presentation)).toEqual([
+      presentation.clip.x,
+      presentation.clip.y,
+      presentation.clip.width,
+      presentation.clip.height,
+      0,
+      0,
+      0,
+      0,
+      0,
+      presentation.contentTranslateX,
+      presentation.contentTranslateY,
+      presentation.contentScale,
+    ]);
+  });
+
+  it('uses the exact normalized visible drag frame for an atomic V2 release', () => {
+    const destination = { x: 0, y: 0, width: 390, height: 844 };
+    const draggedFrame = resolveDraggedGalleryFrame(
+      destination,
+      7,
+      100,
+      resolveGalleryDismissProgress(100, 422)
+    );
+    const requested = resolveGalleryPresentation(
+      draggedFrame,
+      destination,
+      390,
+      844
+    );
+    const visible = normalizeGalleryPresentationToHost(requested, 390, 844);
+
+    expect(requested.clip.y + requested.clip.height).toBeGreaterThan(844);
+    expect(visible.clip.y + visible.clip.height).toBe(844);
+    expect(visible.clip.x + visible.clip.width).toBeLessThanOrEqual(390);
+    expect(visible.contentTranslateX).toBe(requested.contentTranslateX);
+    expect(visible.contentTranslateY).toBe(requested.contentTranslateY);
+    expect(visible.contentScale).toBe(requested.contentScale);
+  });
+
   it('keeps a landscape cover centred behind its square source clip', () => {
     const source = { x: 0, y: 240, width: 130, height: 130 };
     const destination = resolveAspectFitFrame(390, 844, 2096, 1180);
@@ -167,7 +217,7 @@ describe('gallery geometry', () => {
     ['portrait', 1180, 1572],
     ['landscape', 2096, 1180],
   ])(
-    'keeps %s clip, translation, and child scale on one frame path',
+    'keeps %s clip, translation, and native content scale on one frame path',
     (_label, imageWidth, imageHeight) => {
       const source = { x: 130, y: 80, width: 130, height: 130 };
       const destination = resolveAspectFitFrame(

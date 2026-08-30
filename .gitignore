@@ -79,8 +79,12 @@ nitrogen/
 # npm pack artifact (app installs the tarball while npm publish is pending)
 *.tgz
 
-# argent screen recordings
-.argent/
+# Argent recordings and generated baselines; keep replayable QA flows.
+.argent/*
+!.argent/flows/
+.argent/flows/*
+!.argent/flows/qa-gallery-adjacent-dismiss.yaml
+!.argent/flows/qa-gallery-drag-dismiss.yaml
 
 # demo recordings staged for README upload (hosted on GitHub, never committed)
 /*.mp4
