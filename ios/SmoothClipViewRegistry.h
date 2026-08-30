@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include "SmoothClipRegistry.h"
+#include "SmoothClipRegistrySnapshot.h"
 
 @class SmoothClipView;
 

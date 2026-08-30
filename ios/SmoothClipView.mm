@@ -51,26 +51,164 @@ using namespace facebook::react;
                                        finished:(BOOL)finished;
 @end
 
-static std::array<double, 7> SmoothClipVelocityChannels(
-    CGRect rect, CGFloat radius, CGPoint contentTranslation) {
+static SmoothClipCornerRadii SmoothClipPresentationRadii(
+    const smoothclip::Geometry &geometry) {
+  return {
+      (CGFloat)smoothclip::resolvedRadius(
+          geometry.topLeftRadius, geometry.radius),
+      (CGFloat)smoothclip::resolvedRadius(
+          geometry.topRightRadius, geometry.radius),
+      (CGFloat)smoothclip::resolvedRadius(
+          geometry.bottomRightRadius, geometry.radius),
+      (CGFloat)smoothclip::resolvedRadius(
+          geometry.bottomLeftRadius, geometry.radius),
+  };
+}
+
+static BOOL SmoothClipPresentationHasExplicitRadii(
+    const smoothclip::Geometry &geometry) {
+  return isfinite(geometry.topLeftRadius) ||
+      isfinite(geometry.topRightRadius) ||
+      isfinite(geometry.bottomRightRadius) ||
+      isfinite(geometry.bottomLeftRadius);
+}
+
+static SmoothClipCornerCurve SmoothClipPresentationCurve(
+    const smoothclip::Geometry &geometry) {
+  return geometry.curve == smoothclip::ClipCurve::Continuous
+      ? SmoothClipCornerCurveContinuous
+      : SmoothClipCornerCurveCircular;
+}
+
+static bool SmoothClipBuildPresentationV2(
+    double x,
+    double y,
+    double width,
+    double height,
+    double topLeftRadius,
+    double topRightRadius,
+    double bottomRightRadius,
+    double bottomLeftRadius,
+    NSInteger curveCode,
+    double contentTranslateX,
+    double contentTranslateY,
+    double contentScale,
+    smoothclip::Presentation *result) {
+  if (result == nullptr || !isfinite(x) || !isfinite(y) ||
+      !isfinite(width) || !isfinite(height) ||
+      !isfinite(topLeftRadius) || !isfinite(topRightRadius) ||
+      !isfinite(bottomRightRadius) || !isfinite(bottomLeftRadius) ||
+      !isfinite(contentTranslateX) || !isfinite(contentTranslateY) ||
+      !isfinite(contentScale) || contentScale <= 0 ||
+      (curveCode != static_cast<NSInteger>(smoothclip::ClipCurve::Circular) &&
+       curveCode != static_cast<NSInteger>(smoothclip::ClipCurve::Continuous))) {
+    return false;
+  }
+
+  const bool uniform = topLeftRadius == topRightRadius &&
+      topLeftRadius == bottomRightRadius &&
+      topLeftRadius == bottomLeftRadius;
+  smoothclip::Geometry geometry{
+      x, y, width, height, uniform ? topLeftRadius : 0};
+  geometry.topLeftRadius = topLeftRadius;
+  geometry.topRightRadius = topRightRadius;
+  geometry.bottomRightRadius = bottomRightRadius;
+  geometry.bottomLeftRadius = bottomLeftRadius;
+  geometry.curve = static_cast<smoothclip::ClipCurve>(curveCode);
+  *result = {
+      geometry, contentTranslateX, contentTranslateY, contentScale};
+  return true;
+}
+
+static NSString *SmoothClipCALayerCornerCurve(
+    SmoothClipCornerCurve curve) API_AVAILABLE(ios(13.0)) {
+  return curve == SmoothClipCornerCurveContinuous
+      ? kCACornerCurveContinuous
+      : kCACornerCurveCircular;
+}
+
+static CGAffineTransform SmoothClipContentTransform(
+    CGFloat scale,
+    CGPoint translation) {
+  // Construct the matrix directly. Concatenating a translation and a scale is
+  // order-sensitive and can multiply tx/ty; the presentation contract requires
+  // a centered uniform scale with translation remaining in unscaled points.
+  return CGAffineTransformMake(
+      scale, 0, 0, scale, translation.x, translation.y);
+}
+
+struct SmoothClipPathEndpoints {
+  CGPoint points[9];
+  size_t count;
+};
+
+static void SmoothClipCollectPathEndpoints(
+    void *context,
+    const CGPathElement *element) {
+  SmoothClipPathEndpoints *endpoints =
+      static_cast<SmoothClipPathEndpoints *>(context);
+  if (endpoints->count >= 9 ||
+      element->type == kCGPathElementCloseSubpath) {
+    return;
+  }
+  const size_t endpointIndex =
+      element->type == kCGPathElementAddCurveToPoint ? 2 :
+      element->type == kCGPathElementAddQuadCurveToPoint ? 1 : 0;
+  endpoints->points[endpoints->count++] = element->points[endpointIndex];
+}
+
+static SmoothClipCornerRadii SmoothClipRadiiFromFixedPath(
+    CGPathRef path,
+    CGRect rect,
+    SmoothClipCornerRadii fallback) {
+  if (path == nil) return fallback;
+  SmoothClipPathEndpoints endpoints{};
+  CGPathApply(path, &endpoints, SmoothClipCollectPathEndpoints);
+  if (endpoints.count != 9) return fallback;
+  return {
+      MAX(0, endpoints.points[0].x - CGRectGetMinX(rect)),
+      MAX(0, CGRectGetMaxX(rect) - endpoints.points[1].x),
+      MAX(0, CGRectGetMaxY(rect) - endpoints.points[3].y),
+      MAX(0, endpoints.points[5].x - CGRectGetMinX(rect)),
+  };
+}
+
+static std::array<double, 11> SmoothClipVelocityChannels(
+    CGRect rect,
+    SmoothClipCornerRadii radii,
+    CGPoint contentTranslation,
+    CGFloat contentScale) {
   return {CGRectGetMinX(rect),
           CGRectGetMinY(rect),
           CGRectGetWidth(rect),
           CGRectGetHeight(rect),
-          radius,
+          radii.topLeft,
+          radii.topRight,
+          radii.bottomRight,
+          radii.bottomLeft,
           contentTranslation.x,
-          contentTranslation.y};
+          contentTranslation.y,
+          contentScale};
 }
 
 @implementation SmoothClipView {
   SmoothClipContainerView *_clipContainer;
   SmoothClipContainerView *_contentContainer;
+  CAShapeLayer *_unequalCornerMask;
   CGRect _requestedClip;
   CGRect _normalizedClip;
   CGFloat _requestedRadius;
   CGFloat _normalizedRadius;
+  SmoothClipCornerRadii _requestedRadii;
+  SmoothClipCornerRadii _normalizedRadii;
+  SmoothClipCornerCurve _requestedCurve;
+  SmoothClipCornerCurve _normalizedCurve;
+  BOOL _requestedHasExplicitRadii;
+  BOOL _normalizedHasExplicitRadii;
   CGPoint _requestedContentTranslation;
   CGPoint _normalizedContentTranslation;
+  CGFloat _requestedContentScale;
+  CGFloat _normalizedContentScale;
   uint64_t _driverId;
   BOOL _hasLayout;
   BOOL _commandIsAuthoritative;
@@ -139,12 +277,29 @@ static std::array<double, 7> SmoothClipVelocityChannels(
     [_clipContainer addSubview:_contentContainer];
     [self addSubview:_clipContainer];
 
+    _unequalCornerMask = [CAShapeLayer layer];
+    _unequalCornerMask.actions = @{
+      @"path": [NSNull null],
+      @"bounds": [NSNull null],
+      @"position": [NSNull null],
+    };
+    _unequalCornerMask.fillColor = UIColor.blackColor.CGColor;
+    _unequalCornerMask.needsDisplayOnBoundsChange = NO;
+
     _requestedClip = CGRectZero;
     _normalizedClip = CGRectZero;
     _requestedRadius = 0;
     _normalizedRadius = 0;
+    _requestedRadii = {0, 0, 0, 0};
+    _normalizedRadii = {0, 0, 0, 0};
+    _requestedCurve = SmoothClipCornerCurveCircular;
+    _normalizedCurve = SmoothClipCornerCurveCircular;
+    _requestedHasExplicitRadii = NO;
+    _normalizedHasExplicitRadii = NO;
     _requestedContentTranslation = CGPointZero;
     _normalizedContentTranslation = CGPointZero;
+    _requestedContentScale = 1;
+    _normalizedContentScale = 1;
     _driverId = 0;
     _hasLayout = NO;
     _commandIsAuthoritative = NO;
@@ -198,10 +353,17 @@ static std::array<double, 7> SmoothClipVelocityChannels(
       geometry.y,
       MAX(0, geometry.width),
       MAX(0, geometry.height));
-  _requestedRadius = MAX(0, geometry.radius);
+  _requestedRadii = SmoothClipPresentationRadii(geometry);
+  _requestedRadius = SmoothClipCornerRadiiAreUniform(_requestedRadii)
+      ? MAX(0, _requestedRadii.topLeft)
+      : 0;
+  _requestedCurve = SmoothClipPresentationCurve(geometry);
+  _requestedHasExplicitRadii =
+      SmoothClipPresentationHasExplicitRadii(geometry);
   _requestedContentTranslation = CGPointMake(
       presentation.contentTranslateX,
       presentation.contentTranslateY);
+  _requestedContentScale = presentation.contentScale;
 }
 
 - (BOOL)normalizedRequestedGeometry:(SmoothNormalizedClipGeometry *)geometry {
@@ -217,12 +379,16 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   }
 #endif
   const CGSize hostSize = self.bounds.size;
-  const BOOL valid = SmoothClipNormalizeGeometry(
+  const BOOL valid = SmoothClipNormalizeGeometryV2(
       CGRectGetMinX(_requestedClip),
       CGRectGetMinY(_requestedClip),
       CGRectGetWidth(_requestedClip),
       CGRectGetHeight(_requestedClip),
-      _requestedRadius,
+      _requestedRadii.topLeft,
+      _requestedRadii.topRight,
+      _requestedRadii.bottomRight,
+      _requestedRadii.bottomLeft,
+      _requestedCurve,
       CGSizeMake(MAX(0, hostSize.width), MAX(0, hostSize.height)),
       geometry);
 #if defined(SMOOTH_CLIP_ENABLE_SIGNPOSTS) && SMOOTH_CLIP_ENABLE_SIGNPOSTS
@@ -245,12 +411,61 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   [self setClipContainerHidden:CGRectIsEmpty(rect)];
 }
 
-- (void)writeLayerRect:(CGRect)rect radius:(CGFloat)radius {
-  const BOOL rectChanged = !CGRectEqualToRect(_normalizedClip, rect);
-  const BOOL radiusChanged = _normalizedRadius != radius;
-  _normalizedClip = rect;
-  _normalizedRadius = radius;
-  if (!rectChanged && !radiusChanged) return;
+- (void)configureUnequalCornerMaskForGeometry:
+    (SmoothNormalizedClipGeometry)geometry {
+  const CGSize hostSize = self.bounds.size;
+  _unequalCornerMask.bounds = CGRectMake(
+      0, 0, MAX(0, hostSize.width), MAX(0, hostSize.height));
+  _unequalCornerMask.position = CGPointMake(
+      MAX(0, hostSize.width) / 2, MAX(0, hostSize.height) / 2);
+  CGPathRef path = SmoothClipCreateRoundedRectPath(
+      geometry.rect, geometry.radii, geometry.curve);
+  _unequalCornerMask.path = path;
+  CGPathRelease(path);
+}
+
+- (void)applyStaticCornerRepresentation:
+    (SmoothNormalizedClipGeometry)geometry {
+  CALayer *layer = _clipContainer.layer;
+  if (SmoothClipCornerRadiiAreUniform(geometry.radii)) {
+    layer.mask = nil;
+    layer.cornerRadius = geometry.radii.topLeft;
+    layer.cornerCurve = SmoothClipCALayerCornerCurve(geometry.curve);
+  } else {
+    layer.cornerRadius = 0;
+    layer.cornerCurve = kCACornerCurveCircular;
+    [self configureUnequalCornerMaskForGeometry:geometry];
+    layer.mask = _unequalCornerMask;
+  }
+}
+
+- (SmoothNormalizedClipGeometry)normalizedGeometryValue {
+  return {
+      .rect = _normalizedClip,
+      .radius = _normalizedRadius,
+      .radii = _normalizedRadii,
+      .curve = _normalizedCurve,
+  };
+}
+
+- (void)writeLayerGeometry:(SmoothNormalizedClipGeometry)geometry
+         hasExplicitRadii:(BOOL)hasExplicitRadii {
+  const BOOL rectChanged =
+      !CGRectEqualToRect(_normalizedClip, geometry.rect);
+  const BOOL radiiChanged =
+      !SmoothClipCornerRadiiEqual(_normalizedRadii, geometry.radii);
+  const BOOL curveChanged = _normalizedCurve != geometry.curve;
+  const BOOL representationChanged =
+      _normalizedHasExplicitRadii != hasExplicitRadii;
+  _normalizedClip = geometry.rect;
+  _normalizedRadius = geometry.radius;
+  _normalizedRadii = geometry.radii;
+  _normalizedCurve = geometry.curve;
+  _normalizedHasExplicitRadii = hasExplicitRadii;
+  if (!rectChanged && !radiiChanged && !curveChanged &&
+      !representationChanged) {
+    return;
+  }
 
 #if defined(SMOOTH_CLIP_ENABLE_SIGNPOSTS) && SMOOTH_CLIP_ENABLE_SIGNPOSTS
   const bool signpostsEnabled =
@@ -264,12 +479,13 @@ static std::array<double, 7> SmoothClipVelocityChannels(
 #endif
   CALayer *layer = _clipContainer.layer;
   if (rectChanged) {
-    layer.bounds = rect;
-    layer.position = CGPointMake(CGRectGetMidX(rect), CGRectGetMidY(rect));
+    layer.bounds = geometry.rect;
+    layer.position = CGPointMake(
+        CGRectGetMidX(geometry.rect), CGRectGetMidY(geometry.rect));
   }
-  if (radiusChanged) {
-    layer.cornerRadius = radius;
-  }
+  // The uniform common case stays on CALayer's compositor fast path and uses
+  // the platform's exact continuous-corner implementation.
+  [self applyStaticCornerRepresentation:geometry];
 #if defined(SMOOTH_CLIP_ENABLE_SIGNPOSTS) && SMOOTH_CLIP_ENABLE_SIGNPOSTS
   if (signpostsEnabled) {
     os_signpost_interval_end(
@@ -278,11 +494,16 @@ static std::array<double, 7> SmoothClipVelocityChannels(
 #endif
 }
 
-- (void)writeContentTranslation:(CGPoint)translation {
-  if (CGPointEqualToPoint(_normalizedContentTranslation, translation)) return;
+- (void)writeContentTranslation:(CGPoint)translation
+                           scale:(CGFloat)scale {
+  if (CGPointEqualToPoint(_normalizedContentTranslation, translation) &&
+      _normalizedContentScale == scale) {
+    return;
+  }
   _normalizedContentTranslation = translation;
+  _normalizedContentScale = scale;
   _contentContainer.layer.affineTransform =
-      CGAffineTransformMakeTranslation(translation.x, translation.y);
+      SmoothClipContentTransform(scale, translation);
 }
 
 - (void)applyRequestedClip {
@@ -291,37 +512,47 @@ static std::array<double, 7> SmoothClipVelocityChannels(
 
   const BOOL visibilityChanged = _clipHidden != CGRectIsEmpty(geometry.rect);
   if (CGRectEqualToRect(_normalizedClip, geometry.rect) &&
-      _normalizedRadius == geometry.radius &&
+      SmoothClipCornerRadiiEqual(_normalizedRadii, geometry.radii) &&
+      _normalizedCurve == geometry.curve &&
+      _normalizedHasExplicitRadii == _requestedHasExplicitRadii &&
       CGPointEqualToPoint(
           _normalizedContentTranslation, _requestedContentTranslation) &&
+      _normalizedContentScale == _requestedContentScale &&
       !visibilityChanged) {
     return;
   }
-  [self writeLayerRect:geometry.rect radius:geometry.radius];
-  [self writeContentTranslation:_requestedContentTranslation];
+  [self writeLayerGeometry:geometry
+         hasExplicitRadii:_requestedHasExplicitRadii];
+  [self writeContentTranslation:_requestedContentTranslation
+                           scale:_requestedContentScale];
   [self syncVisibilityForRect:geometry.rect];
 }
 
 - (void)recordInteractiveRect:(CGRect)rect
-                       radius:(CGFloat)radius
-           contentTranslation:(CGPoint)contentTranslation {
+                        radii:(SmoothClipCornerRadii)radii
+           contentTranslation:(CGPoint)contentTranslation
+                 contentScale:(CGFloat)contentScale {
   // Identical-value dedupe and same-frame coalescing live in the shared
   // tracker; coalescing keeps a distinct re-record issued sub-frame after
   // the last one (e.g. a fused animateTo `from` seed at gesture release)
   // from exploding the inherited velocity.
   smoothclip::recordVelocitySample(
       _velocitySamples,
-      SmoothClipVelocityChannels(rect, radius, contentTranslation),
+      SmoothClipVelocityChannels(
+          rect, radii, contentTranslation, contentScale),
       CACurrentMediaTime());
 }
 
 - (CGFloat)inheritedVelocityToRect:(CGRect)target
-                            radius:(CGFloat)targetRadius
+                             radii:(SmoothClipCornerRadii)targetRadii
                 contentTranslation:(CGPoint)targetContentTranslation {
   return smoothclip::inheritedVelocity(
       _velocitySamples,
       SmoothClipVelocityChannels(
-          target, targetRadius, targetContentTranslation),
+          target,
+          targetRadii,
+          targetContentTranslation,
+          _requestedContentScale),
       CACurrentMediaTime());
 }
 
@@ -338,29 +569,40 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   // cancel-to-target): they must not enter the 'inherit' history.
   if (recordVelocitySample && _hasLayout) {
     [self recordInteractiveRect:_normalizedClip
-                         radius:_normalizedRadius
-             contentTranslation:_normalizedContentTranslation];
+                          radii:_normalizedRadii
+             contentTranslation:_normalizedContentTranslation
+                   contentScale:_normalizedContentScale];
   }
 }
 
 - (smoothclip::Presentation)smoothClipCurrentPresentation {
-  CGFloat visibleRadius = _normalizedRadius;
+  SmoothClipCornerRadii visibleRadii = _normalizedRadii;
   const CGRect visibleRect = _activeAnimationId != 0
-      ? [self presentationRectWithRadius:&visibleRadius]
+      ? [self presentationRectWithRadii:&visibleRadii]
       : _normalizedClip;
   CALayer *contentLayer = _activeAnimationId != 0
       ? (CALayer *)_contentContainer.layer.presentationLayer
       : _contentContainer.layer;
   if (contentLayer == nil) contentLayer = _contentContainer.layer;
   const CGAffineTransform transform = contentLayer.affineTransform;
-  return {
-      {CGRectGetMinX(visibleRect),
-       CGRectGetMinY(visibleRect),
-       CGRectGetWidth(visibleRect),
-       CGRectGetHeight(visibleRect),
-       visibleRadius},
-      transform.tx,
-      transform.ty};
+  const BOOL uniform = SmoothClipCornerRadiiAreUniform(visibleRadii);
+  smoothclip::Geometry geometry{
+      CGRectGetMinX(visibleRect),
+      CGRectGetMinY(visibleRect),
+      CGRectGetWidth(visibleRect),
+      CGRectGetHeight(visibleRect),
+      uniform ? visibleRadii.topLeft : 0};
+  if (_normalizedHasExplicitRadii || !uniform) {
+    geometry.topLeftRadius = visibleRadii.topLeft;
+    geometry.topRightRadius = visibleRadii.topRight;
+    geometry.bottomRightRadius = visibleRadii.bottomRight;
+    geometry.bottomLeftRadius = visibleRadii.bottomLeft;
+  }
+  geometry.curve = _normalizedCurve == SmoothClipCornerCurveContinuous
+      ? smoothclip::ClipCurve::Continuous
+      : smoothclip::ClipCurve::Circular;
+  const CGFloat contentScale = hypot(transform.a, transform.b);
+  return {geometry, transform.tx, transform.ty, contentScale};
 }
 
 - (BOOL)smoothClipIsJoinable {
@@ -398,35 +640,39 @@ static std::array<double, 7> SmoothClipVelocityChannels(
 - (smoothclip::Presentation)smoothClipFreezePresentation {
   const smoothclip::Presentation visible =
       [self smoothClipCurrentPresentation];
-  const CGRect visibleRect = CGRectMake(
-      visible.clip.x,
-      visible.clip.y,
-      visible.clip.width,
-      visible.clip.height);
-  const CGPoint visibleContentTranslation = CGPointMake(
-      visible.contentTranslateX,
-      visible.contentTranslateY);
   [self stopLayerAnimationWithoutCallback];
-  _requestedClip = visibleRect;
-  _requestedRadius = visible.clip.radius;
-  _requestedContentTranslation = visibleContentTranslation;
-  [self writeLayerRect:visibleRect radius:visible.clip.radius];
-  [self writeContentTranslation:visibleContentTranslation];
-  [self syncVisibilityForRect:visibleRect];
+  [self storeRequestedPresentation:visible];
+  [self applyRequestedClip];
   return visible;
 }
 
-- (CGRect)presentationRectWithRadius:(CGFloat *)radius {
+- (CGRect)presentationRectWithRadii:(SmoothClipCornerRadii *)radii {
   CALayer *layer = (CALayer *)_clipContainer.layer.presentationLayer;
   if (layer == nil) layer = _clipContainer.layer;
   const CGRect bounds = layer.bounds;
   const CGPoint position = layer.position;
-  if (radius != nullptr) *radius = layer.cornerRadius;
-  return CGRectMake(
+  const CGRect rect = CGRectMake(
       position.x - bounds.size.width * layer.anchorPoint.x,
       position.y - bounds.size.height * layer.anchorPoint.y,
       bounds.size.width,
       bounds.size.height);
+  if (radii != nullptr) {
+    if (_clipContainer.layer.mask == _unequalCornerMask) {
+      CAShapeLayer *mask =
+          (CAShapeLayer *)_unequalCornerMask.presentationLayer;
+      if (mask == nil) mask = _unequalCornerMask;
+      *radii = SmoothClipRadiiFromFixedPath(
+          mask.path, rect, _normalizedRadii);
+    } else {
+      *radii = {
+          layer.cornerRadius,
+          layer.cornerRadius,
+          layer.cornerRadius,
+          layer.cornerRadius,
+      };
+    }
+  }
+  return rect;
 }
 
 - (void)stopLayerAnimationWithoutCallback {
@@ -440,6 +686,8 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   _ignoreAnimationCallback = YES;
   [_clipContainer.layer removeAnimationForKey:@"smoothClip.geometry"];
   [_contentContainer.layer removeAnimationForKey:@"smoothClip.content"];
+  [_unequalCornerMask removeAnimationForKey:@"smoothClip.mask"];
+  [self applyStaticCornerRepresentation:[self normalizedGeometryValue]];
   _ignoreAnimationCallback = NO;
   _activeAnimationId = 0;
   _activeAnimationKind = 0;
@@ -486,13 +734,17 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   return animation;
 }
 
-- (void)installAnimationFromRect:(CGRect)fromRect
-                      fromRadius:(CGFloat)fromRadius
-          fromContentTranslation:(CGPoint)fromContentTranslation
-                          toRect:(CGRect)toRect
-                        toRadius:(CGFloat)toRadius
-            toContentTranslation:(CGPoint)toContentTranslation
-                        duration:(CFTimeInterval)duration {
+- (void)installAnimationFromGeometry:
+            (SmoothNormalizedClipGeometry)fromGeometry
+                   fromContentTranslation:(CGPoint)fromContentTranslation
+                         fromContentScale:(CGFloat)fromContentScale
+                               toGeometry:
+            (SmoothNormalizedClipGeometry)toGeometry
+                     hasExplicitToRadii:(BOOL)hasExplicitToRadii
+                     toContentTranslation:(CGPoint)toContentTranslation
+                           toContentScale:(CGFloat)toContentScale
+                                 duration:(CFTimeInterval)duration
+                            sharedBeginTime:(CFTimeInterval)sharedBeginTime {
   const int32_t animationId = _activeAnimationId;
   const NSInteger animationKind = _activeAnimationKind;
   [self stopLayerAnimationWithoutCallback];
@@ -500,50 +752,80 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   _activeAnimationKind = animationKind;
   // Unhide while any animated frame can show content; an empty-to-empty
   // transition must stay hidden for accessibility.
-  if (!CGRectIsEmpty(toRect) || !CGRectIsEmpty(fromRect)) {
+  if (!CGRectIsEmpty(toGeometry.rect) ||
+      !CGRectIsEmpty(fromGeometry.rect)) {
     [self setClipContainerHidden:NO];
   }
 
   CALayer *layer = _clipContainer.layer;
-  const CGRect toBounds = toRect;
+  const CGRect toBounds = toGeometry.rect;
   const CGPoint fromPosition =
-      CGPointMake(CGRectGetMidX(fromRect), CGRectGetMidY(fromRect));
+      CGPointMake(
+          CGRectGetMidX(fromGeometry.rect),
+          CGRectGetMidY(fromGeometry.rect));
   const CGPoint toPosition =
-      CGPointMake(CGRectGetMidX(toRect), CGRectGetMidY(toRect));
-  layer.bounds = toBounds;
-  layer.position = toPosition;
-  layer.cornerRadius = toRadius;
-  _contentContainer.layer.affineTransform = CGAffineTransformMakeTranslation(
-      toContentTranslation.x,
-      toContentTranslation.y);
-  _normalizedClip = toRect;
-  _normalizedRadius = toRadius;
-  _normalizedContentTranslation = toContentTranslation;
+      CGPointMake(
+          CGRectGetMidX(toGeometry.rect),
+          CGRectGetMidY(toGeometry.rect));
+  const BOOL usesMask =
+      !SmoothClipCornerRadiiAreUniform(fromGeometry.radii) ||
+      !SmoothClipCornerRadiiAreUniform(toGeometry.radii) ||
+      fromGeometry.curve != toGeometry.curve;
+  [self writeLayerGeometry:toGeometry
+         hasExplicitRadii:hasExplicitToRadii];
+  [self writeContentTranslation:toContentTranslation scale:toContentScale];
+  if (usesMask) {
+    // Keep one mask representation for the full interval, including an
+    // unequal→uniform transition. Switching layer.mask mid-animation would
+    // create a one-frame seam even though the underlying paths are compatible.
+    [self configureUnequalCornerMaskForGeometry:toGeometry];
+    layer.cornerRadius = 0;
+    layer.mask = _unequalCornerMask;
+  }
+
+  CGPathRef fromMaskPath = usesMask
+      ? SmoothClipCreateRoundedRectPath(
+            fromGeometry.rect, fromGeometry.radii, fromGeometry.curve)
+      : nil;
+  CGPathRef toMaskPath = usesMask
+      ? SmoothClipCreateRoundedRectPath(
+            toGeometry.rect, toGeometry.radii, toGeometry.curve)
+      : nil;
 
   CAAnimationGroup *group = [CAAnimationGroup animation];
   CAAnimationGroup *contentGroup = [CAAnimationGroup animation];
+  CAAnimation *maskAnimation = nil;
   if (_activeAnimationKind == 1) {
     CAMediaTimingFunction *timing = [CAMediaTimingFunction
         functionWithControlPoints:_timingAnimation.controlPoint1X
                                   :_timingAnimation.controlPoint1Y
                                   :_timingAnimation.controlPoint2X
                                   :_timingAnimation.controlPoint2Y];
-    group.animations = @[
+    NSMutableArray<CAAnimation *> *geometryAnimations = [NSMutableArray arrayWithArray:@[
       [self basicAnimationForKeyPath:@"bounds"
-                           fromValue:[NSValue valueWithCGRect:fromRect]
+                           fromValue:[NSValue valueWithCGRect:fromGeometry.rect]
                              toValue:[NSValue valueWithCGRect:toBounds]
                       timingFunction:timing],
       [self basicAnimationForKeyPath:@"position"
                            fromValue:[NSValue valueWithCGPoint:fromPosition]
                              toValue:[NSValue valueWithCGPoint:toPosition]
                       timingFunction:timing],
-      [self basicAnimationForKeyPath:@"cornerRadius"
-                           fromValue:@(fromRadius)
-                             toValue:@(toRadius)
-                      timingFunction:timing],
-    ];
+    ]];
+    if (usesMask) {
+      maskAnimation = [self basicAnimationForKeyPath:@"path"
+                                           fromValue:(__bridge id)fromMaskPath
+                                             toValue:(__bridge id)toMaskPath
+                                      timingFunction:timing];
+    } else {
+      [geometryAnimations addObject:
+          [self basicAnimationForKeyPath:@"cornerRadius"
+                               fromValue:@(fromGeometry.radii.topLeft)
+                                 toValue:@(toGeometry.radii.topLeft)
+                          timingFunction:timing]];
+    }
+    group.animations = geometryAnimations;
     group.duration = duration;
-    contentGroup.animations = @[
+    NSMutableArray<CAAnimation *> *contentAnimations = [NSMutableArray arrayWithArray:@[
       [self basicAnimationForKeyPath:@"transform.translation.x"
                            fromValue:@(fromContentTranslation.x)
                              toValue:@(toContentTranslation.x)
@@ -552,7 +834,15 @@ static std::array<double, 7> SmoothClipVelocityChannels(
                            fromValue:@(fromContentTranslation.y)
                              toValue:@(toContentTranslation.y)
                       timingFunction:timing],
-    ];
+    ]];
+    if (fromContentScale != 1 || toContentScale != 1) {
+      [contentAnimations addObject:
+          [self basicAnimationForKeyPath:@"transform.scale"
+                               fromValue:@(fromContentScale)
+                                 toValue:@(toContentScale)
+                          timingFunction:timing]];
+    }
+    contentGroup.animations = contentAnimations;
     contentGroup.duration = duration;
   } else {
     // `_springAnimation.initialVelocity` is the interactive motion projected
@@ -565,24 +855,24 @@ static std::array<double, 7> SmoothClipVelocityChannels(
     const double velocity = _springAnimation.initialVelocity;
     const CFTimeInterval springDuration =
         [self springSettlingDurationWithVelocity:velocity];
-    group.animations = @[
+    NSMutableArray<CAAnimation *> *geometryAnimations = [NSMutableArray arrayWithArray:@[
       [self springAnimationForKeyPath:@"bounds.origin.x"
-                            fromValue:@(fromRect.origin.x)
+                            fromValue:@(fromGeometry.rect.origin.x)
                               toValue:@(toBounds.origin.x)
                              velocity:velocity
                              duration:springDuration],
       [self springAnimationForKeyPath:@"bounds.origin.y"
-                            fromValue:@(fromRect.origin.y)
+                            fromValue:@(fromGeometry.rect.origin.y)
                               toValue:@(toBounds.origin.y)
                              velocity:velocity
                              duration:springDuration],
       [self springAnimationForKeyPath:@"bounds.size.width"
-                            fromValue:@(fromRect.size.width)
+                            fromValue:@(fromGeometry.rect.size.width)
                               toValue:@(toBounds.size.width)
                              velocity:velocity
                              duration:springDuration],
       [self springAnimationForKeyPath:@"bounds.size.height"
-                            fromValue:@(fromRect.size.height)
+                            fromValue:@(fromGeometry.rect.size.height)
                               toValue:@(toBounds.size.height)
                              velocity:velocity
                              duration:springDuration],
@@ -596,17 +886,27 @@ static std::array<double, 7> SmoothClipVelocityChannels(
                               toValue:@(toPosition.y)
                              velocity:velocity
                              duration:springDuration],
-      [self springAnimationForKeyPath:@"cornerRadius"
-                            fromValue:@(fromRadius)
-                              toValue:@(toRadius)
-                             velocity:velocity
-                             duration:springDuration],
-    ];
+    ]];
+    if (usesMask) {
+      maskAnimation = [self springAnimationForKeyPath:@"path"
+                                            fromValue:(__bridge id)fromMaskPath
+                                              toValue:(__bridge id)toMaskPath
+                                             velocity:velocity
+                                             duration:springDuration];
+    } else {
+      [geometryAnimations addObject:
+          [self springAnimationForKeyPath:@"cornerRadius"
+                                fromValue:@(fromGeometry.radii.topLeft)
+                                  toValue:@(toGeometry.radii.topLeft)
+                                 velocity:velocity
+                                 duration:springDuration]];
+    }
+    group.animations = geometryAnimations;
     // A rebuilt spring (layout change, foreground resume) must run its own
     // settling time; clamping to the interrupted run's remaining wall-clock
     // time would truncate the oscillation and snap to the target.
     group.duration = springDuration;
-    contentGroup.animations = @[
+    NSMutableArray<CAAnimation *> *contentAnimations = [NSMutableArray arrayWithArray:@[
       [self springAnimationForKeyPath:@"transform.translation.x"
                             fromValue:@(fromContentTranslation.x)
                               toValue:@(toContentTranslation.x)
@@ -617,12 +917,42 @@ static std::array<double, 7> SmoothClipVelocityChannels(
                               toValue:@(toContentTranslation.y)
                              velocity:velocity
                              duration:springDuration],
-    ];
+    ]];
+    if (fromContentScale != 1 || toContentScale != 1) {
+      [contentAnimations addObject:
+          [self springAnimationForKeyPath:@"transform.scale"
+                                fromValue:@(fromContentScale)
+                                  toValue:@(toContentScale)
+                                 velocity:velocity
+                                 duration:springDuration]];
+    }
+    contentGroup.animations = contentAnimations;
     contentGroup.duration = springDuration;
   }
 
+  if (maskAnimation != nil) {
+    maskAnimation.duration = group.duration;
+  }
+
+  if (sharedBeginTime > 0) {
+    // Each layer receives the same absolute media timestamp translated into
+    // its local clock. Group participants therefore advance from one epoch
+    // even though their animations are installed sequentially.
+    group.beginTime = [layer convertTime:sharedBeginTime fromLayer:nil];
+    contentGroup.beginTime = [_contentContainer.layer
+        convertTime:sharedBeginTime
+        fromLayer:nil];
+    if (maskAnimation != nil) {
+      maskAnimation.beginTime = [_unequalCornerMask
+          convertTime:sharedBeginTime
+          fromLayer:nil];
+    }
+  }
+
   _animationDuration = group.duration;
-  _animationStartedAt = CACurrentMediaTime();
+  _animationStartedAt = sharedBeginTime > 0
+      ? sharedBeginTime
+      : CACurrentMediaTime();
   _animationDelegate = [SmoothClipAnimationDelegate new];
   _animationDelegate.view = self;
   _animationDelegate.driverId = _driverId;
@@ -631,10 +961,17 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   [layer addAnimation:group forKey:@"smoothClip.geometry"];
   [_contentContainer.layer addAnimation:contentGroup
                                  forKey:@"smoothClip.content"];
+  if (maskAnimation != nil) {
+    [_unequalCornerMask addAnimation:maskAnimation forKey:@"smoothClip.mask"];
+  }
+  if (fromMaskPath != nil) CGPathRelease(fromMaskPath);
+  if (toMaskPath != nil) CGPathRelease(toMaskPath);
   _animationInstallGeneration += 1;
 }
 
-- (BOOL)startAnimationToRequestedGeometryWithDuration:(CFTimeInterval)duration {
+- (BOOL)startAnimationToRequestedGeometryWithDuration:(CFTimeInterval)duration
+                                       sharedBeginTime:
+                                           (CFTimeInterval)sharedBeginTime {
   if (![self smoothClipCanDisplay]) {
     _pendingAnimationInstall = YES;
     return NO;
@@ -642,36 +979,69 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   SmoothNormalizedClipGeometry target;
   if (![self normalizedRequestedGeometry:&target]) return NO;
   const smoothclip::Presentation current = [self smoothClipCurrentPresentation];
-  [self installAnimationFromRect:CGRectMake(
-                                     current.clip.x,
-                                     current.clip.y,
-                                     current.clip.width,
-                                     current.clip.height)
-                      fromRadius:current.clip.radius
-          fromContentTranslation:CGPointMake(
-                                     current.contentTranslateX,
-                                     current.contentTranslateY)
-                          toRect:target.rect
-                        toRadius:target.radius
-            toContentTranslation:_requestedContentTranslation
-                        duration:duration];
+  const SmoothClipCornerRadii currentRadii =
+      SmoothClipPresentationRadii(current.clip);
+  const SmoothNormalizedClipGeometry fromGeometry = {
+      .rect = CGRectMake(
+          current.clip.x,
+          current.clip.y,
+          current.clip.width,
+          current.clip.height),
+      .radius = SmoothClipCornerRadiiAreUniform(currentRadii)
+          ? currentRadii.topLeft
+          : 0,
+      .radii = currentRadii,
+      .curve = SmoothClipPresentationCurve(current.clip),
+  };
+  [self installAnimationFromGeometry:fromGeometry
+              fromContentTranslation:CGPointMake(
+                                         current.contentTranslateX,
+                                         current.contentTranslateY)
+                    fromContentScale:current.contentScale
+                          toGeometry:target
+                hasExplicitToRadii:_requestedHasExplicitRadii
+                toContentTranslation:_requestedContentTranslation
+                      toContentScale:_requestedContentScale
+                            duration:duration
+                     sharedBeginTime:sharedBeginTime];
   return YES;
 }
 
 - (BOOL)smoothClipAnimateTiming:(smoothclip::Presentation)presentation
                        animation:(smoothclip::TimingAnimation)animation
                      animationId:(int32_t)animationId {
+  return [self smoothClipAnimateTiming:presentation
+                              animation:animation
+                            animationId:animationId
+                        sharedBeginTime:0];
+}
+
+- (BOOL)smoothClipAnimateTiming:(smoothclip::Presentation)presentation
+                       animation:(smoothclip::TimingAnimation)animation
+                     animationId:(int32_t)animationId
+                 sharedBeginTime:(CFTimeInterval)sharedBeginTime {
   [self storeRequestedPresentation:presentation];
   _timingAnimation = animation;
   _activeAnimationKind = 1;
   _activeAnimationId = animationId;
   return [self startAnimationToRequestedGeometryWithDuration:
-                   MAX(0, animation.durationMs) / 1000.0];
+                   MAX(0, animation.durationMs) / 1000.0
+                                         sharedBeginTime:sharedBeginTime];
 }
 
 - (BOOL)smoothClipAnimateSpring:(smoothclip::Presentation)presentation
                        animation:(smoothclip::SpringAnimation)animation
                      animationId:(int32_t)animationId {
+  return [self smoothClipAnimateSpring:presentation
+                              animation:animation
+                            animationId:animationId
+                        sharedBeginTime:0];
+}
+
+- (BOOL)smoothClipAnimateSpring:(smoothclip::Presentation)presentation
+                       animation:(smoothclip::SpringAnimation)animation
+                     animationId:(int32_t)animationId
+                 sharedBeginTime:(CFTimeInterval)sharedBeginTime {
   [self storeRequestedPresentation:presentation];
   _springAnimation = animation;
   if (animation.inheritVelocity) {
@@ -679,7 +1049,7 @@ static std::array<double, 7> SmoothClipVelocityChannels(
     if ([self normalizedRequestedGeometry:&target]) {
       _springAnimation.initialVelocity =
           [self inheritedVelocityToRect:target.rect
-                                  radius:target.radius
+                                   radii:target.radii
                       contentTranslation:_requestedContentTranslation];
     } else {
       _springAnimation.initialVelocity = 0;
@@ -687,7 +1057,8 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   }
   _activeAnimationKind = 2;
   _activeAnimationId = animationId;
-  return [self startAnimationToRequestedGeometryWithDuration:0];
+  return [self startAnimationToRequestedGeometryWithDuration:0
+                                              sharedBeginTime:sharedBeginTime];
 }
 
 - (CAKeyframeAnimation *)keyframeAnimationForKeyPath:(NSString *)keyPath
@@ -705,6 +1076,18 @@ static std::array<double, 7> SmoothClipVelocityChannels(
                           keyframes:(const std::vector<smoothclip::Keyframe> &)keyframes
                           durationMs:(double)durationMs
                          animationId:(int32_t)animationId {
+  return [self smoothClipAnimateKeyframes:presentation
+                                keyframes:keyframes
+                               durationMs:durationMs
+                              animationId:animationId
+                          sharedBeginTime:0];
+}
+
+- (BOOL)smoothClipAnimateKeyframes:(smoothclip::Presentation)presentation
+                          keyframes:(const std::vector<smoothclip::Keyframe> &)keyframes
+                          durationMs:(double)durationMs
+                         animationId:(int32_t)animationId
+                     sharedBeginTime:(CFTimeInterval)sharedBeginTime {
   if (keyframes.size() < 2) return NO;
   [self storeRequestedPresentation:presentation];
   _activeAnimationKind = 3;
@@ -725,20 +1108,47 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   NSMutableArray *positionValues =
       [NSMutableArray arrayWithCapacity:frameCount];
   NSMutableArray *radiusValues = [NSMutableArray arrayWithCapacity:frameCount];
+  NSMutableArray *maskPathValues =
+      [NSMutableArray arrayWithCapacity:frameCount];
   NSMutableArray *translateXValues =
       [NSMutableArray arrayWithCapacity:frameCount];
   NSMutableArray *translateYValues =
       [NSMutableArray arrayWithCapacity:frameCount];
+  NSMutableArray *scaleValues =
+      [NSMutableArray arrayWithCapacity:frameCount];
+  BOOL usesMask = NO;
+  BOOL animatesScale = NO;
+  SmoothClipCornerCurve firstCurve = SmoothClipCornerCurveCircular;
+  BOOL hasFirstCurve = NO;
+  std::vector<SmoothNormalizedClipGeometry> normalizedFrames;
+  normalizedFrames.reserve(frameCount);
   for (const smoothclip::Keyframe &frame : keyframes) {
+    const SmoothClipCornerRadii frameRadii =
+        SmoothClipPresentationRadii(frame.presentation.clip);
+    const SmoothClipCornerCurve frameCurve =
+        SmoothClipPresentationCurve(frame.presentation.clip);
     SmoothNormalizedClipGeometry normalized;
-    if (!SmoothClipNormalizeGeometry(
+    if (!SmoothClipNormalizeGeometryV2(
             frame.presentation.clip.x,
             frame.presentation.clip.y,
             frame.presentation.clip.width,
             frame.presentation.clip.height,
-            frame.presentation.clip.radius,
+            frameRadii.topLeft,
+            frameRadii.topRight,
+            frameRadii.bottomRight,
+            frameRadii.bottomLeft,
+            frameCurve,
             hostSize,
             &normalized)) return NO;
+    normalizedFrames.push_back(normalized);
+    if (!SmoothClipCornerRadiiAreUniform(normalized.radii)) usesMask = YES;
+    if (!hasFirstCurve) {
+      firstCurve = normalized.curve;
+      hasFirstCurve = YES;
+    } else if (normalized.curve != firstCurve) {
+      usesMask = YES;
+    }
+    if (frame.presentation.contentScale != 1) animatesScale = YES;
     [times addObject:@(frame.offset)];
     [boundsValues addObject:[NSValue valueWithCGRect:normalized.rect]];
     [positionValues addObject:[NSValue valueWithCGPoint:CGPointMake(
@@ -746,40 +1156,91 @@ static std::array<double, 7> SmoothClipVelocityChannels(
     [radiusValues addObject:@(normalized.radius)];
     [translateXValues addObject:@(frame.presentation.contentTranslateX)];
     [translateYValues addObject:@(frame.presentation.contentTranslateY)];
+    [scaleValues addObject:@(frame.presentation.contentScale)];
+  }
+
+  if (usesMask) {
+    for (const SmoothNormalizedClipGeometry &normalized : normalizedFrames) {
+      CGPathRef path = SmoothClipCreateRoundedRectPath(
+          normalized.rect, normalized.radii, normalized.curve);
+      [maskPathValues addObject:(__bridge id)path];
+      CGPathRelease(path);
+    }
   }
 
   SmoothNormalizedClipGeometry target;
   if (![self normalizedRequestedGeometry:&target]) return NO;
-  [self writeLayerRect:target.rect radius:target.radius];
-  [self writeContentTranslation:_requestedContentTranslation];
+  [self writeLayerGeometry:target
+         hasExplicitRadii:_requestedHasExplicitRadii];
+  [self writeContentTranslation:_requestedContentTranslation
+                           scale:_requestedContentScale];
+  if (usesMask) {
+    [self configureUnequalCornerMaskForGeometry:target];
+    _clipContainer.layer.cornerRadius = 0;
+    _clipContainer.layer.mask = _unequalCornerMask;
+  }
   [self setClipContainerHidden:NO];
 
   CAAnimationGroup *group = [CAAnimationGroup animation];
-  group.animations = @[
+  NSMutableArray<CAAnimation *> *geometryAnimations = [NSMutableArray arrayWithArray:@[
     [self keyframeAnimationForKeyPath:@"bounds"
                                values:boundsValues
                              keyTimes:times],
     [self keyframeAnimationForKeyPath:@"position"
                                values:positionValues
                              keyTimes:times],
-    [self keyframeAnimationForKeyPath:@"cornerRadius"
-                               values:radiusValues
-                             keyTimes:times],
-  ];
+  ]];
+  if (!usesMask) {
+    [geometryAnimations addObject:
+        [self keyframeAnimationForKeyPath:@"cornerRadius"
+                                   values:radiusValues
+                                 keyTimes:times]];
+  }
+  group.animations = geometryAnimations;
   group.duration = MAX(0, durationMs) / 1000.0;
   CAAnimationGroup *contentGroup = [CAAnimationGroup animation];
-  contentGroup.animations = @[
+  NSMutableArray<CAAnimation *> *contentAnimations = [NSMutableArray arrayWithArray:@[
     [self keyframeAnimationForKeyPath:@"transform.translation.x"
                                values:translateXValues
                              keyTimes:times],
     [self keyframeAnimationForKeyPath:@"transform.translation.y"
                                values:translateYValues
                              keyTimes:times],
-  ];
+  ]];
+  if (animatesScale) {
+    [contentAnimations addObject:
+        [self keyframeAnimationForKeyPath:@"transform.scale"
+                                   values:scaleValues
+                                 keyTimes:times]];
+  }
+  contentGroup.animations = contentAnimations;
   contentGroup.duration = group.duration;
 
+  CAKeyframeAnimation *maskAnimation = usesMask
+      ? [self keyframeAnimationForKeyPath:@"path"
+                                  values:maskPathValues
+                                keyTimes:times]
+      : nil;
+  maskAnimation.duration = group.duration;
+
+  if (sharedBeginTime > 0) {
+    group.beginTime = [_clipContainer.layer
+        convertTime:sharedBeginTime
+        fromLayer:nil];
+    contentGroup.beginTime = [_contentContainer.layer
+        convertTime:sharedBeginTime
+        fromLayer:nil];
+    if (maskAnimation != nil) {
+      maskAnimation.beginTime = [_unequalCornerMask
+          convertTime:sharedBeginTime
+          fromLayer:nil];
+    }
+  }
+
   _animationDuration = group.duration;
-  _animationStartedAt = CACurrentMediaTime();
+  _animationStartedAt = sharedBeginTime > 0
+      ? sharedBeginTime
+      : CACurrentMediaTime();
   _animationDelegate = [SmoothClipAnimationDelegate new];
   _animationDelegate.view = self;
   _animationDelegate.driverId = _driverId;
@@ -788,6 +1249,9 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   [_clipContainer.layer addAnimation:group forKey:@"smoothClip.geometry"];
   [_contentContainer.layer addAnimation:contentGroup
                                  forKey:@"smoothClip.content"];
+  if (maskAnimation != nil) {
+    [_unequalCornerMask addAnimation:maskAnimation forKey:@"smoothClip.mask"];
+  }
   _animationInstallGeneration += 1;
   return YES;
 }
@@ -796,24 +1260,12 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   if (_activeAnimationId == 0) return;
   const smoothclip::Presentation visible =
       [self smoothClipCurrentPresentation];
-  const CGRect visibleRect = CGRectMake(
-      visible.clip.x,
-      visible.clip.y,
-      visible.clip.width,
-      visible.clip.height);
-  const CGPoint visibleContentTranslation = CGPointMake(
-      visible.contentTranslateX,
-      visible.contentTranslateY);
   [self stopLayerAnimationWithoutCallback];
   if (useTarget) {
     [self applyRequestedClip];
   } else {
-    _requestedClip = visibleRect;
-    _requestedRadius = visible.clip.radius;
-    _requestedContentTranslation = visibleContentTranslation;
-    [self writeLayerRect:visibleRect radius:visible.clip.radius];
-    [self writeContentTranslation:visibleContentTranslation];
-    [self syncVisibilityForRect:visibleRect];
+    [self storeRequestedPresentation:visible];
+    [self applyRequestedClip];
   }
 }
 
@@ -824,6 +1276,8 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   _activeAnimationId = 0;
   _activeAnimationKind = 0;
   _animationDelegate = nil;
+  [_unequalCornerMask removeAnimationForKey:@"smoothClip.mask"];
+  [self applyStaticCornerRepresentation:[self normalizedGeometryValue]];
   [self syncVisibilityForRect:_normalizedClip];
   smoothclip::viewAnimationDidStop(
       driverId, animationId, self, finished);
@@ -839,14 +1293,42 @@ static std::array<double, 7> SmoothClipVelocityChannels(
       isfinite(newProps.driverId) && newProps.driverId > 0
       ? static_cast<uint64_t>(newProps.driverId)
       : 0;
-  const smoothclip::Presentation initial{
-      {newProps.initialClipX,
-       newProps.initialClipY,
-       newProps.initialClipWidth,
-       newProps.initialClipHeight,
-       newProps.initialClipRadius},
-      newProps.initialContentTranslateX,
-      newProps.initialContentTranslateY};
+  smoothclip::Presentation initial{};
+  if (newProps.presentationVersion == 2) {
+    if (!SmoothClipBuildPresentationV2(
+            newProps.initialClipX,
+            newProps.initialClipY,
+            newProps.initialClipWidth,
+            newProps.initialClipHeight,
+            newProps.initialClipTopLeftRadius,
+            newProps.initialClipTopRightRadius,
+            newProps.initialClipBottomRightRadius,
+            newProps.initialClipBottomLeftRadius,
+            newProps.initialClipCurve,
+            newProps.initialContentTranslateX,
+            newProps.initialContentTranslateY,
+            newProps.initialContentScale,
+            &initial)) {
+      // The initial V2 presentation is one atomic value. Do not unregister an
+      // old driver or apply a subset of valid channels when any field rejects.
+      return;
+    }
+  } else if (newProps.presentationVersion == 0 ||
+             newProps.presentationVersion == 1) {
+    // Version zero is what old JS produces when the versioned prop does not
+    // exist. Preserve that old-JS/new-native path byte-for-byte as V1.
+    initial = {
+        {newProps.initialClipX,
+         newProps.initialClipY,
+         newProps.initialClipWidth,
+         newProps.initialClipHeight,
+         newProps.initialClipRadius},
+        newProps.initialContentTranslateX,
+        newProps.initialContentTranslateY};
+  } else {
+    // A future protocol must not be silently interpreted as V1.
+    return;
+  }
 
   if (nextDriverId != _driverId) {
     if (_driverId != 0) {
@@ -872,22 +1354,25 @@ static std::array<double, 7> SmoothClipVelocityChannels(
 
 - (void)updateLayoutMetrics:(const LayoutMetrics &)layoutMetrics
              oldLayoutMetrics:(const LayoutMetrics &)oldLayoutMetrics {
-  CGFloat visibleRadius = 0;
   const BOOL wasAnimating = _activeAnimationId != 0;
   const BOOL wasPending = _pendingAnimationInstall;
   const uint32_t installGenerationAtEntry = _animationInstallGeneration;
   const smoothclip::Presentation visible = wasAnimating && !wasPending
       ? [self smoothClipCurrentPresentation]
-      : smoothclip::Presentation{{0, 0, 0, 0, 0}, 0, 0};
+      : smoothclip::Presentation{{0, 0, 0, 0, 0}, 0, 0, 1};
   const CGRect visibleRect = CGRectMake(
       visible.clip.x,
       visible.clip.y,
       visible.clip.width,
       visible.clip.height);
-  visibleRadius = visible.clip.radius;
+  const SmoothClipCornerRadii visibleRadii =
+      SmoothClipPresentationRadii(visible.clip);
+  const SmoothClipCornerCurve visibleCurve =
+      SmoothClipPresentationCurve(visible.clip);
   const CGPoint visibleContentTranslation = CGPointMake(
       visible.contentTranslateX,
       visible.contentTranslateY);
+  const CGFloat visibleContentScale = visible.contentScale;
   CFTimeInterval remaining = wasAnimating
       ? MAX(0, _animationDuration -
                    (CACurrentMediaTime() - _animationStartedAt))
@@ -943,23 +1428,29 @@ static std::array<double, 7> SmoothClipVelocityChannels(
       _timingAnimation = {remaining * 1000.0, 0, 0, 1, 1, 2};
     }
     SmoothNormalizedClipGeometry current;
-    SmoothClipNormalizeGeometry(
+    SmoothClipNormalizeGeometryV2(
         CGRectGetMinX(visibleRect),
         CGRectGetMinY(visibleRect),
         CGRectGetWidth(visibleRect),
         CGRectGetHeight(visibleRect),
-        visibleRadius,
+        visibleRadii.topLeft,
+        visibleRadii.topRight,
+        visibleRadii.bottomRight,
+        visibleRadii.bottomLeft,
+        visibleCurve,
         self.bounds.size,
         &current);
     SmoothNormalizedClipGeometry target;
     if ([self normalizedRequestedGeometry:&target]) {
-      [self installAnimationFromRect:current.rect
-                          fromRadius:current.radius
-              fromContentTranslation:visibleContentTranslation
-                              toRect:target.rect
-                            toRadius:target.radius
-                toContentTranslation:_requestedContentTranslation
-                            duration:remaining];
+      [self installAnimationFromGeometry:current
+                  fromContentTranslation:visibleContentTranslation
+                        fromContentScale:visibleContentScale
+                              toGeometry:target
+                    hasExplicitToRadii:_requestedHasExplicitRadii
+                    toContentTranslation:_requestedContentTranslation
+                              toContentScale:_requestedContentScale
+                                duration:remaining
+                         sharedBeginTime:0];
     }
   } else {
     if (_driverId != 0 && smoothclip::hasActiveAnimation(_driverId)) {
@@ -974,31 +1465,27 @@ static std::array<double, 7> SmoothClipVelocityChannels(
 
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
   if (![super pointInside:point withEvent:event]) return NO;
-  CGFloat radius = 0;
+  SmoothClipCornerRadii radii = _normalizedRadii;
   const CGRect clip = _activeAnimationId != 0
-      ? [self presentationRectWithRadius:&radius]
+      ? [self presentationRectWithRadii:&radii]
       : _normalizedClip;
-  if (_activeAnimationId == 0) radius = _normalizedRadius;
   if (CGRectIsEmpty(clip) || !CGRectContainsPoint(clip, point)) return NO;
-  if (radius <= 0) return YES;
-
-  const CGFloat innerLeft = CGRectGetMinX(clip) + radius;
-  const CGFloat innerRight = CGRectGetMaxX(clip) - radius;
-  const CGFloat innerTop = CGRectGetMinY(clip) + radius;
-  const CGFloat innerBottom = CGRectGetMaxY(clip) - radius;
-  if ((point.x >= innerLeft && point.x <= innerRight) ||
-      (point.y >= innerTop && point.y <= innerBottom)) {
-    return YES;
+  CGPathRef path = nil;
+  if (_clipContainer.layer.mask == _unequalCornerMask) {
+    CAShapeLayer *mask = _activeAnimationId != 0
+        ? (CAShapeLayer *)_unequalCornerMask.presentationLayer
+        : _unequalCornerMask;
+    if (mask == nil) mask = _unequalCornerMask;
+    path = mask.path;
+    return path != nil && CGPathContainsPoint(path, NULL, point, NO);
   }
-
-  const CGFloat centerX = point.x < innerLeft ? innerLeft : innerRight;
-  const CGFloat centerY = point.y < innerTop ? innerTop : innerBottom;
-  const CGFloat dx = point.x - centerX;
-  const CGFloat dy = point.y - centerY;
-  return dx * dx + dy * dy <= radius * radius;
+  path = SmoothClipCreateRoundedRectPath(clip, radii, _normalizedCurve);
+  const BOOL contains = CGPathContainsPoint(path, NULL, point, NO);
+  CGPathRelease(path);
+  return contains;
 }
 
-#pragma mark - Legacy native command (Android parity and benchmark baseline)
+#pragma mark - Native commands
 
 - (void)handleCommand:(const NSString *)commandName args:(const NSArray *)args {
   RCTSmoothClipViewHandleCommand(self, commandName, args);
@@ -1028,6 +1515,39 @@ static std::array<double, 7> SmoothClipVelocityChannels(
        contentTranslateY}];
 }
 
+- (void)setClipPresentationV2:(double)x
+                            y:(double)y
+                        width:(double)width
+                       height:(double)height
+                topLeftRadius:(double)topLeftRadius
+               topRightRadius:(double)topRightRadius
+            bottomRightRadius:(double)bottomRightRadius
+             bottomLeftRadius:(double)bottomLeftRadius
+                    curveCode:(NSInteger)curveCode
+            contentTranslateX:(double)contentTranslateX
+            contentTranslateY:(double)contentTranslateY
+                 contentScale:(double)contentScale {
+  smoothclip::Presentation presentation{};
+  if (!SmoothClipBuildPresentationV2(
+          x,
+          y,
+          width,
+          height,
+          topLeftRadius,
+          topRightRadius,
+          bottomRightRadius,
+          bottomLeftRadius,
+          curveCode,
+          contentTranslateX,
+          contentTranslateY,
+          contentScale,
+          &presentation)) {
+    return;
+  }
+  _commandIsAuthoritative = YES;
+  [self smoothClipApplyPresentation:presentation];
+}
+
 - (void)prepareForRecycle {
   if (_driverId != 0) {
     smoothclip::unregisterView(_driverId, self);
@@ -1041,8 +1561,16 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   _normalizedClip = CGRectZero;
   _requestedRadius = 0;
   _normalizedRadius = 0;
+  _requestedRadii = {0, 0, 0, 0};
+  _normalizedRadii = {0, 0, 0, 0};
+  _requestedCurve = SmoothClipCornerCurveCircular;
+  _normalizedCurve = SmoothClipCornerCurveCircular;
+  _requestedHasExplicitRadii = NO;
+  _normalizedHasExplicitRadii = NO;
   _requestedContentTranslation = CGPointZero;
   _normalizedContentTranslation = CGPointZero;
+  _requestedContentScale = 1;
+  _normalizedContentScale = 1;
   _hasLayout = NO;
   _commandIsAuthoritative = NO;
 
@@ -1050,6 +1578,9 @@ static std::array<double, 7> SmoothClipVelocityChannels(
   layer.bounds = CGRectZero;
   layer.position = CGPointZero;
   layer.cornerRadius = 0;
+  layer.cornerCurve = kCACornerCurveCircular;
+  layer.mask = nil;
+  _unequalCornerMask.path = nil;
   _contentContainer.layer.affineTransform = CGAffineTransformIdentity;
   [self setClipContainerHidden:YES];
 }

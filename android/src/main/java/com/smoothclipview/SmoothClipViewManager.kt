@@ -21,8 +21,15 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
         var width: Double = 0.0,
         var height: Double = 0.0,
         var radius: Double = 0.0,
+        var presentationVersion: Int = 1,
+        var topLeftRadius: Double = 0.0,
+        var topRightRadius: Double = 0.0,
+        var bottomRightRadius: Double = 0.0,
+        var bottomLeftRadius: Double = 0.0,
+        var curveCode: Int = CLIP_CURVE_CIRCULAR,
         var contentTranslateX: Double = 0.0,
         var contentTranslateY: Double = 0.0,
+        var contentScale: Double = 1.0,
         var driverId: Double = 0.0,
         // Whether any prop setter ran in the current update transaction.
         var dirty: Boolean = false,
@@ -95,6 +102,36 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
         pending(view).radius = value
     }
 
+    @ReactProp(name = "presentationVersion")
+    override fun setPresentationVersion(view: SmoothClipView, value: Int) {
+        pending(view).presentationVersion = value
+    }
+
+    @ReactProp(name = "initialClipTopLeftRadius")
+    override fun setInitialClipTopLeftRadius(view: SmoothClipView, value: Double) {
+        pending(view).topLeftRadius = value
+    }
+
+    @ReactProp(name = "initialClipTopRightRadius")
+    override fun setInitialClipTopRightRadius(view: SmoothClipView, value: Double) {
+        pending(view).topRightRadius = value
+    }
+
+    @ReactProp(name = "initialClipBottomRightRadius")
+    override fun setInitialClipBottomRightRadius(view: SmoothClipView, value: Double) {
+        pending(view).bottomRightRadius = value
+    }
+
+    @ReactProp(name = "initialClipBottomLeftRadius")
+    override fun setInitialClipBottomLeftRadius(view: SmoothClipView, value: Double) {
+        pending(view).bottomLeftRadius = value
+    }
+
+    @ReactProp(name = "initialClipCurve")
+    override fun setInitialClipCurve(view: SmoothClipView, value: Int) {
+        pending(view).curveCode = value
+    }
+
     @ReactProp(name = "initialContentTranslateX")
     override fun setInitialContentTranslateX(view: SmoothClipView, value: Double) {
         pending(view).contentTranslateX = value
@@ -103,6 +140,11 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
     @ReactProp(name = "initialContentTranslateY")
     override fun setInitialContentTranslateY(view: SmoothClipView, value: Double) {
         pending(view).contentTranslateY = value
+    }
+
+    @ReactProp(name = "initialContentScale")
+    override fun setInitialContentScale(view: SmoothClipView, value: Double) {
+        pending(view).contentScale = value
     }
 
     override fun setClipGeometry(
@@ -139,6 +181,38 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
         )
     }
 
+    override fun setClipPresentationV2(
+        view: SmoothClipView,
+        x: Double,
+        y: Double,
+        width: Double,
+        height: Double,
+        topLeftRadius: Double,
+        topRightRadius: Double,
+        bottomRightRadius: Double,
+        bottomLeftRadius: Double,
+        curveCode: Int,
+        contentTranslateX: Double,
+        contentTranslateY: Double,
+        contentScale: Double,
+    ) {
+        view.commandIsAuthoritative = true
+        view.setClipPresentationV2Dip(
+            x,
+            y,
+            width,
+            height,
+            topLeftRadius,
+            topRightRadius,
+            bottomRightRadius,
+            bottomLeftRadius,
+            curveCode,
+            contentTranslateX,
+            contentTranslateY,
+            contentScale,
+        )
+    }
+
     override fun onAfterUpdateTransaction(view: SmoothClipView) {
         super.onAfterUpdateTransaction(view)
         val initial = pendingInitialClips[view]
@@ -154,33 +228,73 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
         }
         view.boundDriverId = initial.driverId
         if (initial.driverId != 0.0) {
-            SmoothClipBindings.nativeRegisterView(
-                initial.driverId,
-                view,
-                initial.x,
-                initial.y,
-                initial.width,
-                initial.height,
-                initial.radius,
-                initial.contentTranslateX,
-                initial.contentTranslateY,
-                view.densityScale(),
-                view.width.toDouble(),
-                view.height.toDouble(),
-                view.isHostLifecycleVisible(),
-            )
+            if (initial.presentationVersion >= 2) {
+                SmoothClipBindings.nativeRegisterViewV2(
+                    initial.driverId,
+                    view,
+                    initial.x,
+                    initial.y,
+                    initial.width,
+                    initial.height,
+                    initial.topLeftRadius,
+                    initial.topRightRadius,
+                    initial.bottomRightRadius,
+                    initial.bottomLeftRadius,
+                    initial.curveCode,
+                    initial.contentTranslateX,
+                    initial.contentTranslateY,
+                    initial.contentScale,
+                    view.densityScale(),
+                    view.width.toDouble(),
+                    view.height.toDouble(),
+                    view.isHostLifecycleVisible(),
+                )
+            } else {
+                SmoothClipBindings.nativeRegisterView(
+                    initial.driverId,
+                    view,
+                    initial.x,
+                    initial.y,
+                    initial.width,
+                    initial.height,
+                    initial.radius,
+                    initial.contentTranslateX,
+                    initial.contentTranslateY,
+                    view.densityScale(),
+                    view.width.toDouble(),
+                    view.height.toDouble(),
+                    view.isHostLifecycleVisible(),
+                )
+            }
         } else if (!view.commandIsAuthoritative) {
             // Command-driven mode (driverId 0): the initial props are the only
             // source of the first clip, so apply them directly.
-            view.setClipPresentationDip(
-                initial.x,
-                initial.y,
-                initial.width,
-                initial.height,
-                initial.radius,
-                initial.contentTranslateX,
-                initial.contentTranslateY,
-            )
+            if (initial.presentationVersion >= 2) {
+                view.setClipPresentationV2Dip(
+                    initial.x,
+                    initial.y,
+                    initial.width,
+                    initial.height,
+                    initial.topLeftRadius,
+                    initial.topRightRadius,
+                    initial.bottomRightRadius,
+                    initial.bottomLeftRadius,
+                    initial.curveCode,
+                    initial.contentTranslateX,
+                    initial.contentTranslateY,
+                    initial.contentScale,
+                )
+            } else {
+                view.setClipPresentationDip(
+                    initial.x,
+                    initial.y,
+                    initial.width,
+                    initial.height,
+                    initial.radius,
+                    initial.contentTranslateX,
+                    initial.contentTranslateY,
+                )
+            }
         } else {
             view.reapplyClipPresentation()
         }

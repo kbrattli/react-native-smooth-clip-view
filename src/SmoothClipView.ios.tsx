@@ -1,7 +1,10 @@
-import type { ReactNode } from 'react';
+import { forwardRef, type ComponentRef, type ReactNode } from 'react';
 import { type ViewProps } from 'react-native';
 import type { SmoothClipDriver } from './driverTypes';
 import { getDriverState } from './driverState';
+import { getSmoothClipCapabilities } from './capabilities';
+import { canonicalizeClipPresentation } from './geometry';
+import { assertInitialPresentationProtocol } from './presentationProtocol';
 import NativeSmoothClipView, {
   type NativeProps,
 } from './SmoothClipViewNativeComponent';
@@ -11,13 +14,20 @@ export type SmoothClipViewProps = ViewProps & {
   children?: ReactNode;
 };
 
-export function SmoothClipView({
-  driver,
-  children,
-  ...viewProps
-}: SmoothClipViewProps) {
+export const SmoothClipView = forwardRef<
+  ComponentRef<typeof NativeSmoothClipView>,
+  SmoothClipViewProps
+>(function SmoothClipViewComponent(
+  { driver, children, ...viewProps },
+  forwardedRef
+) {
   const { driverId, initialPresentation } = getDriverState(driver);
-  const { clip } = initialPresentation;
+  const canonical = canonicalizeClipPresentation(initialPresentation);
+  if (canonical === null) return null;
+  const { clip } = canonical;
+  const protocolVersion =
+    getSmoothClipCapabilities().presentationProtocolVersion;
+  assertInitialPresentationProtocol(canonical, protocolVersion);
   const nativeProps: NativeProps = {
     ...viewProps,
     driverId,
@@ -26,11 +36,20 @@ export function SmoothClipView({
     initialClipWidth: clip.width,
     initialClipHeight: clip.height,
     initialClipRadius: clip.radius,
-    initialContentTranslateX: initialPresentation.contentTranslateX,
-    initialContentTranslateY: initialPresentation.contentTranslateY,
+    presentationVersion: protocolVersion,
+    initialClipTopLeftRadius: clip.topLeftRadius,
+    initialClipTopRightRadius: clip.topRightRadius,
+    initialClipBottomRightRadius: clip.bottomRightRadius,
+    initialClipBottomLeftRadius: clip.bottomLeftRadius,
+    initialClipCurve: clip.curve === 'continuous' ? 1 : 0,
+    initialContentTranslateX: canonical.contentTranslateX,
+    initialContentTranslateY: canonical.contentTranslateY,
+    initialContentScale: canonical.contentScale,
   };
 
   return (
-    <NativeSmoothClipView {...nativeProps}>{children}</NativeSmoothClipView>
+    <NativeSmoothClipView ref={forwardedRef} {...nativeProps}>
+      {children}
+    </NativeSmoothClipView>
   );
-}
+});

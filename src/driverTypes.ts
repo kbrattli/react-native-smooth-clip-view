@@ -1,5 +1,8 @@
 import type { SharedValue } from 'react-native-reanimated';
-import type { SmoothClipPresentation } from './geometry';
+import type {
+  CanonicalSmoothClipPresentation,
+  SmoothClipPresentation,
+} from './geometry';
 
 export type ClipReduceMotion = 'system' | 'always' | 'never';
 
@@ -86,7 +89,7 @@ export type SmoothClipDriverOptions = Readonly<{
 }>;
 
 export type SmoothClipUIControls = Readonly<{
-  beginInteraction(): SmoothClipPresentation;
+  beginInteraction(): CanonicalSmoothClipPresentation;
   set(presentation: SmoothClipPresentation): void;
   /**
    * Per-frame hot path: writes geometry straight to native without touching
@@ -109,6 +112,24 @@ export type SmoothClipUIControls = Readonly<{
     contentTranslateX: number,
     contentTranslateY: number
   ): void;
+  /**
+   * V2 per-frame hot path. Curve code is 0 for circular and 1 for continuous;
+   * invalid codes reject the complete write.
+   */
+  setPresentationScalars(
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    topLeftRadius: number,
+    topRightRadius: number,
+    bottomRightRadius: number,
+    bottomLeftRadius: number,
+    curveCode: number,
+    contentTranslateX: number,
+    contentTranslateY: number,
+    contentScale: number
+  ): void;
   animateTo(
     presentation: SmoothClipPresentation,
     animation: SmoothClipAnimation
@@ -116,11 +137,11 @@ export type SmoothClipUIControls = Readonly<{
   cancel(
     animationId?: number,
     behavior?: 'current' | 'target'
-  ): SmoothClipPresentation;
+  ): CanonicalSmoothClipPresentation;
 }>;
 
 export type SmoothClipReactControls = Readonly<{
-  beginInteraction(): Promise<SmoothClipPresentation>;
+  beginInteraction(): Promise<CanonicalSmoothClipPresentation>;
   set(presentation: SmoothClipPresentation): Promise<void>;
   animateTo(
     presentation: SmoothClipPresentation,
@@ -129,7 +150,18 @@ export type SmoothClipReactControls = Readonly<{
   cancel(
     animationId?: number,
     behavior?: 'current' | 'target'
-  ): Promise<SmoothClipPresentation>;
+  ): Promise<CanonicalSmoothClipPresentation>;
+}>;
+
+/** @internal Worklet-serializable driver identity used by atomic groups. */
+export type SmoothClipDriverHandle = Readonly<{
+  driverId: number;
+  presentation: SharedValue<SmoothClipPresentation>;
+  ownership: SharedValue<number>;
+  activeAnimationId: SharedValue<number>;
+  disposed: SharedValue<number>;
+  /** @internal Fallback host readiness. Native groups sample native readiness. */
+  ready?: SharedValue<number>;
 }>;
 
 export type SmoothClipDriver = Readonly<{
@@ -137,4 +169,6 @@ export type SmoothClipDriver = Readonly<{
   presentation: SharedValue<SmoothClipPresentation>;
   ui: SmoothClipUIControls;
   react: SmoothClipReactControls;
+  /** @internal Do not read or mutate directly. */
+  __smoothClipHandle?: SmoothClipDriverHandle;
 }>;
