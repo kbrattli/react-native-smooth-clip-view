@@ -4,8 +4,8 @@
 
 Proposed and feasible, but deferred.
 
-If implemented, `contentScale` should be a full presentation channel on iOS,
-Android, and web. An iOS-only public channel is not an acceptable endpoint.
+If implemented, `contentScale` should be a full presentation channel on iOS
+and Android. An iOS-only public channel is not an acceptable endpoint.
 
 ## Motivation
 
@@ -145,8 +145,8 @@ type SmoothClipPresentation = Readonly<{
 
 JS should canonicalize missing scale to `1` immediately. Native and internal
 presentation values should always contain a finite, strictly positive scale.
-Equality, validation, interpolation, keyframes, web transforms, direct
-commands, and initial props must use the canonical value.
+Equality, validation, interpolation, keyframes, direct commands, and initial
+props must use the canonical value.
 
 The existing positional native methods cannot be widened safely in place:
 
@@ -209,8 +209,8 @@ An implementation should be pinned by:
   seven-channel velocity projection, and scale-specific spring settling;
 - Robolectric tests for centered uniform scale, scale-only updates, residual
   translation composition, resize behavior, and existing touch semantics;
-- Jest tests for default `1`, validation, equality, web interpolation, new
-  method arities, result-array fallback, and keyframe stride 9;
+- Jest tests for default `1`, validation, equality, new method arities,
+  result-array fallback, and keyframe stride 9;
 - manual ZoomOverlay snap-back and close checks on both platforms. iOS should
   continue all channels through a block; Android should stall and recover all
   channels together without a pivot or residual jump.

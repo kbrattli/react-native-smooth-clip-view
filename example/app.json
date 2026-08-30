@@ -20,9 +20,6 @@
       },
       "package": "smoothclipview.example"
     },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    },
     "plugins": [
       "./plugins/withSmoothClipTestPods.js",
       "expo-image"

@@ -1,8 +1,7 @@
-// The shared NATIVE driver: iOS and Android both execute this file, via the
+// The shared native driver: iOS and Android both execute this file, via the
 // one-line re-exports in drivers.ios.ts / drivers.android.ts that Metro's
 // platform resolution picks up from index.ts's `./drivers` import. Only the
-// `./smoothClipNative` import below is platform-split. drivers.ts (no
-// suffix) is the web/Reanimated fallback, not this driver's sibling.
+// `./smoothClipNative` import below is platform-split.
 import { useEffect, useRef } from 'react';
 import { Platform } from 'react-native';
 import { useSharedValue, type SharedValue } from 'react-native-reanimated';

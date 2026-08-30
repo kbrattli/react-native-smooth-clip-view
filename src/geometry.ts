@@ -241,9 +241,8 @@ export function canonicalizeClipPresentation(
   };
 }
 
-// Keep this below the canonicalization helpers. Reanimated's production web
-// transform materializes worklet function declarations as const initializers,
-// so a worklet must not close over a helper declared later in this module.
+// Keep this below the canonicalization helpers so the worklet never closes
+// over a helper declared later in this module.
 export function createClipPresentation(
   clip: ClipGeometry,
   contentTranslateX = 0,

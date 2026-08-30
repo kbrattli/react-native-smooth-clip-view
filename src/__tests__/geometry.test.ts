@@ -12,7 +12,6 @@ import {
   normalizeClipPresentation,
 } from '../geometry';
 import type { ClipGeometry } from '../geometry';
-import { createWebClipPath, WEB_CONTENT_CONTAINER_STYLE } from '../webClipPath';
 
 const bounds = { width: 300, height: 200 };
 
@@ -239,52 +238,6 @@ describe('normalizeClipGeometry', () => {
         bounds
       )
     ).toBeNull();
-  });
-
-  it('creates a web clip-path without changing host layout properties', () => {
-    const clipPath = createWebClipPath(
-      {
-        x: 20,
-        y: 10,
-        width: 100,
-        height: 40,
-        radius: 99,
-      },
-      { width: 300, height: 200 }
-    );
-
-    expect(clipPath).toBe(
-      'inset(10px max(0px, calc(100% - 120px)) max(0px, calc(100% - 50px)) 20px round 20px)'
-    );
-    expect(clipPath).not.toContain('width');
-    expect(clipPath).not.toContain('height');
-  });
-
-  it('normalizes portable web paths against the measured host bounds', () => {
-    const clipPath = createWebClipPath(
-      {
-        x: -20,
-        y: 10,
-        width: 200,
-        height: 100,
-        radius: 0,
-        topLeftRadius: 80,
-        topRightRadius: 40,
-        bottomRightRadius: 20,
-        bottomLeftRadius: 60,
-        curve: 'continuous',
-      },
-      { width: 120, height: 70 }
-    );
-
-    expect(clipPath.startsWith('path("M ')).toBe(true);
-    expect(clipPath).not.toContain('-20');
-    expect(clipPath).toContain('120');
-    expect(WEB_CONTENT_CONTAINER_STYLE).toEqual({
-      width: '100%',
-      height: '100%',
-      transformOrigin: '50% 50%',
-    });
   });
 });
 

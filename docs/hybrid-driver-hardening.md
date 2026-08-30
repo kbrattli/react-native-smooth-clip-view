@@ -184,8 +184,7 @@ These are the load-bearing design choices added while fixing the defects:
 - iOS: signposts compiled into Debug via the podspec (previously dead code in
   every configuration); empty→empty transitions stay hidden for
   accessibility; missing main-thread asserts added.
-- Web: driver-state attach/detach migration; documented that `ui.*` needs no
-  runtime guard on web (single runtime) and `'inherit'` degrades to zero.
+- Web support was removed; the library targets only the native Fabric runtime.
 - Example: per-implementation grids (benchmark fairness).
 - README: shipped-API accuracy (`react.setScalars` does not exist), normalized
   velocity semantics, completion contract incl. rejection, `setScalars` shown

@@ -389,7 +389,7 @@ std::vector<Keyframe> easeOutCubicSamples(size_t count, double travel) {
 }
 
 - (void)testCurveMatchesStraightSegmentReconstructionExactly {
-  // Samples are interpolated segment-wise linearly on iOS, Android and web.
+  // Samples are interpolated segment-wise linearly on iOS and Android.
   // Compare the shared evaluator to an independent straight-segment
   // reconstruction across the complete sampled easing.
   const double travel = 700;

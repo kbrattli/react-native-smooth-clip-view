@@ -55,12 +55,6 @@ Running "SmoothClipViewExample" with {"fabric":true,"initialProps":{"concurrentR
 
 Note the `"fabric":true` and `"concurrentRoot":true` properties.
 
-To run the example app on Web:
-
-```sh
-npm run example -- web
-```
-
 Make sure your code passes TypeScript:
 
 ```sh
@@ -122,9 +116,7 @@ The `package.json` file contains various scripts for common tasks:
 - `npm run example -- start`: start the Metro server for the example app.
 - `npm run example -- android`: run the example app on Android.
 - `npm run example -- ios`: run the example app on iOS.
-- `npm run example -- web`: run the example app on Web.
-- `npm run example -- build:web`: build the example app for Web.
-  
+
 ### Sending a pull request
 
 > **Working on your first pull request?** You can learn how from this _free_ series: [How to Contribute to an Open Source Project on GitHub](https://app.egghead.io/playlists/how-to-contribute-to-an-open-source-project-on-github).

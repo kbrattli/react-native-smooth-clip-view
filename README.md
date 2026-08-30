@@ -22,8 +22,9 @@ Use it for transitions that previously struggled with performance when animating
 - iOS 16.4 or newer
 - Android API 33 or newer
 
-The package supports iOS, Android, and React Native Web. It does not include a
-legacy Paper implementation.
+The package supports iOS and Android. React Native Web and the legacy Paper
+architecture are not supported; keep imports and rendered usage behind native
+platform boundaries.
 
 ## Installation
 
@@ -226,8 +227,8 @@ puts on screen, which is the property worth keeping identical.
   remaining distance in one second). Every geometry channel continues with the
   same normalized rate, so grab/release preserves the felt direction and
   speed. `'inherit'` (the default) estimates the scalar from the last two
-  interactive samples on iOS and Android; the web fallback always inherits
-  zero. On Android, sampling on the `setScalars` hot path is **opt-in**: pass
+  interactive samples on iOS and Android. On Android, sampling on the
+  `setScalars` hot path is **opt-in**: pass
   `velocityTracking: true` to `useSmoothClipDriver` or `'inherit'` inherits
   zero after a hot-write drag (a dev-mode warning flags this). **Behavior
   change:** earlier releases always recorded on Android, so an existing
@@ -420,22 +421,18 @@ pass it as the `driver` prop, and move per-frame updates from the
 - Keep borders, shadows, rotation, and anisotropic transforms on an outer
   visual carrier rather than the clip host.
 - Uniform circular corners use platform fast paths. Unequal or continuous
-  corners use a fixed-topology portable path; Android/web intentionally do not
+  corners use a fixed-topology portable path; Android intentionally does not
   claim pixel identity with Apple's proprietary continuous curve.
-- On web, the implementation uses CSS `clip-path` on the fixed host, so
-  descendant percentages and right/bottom anchoring still resolve against the
-  maximum footprint.
 
 ## Example and development
 
 The [`example`](./example) workspace is an Expo SDK 57 app that exercises the
-package through its public import on iOS, Android, and web.
+package through its public import on iOS and Android.
 
 ```sh
 npm install
 npm run example -- ios
 npm run example -- android
-npm run example -- web
 ```
 
 Run the repository checks with:
@@ -445,7 +442,6 @@ npm run lint
 npm run typecheck
 npm test
 npm run prepare
-npm run example -- build:web
 ```
 
 ## License

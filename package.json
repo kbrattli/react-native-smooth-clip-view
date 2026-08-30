@@ -51,8 +51,7 @@
     "clipping",
     "fabric",
     "ios",
-    "android",
-    "web"
+    "android"
   ],
   "repository": {
     "type": "git",

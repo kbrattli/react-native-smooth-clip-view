@@ -161,7 +161,7 @@ NS_INLINE CGPathRef SmoothClipCreateRoundedRectPath(
   const CGFloat maxY = CGRectGetMaxY(rect);
   // Circular is the exact cubic-circle coefficient. The portable continuous
   // fallback uses kappa=1 so each cubic joins its straight edges with zero
-  // curvature, matching the portable Android/web path. Hit testing derives
+  // curvature, matching the portable Android path. Hit testing derives
   // from this rendered path rather than maintaining a second curve model.
   // Uniform
   // continuous shapes use CALayer.cornerCurve for Apple's platform-native
