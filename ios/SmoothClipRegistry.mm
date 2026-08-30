@@ -21,6 +21,7 @@
 
 #include "SmoothClipAnimationId.h"
 #include "SmoothClipAnimationCurve.h"
+#include "SmoothClipSharedGeometry.h"
 
 @interface SmoothClipView (Registry)
 - (void)smoothClipApplyPresentation:(smoothclip::Presentation)presentation;
@@ -31,13 +32,26 @@
 - (BOOL)smoothClipAnimateTiming:(smoothclip::Presentation)presentation
                        animation:(smoothclip::TimingAnimation)animation
                      animationId:(int32_t)animationId;
+- (BOOL)smoothClipAnimateTiming:(smoothclip::Presentation)presentation
+                       animation:(smoothclip::TimingAnimation)animation
+                     animationId:(int32_t)animationId
+                 sharedBeginTime:(CFTimeInterval)sharedBeginTime;
 - (BOOL)smoothClipAnimateSpring:(smoothclip::Presentation)presentation
                        animation:(smoothclip::SpringAnimation)animation
                      animationId:(int32_t)animationId;
+- (BOOL)smoothClipAnimateSpring:(smoothclip::Presentation)presentation
+                       animation:(smoothclip::SpringAnimation)animation
+                     animationId:(int32_t)animationId
+                 sharedBeginTime:(CFTimeInterval)sharedBeginTime;
 - (BOOL)smoothClipAnimateKeyframes:(smoothclip::Presentation)presentation
                          keyframes:(const std::vector<smoothclip::Keyframe> &)keyframes
                          durationMs:(double)durationMs
                         animationId:(int32_t)animationId;
+- (BOOL)smoothClipAnimateKeyframes:(smoothclip::Presentation)presentation
+                         keyframes:(const std::vector<smoothclip::Keyframe> &)keyframes
+                         durationMs:(double)durationMs
+                        animationId:(int32_t)animationId
+                    sharedBeginTime:(CFTimeInterval)sharedBeginTime;
 - (void)smoothClipCancelAnimationUsingTarget:(BOOL)useTarget;
 - (BOOL)smoothClipIsJoinable;
 - (BOOL)smoothClipCanDisplay;
@@ -56,6 +70,9 @@ enum class AnimationKind { Timing, Spring, Keyframes };
 
 struct ActiveAnimation {
   int32_t animationId;
+  // Zero identifies a legacy/single-driver animation. A non-zero value binds
+  // the driver to an immutable group whose completion is aggregated once.
+  int32_t groupId = 0;
   std::unordered_set<ViewKey> participants;
   // Hosts that installed this id and temporarily lost displayability. They
   // may rejoin the same remainder; completion is false if any remain
@@ -98,8 +115,28 @@ struct CompletionSink {
   CompletionCallback callback;
 };
 
+struct GroupCompletionSink {
+  const void *owner = nullptr;
+  GroupCompletionCallback callback;
+};
+
+struct GroupState {
+  uint64_t controllerId;
+  int32_t groupId;
+  std::vector<uint64_t> driverIds;
+  std::unordered_set<uint64_t> remainingDriverIds;
+  GroupSuspensionPolicy suspensionPolicy = GroupSuspensionPolicy::Pause;
+  bool finished = true;
+  bool mutating = false;
+};
+
 std::unordered_map<uint64_t, DriverState> &registry() {
   static std::unordered_map<uint64_t, DriverState> value;
+  return value;
+}
+
+std::unordered_map<int32_t, GroupState> &groupRegistry() {
+  static std::unordered_map<int32_t, GroupState> value;
   return value;
 }
 
@@ -143,6 +180,11 @@ CompletionSink &completionSink() {
   return sink;
 }
 
+GroupCompletionSink &groupCompletionSink() {
+  static GroupCompletionSink sink;
+  return sink;
+}
+
 // The sink is written from the TurboModule ctor/dtor on the JS thread and
 // invoked on main. Invoking under the lock also keeps the owning module
 // alive for the duration of the callback.
@@ -150,6 +192,18 @@ std::mutex &completionSinkMutex() {
   static std::mutex value;
   return value;
 }
+
+
+void groupMemberCompleted(
+    int32_t groupId,
+    uint64_t driverId,
+    bool finished);
+std::vector<DriverSnapshot> cancelGroupInternal(
+    int32_t groupId,
+    GroupCancelBehavior behavior,
+    bool completionFinished);
+void tryStartGroup(int32_t groupId);
+void suspendGroup(int32_t groupId);
 
 Presentation unavailablePresentation() {
   // Non-finite geometry makes the JS side fall back to its current value
@@ -183,7 +237,14 @@ void emitCompletion(
     DriverState &state,
     int32_t animationId,
     bool finished) {
+  const int32_t groupId = state.animation.has_value()
+      ? state.animation->groupId
+      : 0;
   state.animation.reset();
+  if (groupId != 0) {
+    groupMemberCompleted(groupId, driverId, finished);
+    return;
+  }
   {
     std::lock_guard<std::mutex> lock(completionSinkMutex());
     if (completionSink().callback) {
@@ -196,6 +257,37 @@ void emitCompletion(
       "driver=%llu animation=%d finished=%{public}d",
       driverId, animationId, finished);
 #endif
+}
+
+void emitGroupCompletion(
+    uint64_t controllerId,
+    int32_t groupId,
+    bool finished,
+    const std::vector<uint64_t> &driverIds) {
+  std::lock_guard<std::mutex> lock(completionSinkMutex());
+  if (groupCompletionSink().callback) {
+    groupCompletionSink().callback(
+        controllerId, groupId, finished, driverIds);
+  }
+}
+
+void groupMemberCompleted(
+    int32_t groupId,
+    uint64_t driverId,
+    bool finished) {
+  auto iterator = groupRegistry().find(groupId);
+  if (iterator == groupRegistry().end()) return;
+  GroupState &group = iterator->second;
+  if (group.remainingDriverIds.erase(driverId) == 0) return;
+  group.finished = group.finished && finished;
+  if (!group.remainingDriverIds.empty() || group.mutating) return;
+
+  const uint64_t controllerId = group.controllerId;
+  const bool aggregateFinished = group.finished;
+  const std::vector<uint64_t> driverIds = group.driverIds;
+  groupRegistry().erase(iterator);
+  emitGroupCompletion(
+      controllerId, groupId, aggregateFinished, driverIds);
 }
 
 void emitStandaloneCompletion(
@@ -258,11 +350,184 @@ Presentation canonicalFrozenPresentation(
   return canonical;
 }
 
+Presentation canonicalVisiblePresentation(const DriverState &state) {
+  if (state.animation.has_value() && !state.animation->started) {
+    return state.animation->start;
+  }
+  for (const ViewKey key : state.views) {
+    SmoothClipView *candidate = viewForKey(key);
+    if ([candidate smoothClipIsJoinable]) {
+      return [candidate smoothClipCurrentPresentation];
+    }
+  }
+  return state.latest;
+}
+
+bool driverReady(const DriverState &state) {
+  if (state.destroyed) return false;
+  for (const ViewKey key : state.views) {
+    if ([viewForKey(key) smoothClipCanDisplay]) return true;
+  }
+  return false;
+}
+
+bool presentationFitsEveryKnownHostWithoutNormalization(
+    const DriverState &state,
+    const Presentation &presentation) {
+  for (const ViewKey key : state.views) {
+    SmoothClipView *view = viewForKey(key);
+    // A pre-layout host has no authoritative bounds yet. It remains covered by
+    // the existing readiness latch; fixed-host promotion reaches this path
+    // only after its participating host has laid out.
+    if (![view smoothClipIsJoinable]) continue;
+    const CGSize hostSize = view.bounds.size;
+    if (!SmoothClipGeometryNormalizationIsIdentity(
+            presentation.clip, hostSize.width, hostSize.height)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool timingPlanPreservesLinearHostNormalization(
+    const DriverState &state,
+    const Presentation &start,
+    const Presentation &target,
+    const TimingAnimation &animation) {
+  // A cubic Bezier stays inside the convex hull of its Y control points. The
+  // bound is deliberately conservative: if an overshooting easing still fits
+  // at both extrema, every presentation it can generate fits too because all
+  // host/radius eligibility inequalities are linear.
+  const double minimumProgress = std::min(
+      {0.0, 1.0, animation.controlPoint1Y, animation.controlPoint2Y});
+  const double maximumProgress = std::max(
+      {0.0, 1.0, animation.controlPoint1Y, animation.controlPoint2Y});
+  const Presentation minimum =
+      interpolate(start, target, minimumProgress);
+  const Presentation maximum =
+      interpolate(start, target, maximumProgress);
+  return isFiniteProtocolV2Presentation(minimum) &&
+      isFiniteProtocolV2Presentation(maximum) &&
+      presentationFitsEveryKnownHostWithoutNormalization(state, minimum) &&
+      presentationFitsEveryKnownHostWithoutNormalization(state, maximum);
+}
+
+bool keyframePlanPreservesLinearHostNormalization(
+    const DriverState &state,
+    const Presentation &resolvedStart,
+    const std::vector<Keyframe> &keyframes) {
+  if (!presentationFitsEveryKnownHostWithoutNormalization(
+          state, resolvedStart)) {
+    return false;
+  }
+  // Frame zero is replaced by resolvedStart for an implicit native retarget.
+  // Every later anchor must be identity-normalized; convex segment-wise linear
+  // interpolation then cannot cross a host boundary or activate radius scaling.
+  for (std::size_t index = 1; index < keyframes.size(); index += 1) {
+    if (!presentationFitsEveryKnownHostWithoutNormalization(
+            state, keyframes[index].presentation)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+DriverSnapshot snapshotForDriver(uint64_t driverId) {
+  const auto iterator = registry().find(driverId);
+  if (iterator == registry().end() || iterator->second.destroyed) {
+    return {driverId, unavailablePresentation(), false};
+  }
+  return {
+      driverId,
+      canonicalVisiblePresentation(iterator->second),
+      driverReady(iterator->second),
+  };
+}
+
+std::vector<DriverSnapshot> cancelGroupInternal(
+    int32_t groupId,
+    GroupCancelBehavior behavior,
+    bool completionFinished) {
+  auto groupIterator = groupRegistry().find(groupId);
+  if (groupIterator == groupRegistry().end()) return {};
+  GroupState &group = groupIterator->second;
+  if (group.mutating) return {};
+  group.mutating = true;
+
+  const std::vector<uint64_t> driverIds = group.driverIds;
+  std::vector<DriverSnapshot> snapshots;
+  snapshots.reserve(driverIds.size());
+  for (const uint64_t driverId : driverIds) {
+    auto stateIterator = registry().find(driverId);
+    if (stateIterator == registry().end()) {
+      snapshots.push_back({driverId, unavailablePresentation(), false});
+      groupMemberCompleted(groupId, driverId, false);
+      continue;
+    }
+    DriverState &state = stateIterator->second;
+    if (!state.animation.has_value() ||
+        state.animation->groupId != groupId) {
+      snapshots.push_back(snapshotForDriver(driverId));
+      groupMemberCompleted(groupId, driverId, false);
+      continue;
+    }
+
+    const int32_t animationId = state.animation->animationId;
+    Presentation resolved;
+    if (behavior == GroupCancelBehavior::Finish) {
+      resolved = state.latest;
+      const bool wasLatched = !state.animation->started;
+      for (const ViewKey key : state.views) {
+        [viewForKey(key) smoothClipCancelAnimationUsingTarget:YES];
+      }
+      if (wasLatched) {
+        for (const ViewKey key : state.views) {
+          [viewForKey(key) smoothClipApplyPresentation:resolved
+                                  recordVelocitySample:NO];
+        }
+      }
+    } else {
+      resolved = canonicalFrozenPresentation(state);
+    }
+    state.latest = resolved;
+    state.hasLatest = true;
+    state.ownership = Ownership::Interactive;
+    const bool ready = driverReady(state);
+    emitCompletion(
+        driverId, state, animationId, completionFinished);
+    snapshots.push_back({driverId, resolved, ready});
+  }
+
+  groupIterator = groupRegistry().find(groupId);
+  if (groupIterator != groupRegistry().end()) {
+    GroupState &remainingGroup = groupIterator->second;
+    remainingGroup.mutating = false;
+    if (remainingGroup.remainingDriverIds.empty()) {
+      const uint64_t controllerId = remainingGroup.controllerId;
+      const bool finished = remainingGroup.finished;
+      const std::vector<uint64_t> completedDrivers =
+          remainingGroup.driverIds;
+      groupRegistry().erase(groupIterator);
+      emitGroupCompletion(
+          controllerId, groupId, finished, completedDrivers);
+    }
+  }
+  return snapshots;
+}
+
 void cancelActive(
     uint64_t driverId,
     DriverState &state,
     bool useTarget) {
   if (!state.animation.has_value()) return;
+  if (state.animation->groupId != 0) {
+    cancelGroupInternal(
+        state.animation->groupId,
+        useTarget ? GroupCancelBehavior::Finish
+                  : GroupCancelBehavior::Freeze,
+        false);
+    return;
+  }
   const int32_t animationId = state.animation->animationId;
   // Deferred views are deliberately not completion participants, but they do
   // hold a pending install and requested target. Cancellation must still reach
@@ -310,8 +575,10 @@ void prepareAnimation(
     DriverState &state,
     AnimationStart start,
     Presentation target) {
-  const bool acceptsInteractiveStart =
-      start.hasInteractiveStart && state.ownership == Ownership::Interactive;
+  // An explicit `from` is part of the new animation's start transaction. It
+  // intentionally overrides a sampled native frame even when this operation
+  // is replacing another native-owned animation.
+  const bool acceptsInteractiveStart = start.hasInteractiveStart;
   cancelActive(driverId, state, false);
   if (acceptsInteractiveStart) {
     applyPresentation(state, start.interactiveStart);
@@ -326,7 +593,7 @@ void prepareAnimation(
 Presentation resolvedAnimationStart(
     const DriverState &state,
     const AnimationStart &start) {
-  if (start.hasInteractiveStart && state.ownership == Ownership::Interactive) {
+  if (start.hasInteractiveStart) {
     return start.interactiveStart;
   }
   // Replacing a latched animation (e.g. open→close before the host mounted):
@@ -335,7 +602,9 @@ Presentation resolvedAnimationStart(
   if (state.animation.has_value() && !state.animation->started) {
     return state.animation->start;
   }
-  return state.latest;
+  return state.animation.has_value()
+      ? canonicalVisiblePresentation(state)
+      : state.latest;
 }
 
 // Installs the remaining part of the active animation on a view that joins
@@ -346,9 +615,12 @@ void dispatchActiveAnimationJoin(
     SmoothClipView *view,
     ViewKey key,
     const Presentation &visible,
-    SmoothClipView *reference = nil) {
+    SmoothClipView *reference = nil,
+    CFTimeInterval sharedBeginTime = 0) {
   auto &active = *state.animation;
-  const double elapsedMs = (CACurrentMediaTime() - active.startedAt) * 1000.0;
+  const double elapsedMs = sharedBeginTime > 0
+      ? 0
+      : (CACurrentMediaTime() - active.startedAt) * 1000.0;
   const double remainingMs = MAX(0, active.durationMs - elapsedMs);
   BOOL installed = NO;
   if (active.kind == AnimationKind::Timing) {
@@ -358,7 +630,8 @@ void dispatchActiveAnimationJoin(
     TimingAnimation timing = timingRemainder(active.timing, progress).animation;
     installed = [view smoothClipAnimateTiming:state.latest
                                     animation:timing
-                                  animationId:active.animationId];
+                                  animationId:active.animationId
+                              sharedBeginTime:sharedBeginTime];
   } else if (active.kind == AnimationKind::Spring) {
     SpringAnimation spring = active.spring;
     if (reference != nil) {
@@ -371,7 +644,8 @@ void dispatchActiveAnimationJoin(
     }
     installed = [view smoothClipAnimateSpring:state.latest
                                     animation:spring
-                                  animationId:active.animationId];
+                                  animationId:active.animationId
+                              sharedBeginTime:sharedBeginTime];
   } else {
     const double progress = active.durationMs <= 0
         ? 1
@@ -387,7 +661,8 @@ void dispatchActiveAnimationJoin(
     installed = [view smoothClipAnimateKeyframes:state.latest
                                       keyframes:remaining
                                      durationMs:remainingMs
-                                    animationId:active.animationId];
+                                    animationId:active.animationId
+                                sharedBeginTime:sharedBeginTime];
   }
   if (installed) {
     active.participants.insert(key);
@@ -485,6 +760,10 @@ void relatchActiveAnimation(
 // view. Views that still cannot display defer their install per-view and
 // resume via a later positive displayability update.
 void startLatchedAnimation(DriverState &state) {
+  if (state.animation->groupId != 0) {
+    tryStartGroup(state.animation->groupId);
+    return;
+  }
   state.animation->startedAt = CACurrentMediaTime();
   state.animation->started = true;
   // Participants describe live CA delegates, not registered views. Anything
@@ -498,6 +777,86 @@ void startLatchedAnimation(DriverState &state) {
   }
 }
 
+void tryStartGroup(int32_t groupId) {
+  auto groupIterator = groupRegistry().find(groupId);
+  if (groupIterator == groupRegistry().end() ||
+      groupIterator->second.mutating) {
+    return;
+  }
+  const std::vector<uint64_t> driverIds = groupIterator->second.driverIds;
+  for (const uint64_t driverId : driverIds) {
+    const auto stateIterator = registry().find(driverId);
+    if (stateIterator == registry().end() ||
+        !stateIterator->second.animation.has_value() ||
+        stateIterator->second.animation->groupId != groupId ||
+        !driverReady(stateIterator->second)) {
+      return;
+    }
+  }
+
+  const CFTimeInterval sharedBeginTime = CACurrentMediaTime();
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  for (const uint64_t driverId : driverIds) {
+    DriverState &state = registry().find(driverId)->second;
+    ActiveAnimation &active = *state.animation;
+    active.startedAt = sharedBeginTime;
+    active.started = true;
+    active.participants.clear();
+    const Presentation start = active.start;
+    for (const ViewKey key : state.views) {
+      SmoothClipView *participant = viewForKey(key);
+      [participant smoothClipApplyPresentation:start recordVelocitySample:NO];
+      dispatchActiveAnimationJoin(
+          state,
+          participant,
+          key,
+          start,
+          nil,
+          sharedBeginTime);
+    }
+  }
+  [CATransaction commit];
+}
+
+void suspendGroup(int32_t groupId) {
+  auto groupIterator = groupRegistry().find(groupId);
+  if (groupIterator == groupRegistry().end() ||
+      groupIterator->second.mutating) {
+    return;
+  }
+  if (groupIterator->second.suspensionPolicy ==
+      GroupSuspensionPolicy::Finish) {
+    cancelGroupInternal(
+        groupId, GroupCancelBehavior::Finish, true);
+    return;
+  }
+
+  groupIterator->second.mutating = true;
+  const std::vector<uint64_t> driverIds = groupIterator->second.driverIds;
+  for (const uint64_t driverId : driverIds) {
+    auto stateIterator = registry().find(driverId);
+    if (stateIterator != registry().end() &&
+        stateIterator->second.animation.has_value() &&
+        stateIterator->second.animation->groupId == groupId) {
+      relatchActiveAnimation(driverId, stateIterator->second);
+    } else {
+      groupMemberCompleted(groupId, driverId, false);
+    }
+  }
+
+  groupIterator = groupRegistry().find(groupId);
+  if (groupIterator == groupRegistry().end()) return;
+  GroupState &group = groupIterator->second;
+  group.mutating = false;
+  if (!group.remainingDriverIds.empty()) return;
+  const uint64_t controllerId = group.controllerId;
+  const bool finished = group.finished;
+  const std::vector<uint64_t> completedDrivers = group.driverIds;
+  groupRegistry().erase(groupIterator);
+  emitGroupCompletion(controllerId, groupId, finished, completedDrivers);
+}
+
 } // namespace
 
 bool applicationIsActive() {
@@ -508,8 +867,19 @@ void applicationWillResignActive() {
   NSCAssert(NSThread.isMainThread, @"SmoothClip registry is main-thread only");
   if (!applicationActiveState()) return;
   applicationActiveState() = false;
+  std::vector<int32_t> groupIds;
+  groupIds.reserve(groupRegistry().size());
+  for (const auto &[groupId, group] : groupRegistry()) {
+    (void)group;
+    groupIds.push_back(groupId);
+  }
+  for (const int32_t groupId : groupIds) {
+    suspendGroup(groupId);
+  }
   for (auto &[driverId, state] : registry()) {
-    relatchActiveAnimation(driverId, state);
+    if (!state.animation.has_value() || state.animation->groupId == 0) {
+      relatchActiveAnimation(driverId, state);
+    }
   }
 }
 
@@ -517,10 +887,19 @@ void applicationDidBecomeActive() {
   NSCAssert(NSThread.isMainThread, @"SmoothClip registry is main-thread only");
   if (applicationActiveState()) return;
   applicationActiveState() = true;
+  std::vector<int32_t> groupIds;
+  groupIds.reserve(groupRegistry().size());
+  for (const auto &[groupId, group] : groupRegistry()) {
+    (void)group;
+    groupIds.push_back(groupId);
+  }
+  for (const int32_t groupId : groupIds) {
+    tryStartGroup(groupId);
+  }
   for (auto &[driverId, state] : registry()) {
     (void)driverId;
     if (state.animation.has_value() && !state.animation->started &&
-        anyDisplayableView(state)) {
+        state.animation->groupId == 0 && anyDisplayableView(state)) {
       startLatchedAnimation(state);
     }
   }
@@ -539,6 +918,21 @@ void clearCompletionCallback(const void *owner) {
   if (completionSink().owner != owner) return;
   completionSink().owner = nullptr;
   completionSink().callback = nullptr;
+}
+
+void setGroupCompletionCallback(
+    const void *owner,
+    GroupCompletionCallback callback) {
+  std::lock_guard<std::mutex> lock(completionSinkMutex());
+  groupCompletionSink().owner = owner;
+  groupCompletionSink().callback = std::move(callback);
+}
+
+void clearGroupCompletionCallback(const void *owner) {
+  std::lock_guard<std::mutex> lock(completionSinkMutex());
+  if (groupCompletionSink().owner != owner) return;
+  groupCompletionSink().owner = nullptr;
+  groupCompletionSink().callback = nullptr;
 }
 
 void registerView(
@@ -614,6 +1008,38 @@ void viewDisplayabilityChanged(uint64_t driverId, SmoothClipView *view) {
       state.views.end()) {
     return;
   }
+  const int32_t groupId = state.animation->groupId;
+  if (groupId != 0) {
+    if (![view smoothClipCanDisplay]) {
+      if (!state.animation->started) {
+        if (!driverReady(state)) suspendGroup(groupId);
+        return;
+      }
+      if (state.animation->participants.count(key) == 0) {
+        return;
+      }
+      if (!driverReady(state)) {
+        suspendGroup(groupId);
+        return;
+      }
+      [view smoothClipFreezePresentation];
+      if (state.animation.has_value() &&
+          state.animation->groupId == groupId) {
+        state.animation->participants.erase(key);
+        state.animation->suspendedParticipants.insert(key);
+      }
+      return;
+    }
+    if (!state.animation->started) {
+      tryStartGroup(groupId);
+      return;
+    }
+    if ([view smoothClipHasPendingInstall] ||
+        state.animation->suspendedParticipants.count(key) > 0) {
+      joinActiveAnimation(driverId, view);
+    }
+    return;
+  }
   if (![view smoothClipCanDisplay]) {
     if (!state.animation->started) return;
     if (state.animation->participants.count(key) == 0) return;
@@ -663,6 +1089,11 @@ bool joinActiveAnimation(uint64_t driverId, SmoothClipView *view) {
   // instead of falling through.
   if (!state.animation->started) {
     if (![view smoothClipCanDisplay]) return false;
+    if (state.animation->groupId != 0) {
+      const int32_t groupId = state.animation->groupId;
+      tryStartGroup(groupId);
+      return state.animation.has_value() && state.animation->started;
+    }
     startLatchedAnimation(state);
     return true;
   }
@@ -692,6 +1123,46 @@ void unregisterView(uint64_t driverId, SmoothClipView *view) {
 
   auto &state = iterator->second;
   const ViewKey key = keyForView(view);
+  const int32_t groupId = state.animation.has_value()
+      ? state.animation->groupId
+      : 0;
+  if (groupId != 0) {
+    const bool installed =
+        state.animation->participants.count(key) > 0 ||
+        state.animation->suspendedParticipants.count(key) > 0;
+    bool otherDisplayable = false;
+    for (const ViewKey candidate : state.views) {
+      if (candidate != key && [viewForKey(candidate) smoothClipCanDisplay]) {
+        otherDisplayable = true;
+        break;
+      }
+    }
+    if (!otherDisplayable) {
+      suspendGroup(groupId);
+    } else if (state.animation.has_value() && state.animation->started &&
+               state.animation->participants.count(key) > 0) {
+        [view smoothClipFreezePresentation];
+    }
+    state.views.erase(
+        std::remove(state.views.begin(), state.views.end(), key),
+        state.views.end());
+    if (state.animation.has_value() &&
+        state.animation->groupId == groupId) {
+      state.animation->participants.erase(key);
+      state.animation->suspendedParticipants.erase(key);
+      // A duplicate rendering host may leave without poisoning the immutable
+      // driver participant. If the driver lost its only host, the group's
+      // suspension policy above owns the result.
+      if (installed && otherDisplayable &&
+          state.animation->participants.empty()) {
+        suspendGroup(groupId);
+      }
+    }
+    if (state.destroyed && state.views.empty()) {
+      registry().erase(iterator);
+    }
+    return;
+  }
   bool installed = false;
   if (state.animation.has_value()) {
     installed = state.animation->participants.count(key) > 0 ||
@@ -815,6 +1286,16 @@ Presentation beginInteraction(uint64_t driverId) {
     return state.latest;
   }
 
+  if (state.animation->groupId != 0) {
+    const int32_t groupId = state.animation->groupId;
+    cancelGroupInternal(
+        groupId, GroupCancelBehavior::Freeze, false);
+    const auto current = registry().find(driverId);
+    return current == registry().end()
+        ? unavailablePresentation()
+        : current->second.latest;
+  }
+
   const int32_t animationId = state.animation->animationId;
   const Presentation canonical = canonicalFrozenPresentation(state);
   state.latest = canonical;
@@ -824,19 +1305,443 @@ Presentation beginInteraction(uint64_t driverId) {
   return canonical;
 }
 
+Presentation snapshotCurrent(uint64_t driverId) {
+  if (!NSThread.isMainThread) return unavailablePresentation();
+  const auto iterator = registry().find(driverId);
+  if (iterator == registry().end() || iterator->second.destroyed) {
+    return unavailablePresentation();
+  }
+  return canonicalVisiblePresentation(iterator->second);
+}
+
+std::vector<DriverSnapshot> snapshotGroup(
+    const std::vector<uint64_t> &driverIds) {
+  if (!NSThread.isMainThread) return {};
+  std::vector<DriverSnapshot> snapshots;
+  snapshots.reserve(driverIds.size());
+  for (const uint64_t driverId : driverIds) {
+    snapshots.push_back(snapshotForDriver(driverId));
+  }
+  return snapshots;
+}
+
+std::vector<DriverSnapshot> beginGroupInteraction(
+    const std::vector<uint64_t> &driverIds) {
+  if (!NSThread.isMainThread) return {};
+  std::unordered_set<uint64_t> unique;
+  for (const uint64_t driverId : driverIds) {
+    const auto iterator = registry().find(driverId);
+    if (driverId == 0 || !unique.insert(driverId).second ||
+        iterator == registry().end() || iterator->second.destroyed) {
+      std::vector<DriverSnapshot> unavailable;
+      unavailable.reserve(driverIds.size());
+      for (const uint64_t requested : driverIds) {
+        unavailable.push_back(
+            {requested, unavailablePresentation(), false});
+      }
+      return unavailable;
+    }
+  }
+
+  std::unordered_set<int32_t> cancelledGroups;
+  for (const uint64_t driverId : driverIds) {
+    DriverState &state = registry().find(driverId)->second;
+    if (!state.animation.has_value()) continue;
+    const int32_t groupId = state.animation->groupId;
+    if (groupId != 0) {
+      if (cancelledGroups.insert(groupId).second) {
+        cancelGroupInternal(
+            groupId, GroupCancelBehavior::Freeze, false);
+      }
+      continue;
+    }
+    const int32_t animationId = state.animation->animationId;
+    const Presentation frozen = canonicalFrozenPresentation(state);
+    state.latest = frozen;
+    state.hasLatest = true;
+    state.ownership = Ownership::Interactive;
+    emitCompletion(driverId, state, animationId, false);
+  }
+
+  std::vector<DriverSnapshot> snapshots;
+  snapshots.reserve(driverIds.size());
+  for (const uint64_t driverId : driverIds) {
+    DriverState &state = registry().find(driverId)->second;
+    state.destroyed = false;
+    state.ownership = Ownership::Interactive;
+    snapshots.push_back(
+        {driverId, state.latest, driverReady(state)});
+  }
+  return snapshots;
+}
+
+bool setPresentationBatch(const std::vector<BatchEntry> &entries) {
+  if (!NSThread.isMainThread) return false;
+  std::unordered_set<uint64_t> unique;
+  for (const BatchEntry &entry : entries) {
+    const auto iterator = registry().find(entry.driverId);
+    if (entry.driverId == 0 || !unique.insert(entry.driverId).second ||
+        iterator == registry().end() || iterator->second.destroyed ||
+        !isFiniteProtocolV2Presentation(entry.presentation)) {
+      return false;
+    }
+  }
+
+  std::unordered_set<int32_t> cancelledGroups;
+  for (const BatchEntry &entry : entries) {
+    DriverState &state = registry().find(entry.driverId)->second;
+    if (!state.animation.has_value()) continue;
+    const int32_t groupId = state.animation->groupId;
+    if (groupId != 0) {
+      if (cancelledGroups.insert(groupId).second) {
+        cancelGroupInternal(
+            groupId, GroupCancelBehavior::Freeze, false);
+      }
+      continue;
+    }
+    const int32_t animationId = state.animation->animationId;
+    const Presentation frozen = canonicalFrozenPresentation(state);
+    state.latest = frozen;
+    state.hasLatest = true;
+    state.ownership = Ownership::Interactive;
+    emitCompletion(entry.driverId, state, animationId, false);
+  }
+
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  for (const BatchEntry &entry : entries) {
+    applyPresentation(
+        registry().find(entry.driverId)->second, entry.presentation, true);
+  }
+  [CATransaction commit];
+  return true;
+}
+
+namespace {
+
+bool preflightGroupEntries(
+    const std::vector<GroupMotionEntry> &entries,
+    AnimationKind kind,
+    const TimingAnimation &timing,
+    const SpringAnimation &spring,
+    double durationMs,
+    int32_t reduceMotion,
+    bool &reduced,
+    std::vector<Presentation> &resolvedStarts) {
+  if (entries.empty()) return false;
+  if (kind == AnimationKind::Timing &&
+      !isValidProtocolV2Timing(timing)) {
+    return false;
+  }
+  if (kind == AnimationKind::Spring &&
+      !isValidProtocolV2Spring(spring)) {
+    return false;
+  }
+  if (kind == AnimationKind::Keyframes &&
+      (!std::isfinite(durationMs) || durationMs < 0 ||
+       !isValidReduceMotionCode(reduceMotion))) {
+    return false;
+  }
+  reduced = shouldReduceMotion(reduceMotion) ||
+      (kind != AnimationKind::Spring && durationMs <= 0);
+  std::unordered_set<uint64_t> unique;
+  resolvedStarts.clear();
+  resolvedStarts.reserve(entries.size());
+  for (const GroupMotionEntry &entry : entries) {
+    if (entry.driverId == 0 || !unique.insert(entry.driverId).second) {
+      return false;
+    }
+    const auto iterator = registry().find(entry.driverId);
+    if ((iterator == registry().end() || iterator->second.destroyed ||
+         !iterator->second.hasLatest) && !entry.hasFrom) {
+      return false;
+    }
+    const Presentation resolvedStart = entry.hasFrom
+        ? entry.from
+        : canonicalVisiblePresentation(iterator->second);
+    if (!isFiniteProtocolV2Presentation(resolvedStart) ||
+        !isFiniteProtocolV2Presentation(entry.target) ||
+        resolvedStart.clip.curve != entry.target.clip.curve) {
+      return false;
+    }
+    if (kind == AnimationKind::Spring &&
+        !protocolV2SpringScaleIsProvablyPositive(
+            resolvedStart, entry.target, spring)) {
+      return false;
+    }
+    if (kind == AnimationKind::Keyframes) {
+      if (!isValidProtocolV2Keyframes(
+              entry.keyframes,
+              resolvedStart,
+              entry.target,
+              entry.hasFrom)) {
+        return false;
+      }
+    } else if (!entry.keyframes.empty()) {
+      return false;
+    }
+    if (!reduced && iterator != registry().end()) {
+      if (kind == AnimationKind::Timing &&
+          !timingPlanPreservesLinearHostNormalization(
+              iterator->second, resolvedStart, entry.target, timing)) {
+        return false;
+      }
+      if (kind == AnimationKind::Keyframes &&
+          !keyframePlanPreservesLinearHostNormalization(
+              iterator->second, resolvedStart, entry.keyframes)) {
+        return false;
+      }
+    }
+    resolvedStarts.push_back(resolvedStart);
+  }
+  return true;
+}
+
+void freezeReplacedAnimations(
+    const std::vector<GroupMotionEntry> &entries) {
+  std::unordered_set<int32_t> cancelledGroups;
+  for (const GroupMotionEntry &entry : entries) {
+    auto iterator = registry().find(entry.driverId);
+    if (iterator == registry().end() ||
+        !iterator->second.animation.has_value()) {
+      continue;
+    }
+    DriverState &state = iterator->second;
+    const int32_t oldGroupId = state.animation->groupId;
+    if (oldGroupId != 0) {
+      if (cancelledGroups.insert(oldGroupId).second) {
+        cancelGroupInternal(
+            oldGroupId, GroupCancelBehavior::Freeze, false);
+      }
+      continue;
+    }
+    const int32_t animationId = state.animation->animationId;
+    const Presentation frozen = canonicalFrozenPresentation(state);
+    state.latest = frozen;
+    state.hasLatest = true;
+    state.ownership = Ownership::Interactive;
+    emitCompletion(entry.driverId, state, animationId, false);
+  }
+}
+
+int32_t createGroupAnimation(
+    uint64_t controllerId,
+    std::vector<GroupMotionEntry> entries,
+    AnimationKind kind,
+    TimingAnimation timing,
+    SpringAnimation spring,
+    double durationMs,
+    int32_t reduceMotion,
+    GroupSuspensionPolicy suspensionPolicy) {
+  std::vector<Presentation> resolvedStarts;
+  bool reduced = false;
+  if (!NSThread.isMainThread || controllerId == 0 ||
+      !preflightGroupEntries(
+          entries,
+          kind,
+          timing,
+          spring,
+          durationMs,
+          reduceMotion,
+          reduced,
+          resolvedStarts)) {
+    return 0;
+  }
+
+  // No state changes occur before every entry is known to be viable. Once
+  // preflight succeeds, replacement freezes each overlapping group at most
+  // once and reports its stale completion before installing the new epoch.
+  freezeReplacedAnimations(entries);
+  const int32_t groupId = allocateAnimationId();
+  std::vector<uint64_t> driverIds;
+  driverIds.reserve(entries.size());
+  for (const GroupMotionEntry &entry : entries) {
+    driverIds.push_back(entry.driverId);
+  }
+
+  if (reduced) {
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    for (const GroupMotionEntry &entry : entries) {
+      auto iterator = registry().find(entry.driverId);
+      if (iterator == registry().end()) {
+        iterator = registry().try_emplace(entry.driverId).first;
+      }
+      DriverState &state = iterator->second;
+      state.destroyed = false;
+      applyPresentation(state, entry.target, false);
+    }
+    [CATransaction commit];
+    emitGroupCompletion(controllerId, groupId, true, driverIds);
+    return groupId;
+  }
+
+  GroupState group{
+      controllerId,
+      groupId,
+      driverIds,
+      std::unordered_set<uint64_t>(driverIds.begin(), driverIds.end()),
+      suspensionPolicy,
+  };
+  groupRegistry().emplace(groupId, std::move(group));
+
+  for (std::size_t entryIndex = 0; entryIndex < entries.size(); entryIndex += 1) {
+    GroupMotionEntry &entry = entries[entryIndex];
+    auto iterator = registry().find(entry.driverId);
+    if (iterator == registry().end()) {
+      iterator = registry().try_emplace(entry.driverId).first;
+    }
+    DriverState &state = iterator->second;
+    state.destroyed = false;
+    if (entry.hasFrom) {
+      applyPresentation(state, entry.from, true);
+    }
+    const Presentation start = resolvedStarts[entryIndex];
+    if (kind == AnimationKind::Keyframes && !entry.keyframes.empty()) {
+      // An omitted `from` is a native-to-native retarget: sample the visible
+      // presentation before replacement and substitute that exact value as
+      // frame zero. Explicit endpoints were already validated and are never
+      // silently corrected by native.
+      if (!entry.hasFrom) entry.keyframes.front().presentation = start;
+    }
+    state.latest = entry.target;
+    state.hasLatest = true;
+    state.ownership = Ownership::Native;
+
+    ActiveAnimation active{groupId};
+    active.groupId = groupId;
+    active.kind = kind;
+    active.start = start;
+    active.timing = timing;
+    active.spring = spring;
+    active.keyframes = std::move(entry.keyframes);
+    active.durationMs = durationMs;
+    active.started = false;
+    state.animation = std::move(active);
+  }
+  tryStartGroup(groupId);
+  return groupId;
+}
+
+} // namespace
+
+int32_t animateTimingGroup(
+    uint64_t controllerId,
+    std::vector<GroupMotionEntry> entries,
+    TimingAnimation animation,
+    GroupSuspensionPolicy suspensionPolicy,
+    double startedAtHintS) {
+  (void)startedAtHintS;
+  return createGroupAnimation(
+      controllerId,
+      std::move(entries),
+      AnimationKind::Timing,
+      animation,
+      {},
+      animation.durationMs,
+      animation.reduceMotion,
+      suspensionPolicy);
+}
+
+int32_t animateSpringGroup(
+    uint64_t controllerId,
+    std::vector<GroupMotionEntry> entries,
+    SpringAnimation animation,
+    GroupSuspensionPolicy suspensionPolicy,
+    double startedAtHintS) {
+  (void)startedAtHintS;
+  return createGroupAnimation(
+      controllerId,
+      std::move(entries),
+      AnimationKind::Spring,
+      {},
+      animation,
+      0,
+      animation.reduceMotion,
+      suspensionPolicy);
+}
+
+int32_t animateKeyframesGroup(
+    uint64_t controllerId,
+    std::vector<GroupMotionEntry> entries,
+    double durationMs,
+    int32_t reduceMotion,
+    GroupSuspensionPolicy suspensionPolicy,
+    double startedAtHintS) {
+  (void)startedAtHintS;
+  return createGroupAnimation(
+      controllerId,
+      std::move(entries),
+      AnimationKind::Keyframes,
+      {},
+      {},
+      durationMs,
+      reduceMotion,
+      suspensionPolicy);
+}
+
+std::vector<DriverSnapshot> cancelAnimationGroup(
+    int32_t groupId,
+    GroupCancelBehavior behavior) {
+  if (!NSThread.isMainThread || groupId <= 0) return {};
+  return cancelGroupInternal(
+      groupId,
+      behavior,
+      behavior == GroupCancelBehavior::Finish);
+}
+
 int32_t animateTiming(
     uint64_t driverId,
     AnimationStart start,
     Presentation presentation,
-    TimingAnimation animation) {
+    TimingAnimation animation,
+    AnimationValidationMode validationMode) {
   if (!NSThread.isMainThread) {
     // See setPresentation: blocking off-main risks a deadlock. 0 is the
     // documented rejection sentinel.
     return 0;
   }
+  const bool strictV2 =
+      validationMode == AnimationValidationMode::ProtocolV2;
+  const bool validAnimation = strictV2
+      ? isValidProtocolV2Timing(animation)
+      : std::isfinite(animation.durationMs) &&
+          std::isfinite(animation.controlPoint1X) &&
+          std::isfinite(animation.controlPoint1Y) &&
+          std::isfinite(animation.controlPoint2X) &&
+          std::isfinite(animation.controlPoint2Y) &&
+          isValidReduceMotionCode(animation.reduceMotion);
+  if (!strictV2 && validAnimation) {
+    animation.durationMs = std::max(0.0, animation.durationMs);
+  }
+  if (driverId == 0 || !isFiniteProtocolV2Presentation(presentation) ||
+      !validAnimation) {
+    return 0;
+  }
   auto iterator = registry().find(driverId);
+  Presentation preflightStart;
   if (iterator == registry().end()) {
-    if (!start.hasInteractiveStart) return 0;
+    if (!start.hasInteractiveStart ||
+        !isFiniteProtocolV2Presentation(start.interactiveStart)) {
+      return 0;
+    }
+    preflightStart = start.interactiveStart;
+  } else {
+    if (iterator->second.destroyed && !start.hasInteractiveStart) return 0;
+    preflightStart = resolvedAnimationStart(iterator->second, start);
+  }
+  if (!isFiniteProtocolV2Presentation(preflightStart) ||
+      preflightStart.clip.curve != presentation.clip.curve) {
+    return 0;
+  }
+  const bool reduced = shouldReduceMotion(animation.reduceMotion) ||
+      animation.durationMs <= 0;
+  if (strictV2 && !reduced && iterator != registry().end() &&
+      !timingPlanPreservesLinearHostNormalization(
+          iterator->second, preflightStart, presentation, animation)) {
+    return 0;
+  }
+  if (iterator == registry().end()) {
     iterator = registry().try_emplace(driverId).first;
     iterator->second.latest = start.interactiveStart;
     iterator->second.hasLatest = true;
@@ -844,10 +1749,10 @@ int32_t animateTiming(
   auto &state = iterator->second;
   state.destroyed = false;
   const int32_t animationId = allocateAnimationId();
-  const Presentation resolvedStart = resolvedAnimationStart(state, start);
+  const Presentation resolvedStart = preflightStart;
   prepareAnimation(driverId, state, start, presentation);
 
-  if (shouldReduceMotion(animation.reduceMotion) || animation.durationMs <= 0) {
+  if (reduced) {
     applyPresentation(state, presentation, false);
     emitCompletion(driverId, state, animationId, true);
     return animationId;
@@ -891,14 +1796,49 @@ int32_t animateSpring(
     uint64_t driverId,
     AnimationStart start,
     Presentation presentation,
-    SpringAnimation animation) {
+    SpringAnimation animation,
+    AnimationValidationMode validationMode) {
   if (!NSThread.isMainThread) {
     // See setPresentation: blocking off-main risks a deadlock.
     return 0;
   }
+  const bool strictV2 =
+      validationMode == AnimationValidationMode::ProtocolV2;
+  const bool validAnimation = strictV2
+      ? isValidProtocolV2Spring(animation)
+      : std::isfinite(animation.mass) &&
+          std::isfinite(animation.stiffness) &&
+          std::isfinite(animation.damping) &&
+          std::isfinite(animation.initialVelocity) &&
+          isValidReduceMotionCode(animation.reduceMotion);
+  if (!strictV2 && validAnimation) {
+    animation.mass = std::max(0.0001, animation.mass);
+    animation.stiffness = std::max(0.0001, animation.stiffness);
+    animation.damping = std::max(0.0, animation.damping);
+  }
+  if (driverId == 0 || !isFiniteProtocolV2Presentation(presentation) ||
+      !validAnimation) {
+    return 0;
+  }
   auto iterator = registry().find(driverId);
+  Presentation preflightStart;
   if (iterator == registry().end()) {
-    if (!start.hasInteractiveStart) return 0;
+    if (!start.hasInteractiveStart ||
+        !isFiniteProtocolV2Presentation(start.interactiveStart)) {
+      return 0;
+    }
+    preflightStart = start.interactiveStart;
+  } else {
+    if (iterator->second.destroyed && !start.hasInteractiveStart) return 0;
+    preflightStart = resolvedAnimationStart(iterator->second, start);
+  }
+  if (!isFiniteProtocolV2Presentation(preflightStart) ||
+      preflightStart.clip.curve != presentation.clip.curve ||
+      (strictV2 && !protocolV2SpringScaleIsProvablyPositive(
+          preflightStart, presentation, animation))) {
+    return 0;
+  }
+  if (iterator == registry().end()) {
     iterator = registry().try_emplace(driverId).first;
     iterator->second.latest = start.interactiveStart;
     iterator->second.hasLatest = true;
@@ -906,7 +1846,7 @@ int32_t animateSpring(
   auto &state = iterator->second;
   state.destroyed = false;
   const int32_t animationId = allocateAnimationId();
-  const Presentation resolvedStart = resolvedAnimationStart(state, start);
+  const Presentation resolvedStart = preflightStart;
   prepareAnimation(driverId, state, start, presentation);
 
   if (shouldReduceMotion(animation.reduceMotion)) {
@@ -949,14 +1889,57 @@ int32_t animateKeyframes(
     Presentation presentation,
     double durationMs,
     std::vector<Keyframe> keyframes,
-    int32_t reduceMotion) {
+    int32_t reduceMotion,
+    AnimationValidationMode validationMode) {
   if (!NSThread.isMainThread) {
     // See setPresentation: blocking off-main risks a deadlock.
     return 0;
   }
+  const bool strictV2 =
+      validationMode == AnimationValidationMode::ProtocolV2;
+  const bool finiteDuration = std::isfinite(durationMs);
+  if (!strictV2 && finiteDuration) durationMs = std::max(0.0, durationMs);
+  if (driverId == 0 || !isFiniteProtocolV2Presentation(presentation) ||
+      !finiteDuration || (strictV2 && durationMs < 0) ||
+      !isValidReduceMotionCode(reduceMotion)) {
+    return 0;
+  }
   auto iterator = registry().find(driverId);
+  Presentation preflightStart;
   if (iterator == registry().end()) {
-    if (!start.hasInteractiveStart) return 0;
+    if (!start.hasInteractiveStart ||
+        !isFiniteProtocolV2Presentation(start.interactiveStart)) {
+      return 0;
+    }
+    preflightStart = start.interactiveStart;
+  } else {
+    if (iterator->second.destroyed && !start.hasInteractiveStart) return 0;
+    preflightStart = resolvedAnimationStart(iterator->second, start);
+  }
+  bool validKeyframes = keyframes.size() >= 2 &&
+      keyframes.front().offset == 0 && keyframes.back().offset == 1;
+  double previousOffset = -1;
+  for (const Keyframe &keyframe : keyframes) {
+    validKeyframes = validKeyframes && std::isfinite(keyframe.offset) &&
+        keyframe.offset > previousOffset && keyframe.offset >= 0 &&
+        keyframe.offset <= 1 &&
+        isFiniteProtocolV2Presentation(keyframe.presentation);
+    previousOffset = keyframe.offset;
+  }
+  if (strictV2) {
+    validKeyframes = isValidProtocolV2Keyframes(
+        keyframes, preflightStart, presentation, start.hasInteractiveStart);
+  }
+  if (!isFiniteProtocolV2Presentation(preflightStart) || !validKeyframes) {
+    return 0;
+  }
+  const bool reduced = shouldReduceMotion(reduceMotion) || durationMs <= 0;
+  if (strictV2 && !reduced && iterator != registry().end() &&
+      !keyframePlanPreservesLinearHostNormalization(
+          iterator->second, preflightStart, keyframes)) {
+    return 0;
+  }
+  if (iterator == registry().end()) {
     iterator = registry().try_emplace(driverId).first;
     iterator->second.latest = start.interactiveStart;
     iterator->second.hasLatest = true;
@@ -964,12 +1947,21 @@ int32_t animateKeyframes(
   auto &state = iterator->second;
   state.destroyed = false;
   const int32_t animationId = allocateAnimationId();
-  const Presentation resolvedStart = resolvedAnimationStart(state, start);
+  const Presentation resolvedStart = preflightStart;
   prepareAnimation(driverId, state, start, presentation);
-  if (shouldReduceMotion(reduceMotion) || durationMs <= 0) {
+  if (reduced) {
     applyPresentation(state, presentation, false);
     emitCompletion(driverId, state, animationId, true);
     return animationId;
+  }
+
+  // Frame zero is a placeholder when the caller omits `from`. Resolve it from
+  // the presentation layer/native-visible state so native-to-native retargets
+  // cannot jump back to a stale compiled sample. With an explicit `from`,
+  // protocol validation requires the same value, so this assignment is a
+  // harmless canonicalization in both cases.
+  if (strictV2 && !start.hasInteractiveStart) {
+    keyframes.front().presentation = resolvedStart;
   }
 
   ActiveAnimation active{animationId};
@@ -1020,6 +2012,20 @@ CancelResult cancelAnimation(
   auto &state = iterator->second;
   if (!state.animation.has_value() ||
       (animationId > 0 && animationId != state.animation->animationId)) {
+    return {false, state.latest};
+  }
+  if (state.animation->groupId != 0) {
+    const int32_t groupId = state.animation->groupId;
+    const std::vector<DriverSnapshot> snapshots = cancelGroupInternal(
+        groupId,
+        useTarget ? GroupCancelBehavior::Finish
+                  : GroupCancelBehavior::Freeze,
+        useTarget);
+    for (const DriverSnapshot &snapshot : snapshots) {
+      if (snapshot.driverId == driverId) {
+        return {true, snapshot.presentation};
+      }
+    }
     return {false, state.latest};
   }
 

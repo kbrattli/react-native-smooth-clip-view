@@ -289,24 +289,154 @@ inline double springContinuationVelocity(
 
 // --- Presentation channels ------------------------------------------------
 
-constexpr std::size_t kChannelCount = 7;
+// Eleven continuous V2 channels. The curve is categorical and is deliberately
+// carried outside the scalar array.
+constexpr std::size_t kChannelCount = 11;
 using Channels = std::array<double, kChannelCount>;
 
+inline double resolvedRadius(double overrideValue, double shorthand) {
+  return std::isfinite(overrideValue) ? overrideValue : shorthand;
+}
+
+inline bool radiiAreUniform(
+    double topLeft,
+    double topRight,
+    double bottomRight,
+    double bottomLeft) {
+  return topLeft == topRight && topLeft == bottomRight &&
+      topLeft == bottomLeft;
+}
+
 inline Channels toChannels(const Presentation &presentation) {
+  const double topLeft = resolvedRadius(
+      presentation.clip.topLeftRadius, presentation.clip.radius);
+  const double topRight = resolvedRadius(
+      presentation.clip.topRightRadius, presentation.clip.radius);
+  const double bottomRight = resolvedRadius(
+      presentation.clip.bottomRightRadius, presentation.clip.radius);
+  const double bottomLeft = resolvedRadius(
+      presentation.clip.bottomLeftRadius, presentation.clip.radius);
   return {presentation.clip.x,
           presentation.clip.y,
           presentation.clip.width,
           presentation.clip.height,
-          presentation.clip.radius,
+          topLeft,
+          topRight,
+          bottomRight,
+          bottomLeft,
           presentation.contentTranslateX,
-          presentation.contentTranslateY};
+          presentation.contentTranslateY,
+          presentation.contentScale};
 }
 
-inline Presentation fromChannels(const Channels &channels) {
-  return Presentation{
-      {channels[0], channels[1], channels[2], channels[3], channels[4]},
-      channels[5],
-      channels[6]};
+// --- Protocol-V2 animation validation ------------------------------------
+//
+// Keep the invariants at the native ownership boundary as well as in JS. OTA
+// callers and direct host-function users can bypass the TypeScript preflight;
+// rejecting here prevents an invalid request from dissolving an existing
+// animation group before the registry notices it cannot install the new plan.
+
+inline bool isProtocolV2Curve(ClipCurve curve) {
+  return curve == ClipCurve::Circular || curve == ClipCurve::Continuous;
+}
+
+inline bool isFiniteProtocolV2Presentation(
+    const Presentation &presentation) {
+  const Channels channels = toChannels(presentation);
+  return std::all_of(
+             channels.begin(), channels.end(),
+             [](double value) { return std::isfinite(value); }) &&
+      isProtocolV2Curve(presentation.clip.curve) &&
+      presentation.contentScale > 0;
+}
+
+inline bool protocolV2PresentationsEqual(
+    const Presentation &first,
+    const Presentation &second) {
+  return first.clip.curve == second.clip.curve &&
+      toChannels(first) == toChannels(second);
+}
+
+inline bool isValidReduceMotionCode(int32_t value) {
+  return value >= 0 && value <= 2;
+}
+
+inline bool isValidProtocolV2Timing(const TimingAnimation &animation) {
+  return std::isfinite(animation.durationMs) && animation.durationMs >= 0 &&
+      std::isfinite(animation.controlPoint1X) &&
+      std::isfinite(animation.controlPoint1Y) &&
+      std::isfinite(animation.controlPoint2X) &&
+      std::isfinite(animation.controlPoint2Y) &&
+      animation.controlPoint1X >= 0 && animation.controlPoint1X <= 1 &&
+      animation.controlPoint2X >= 0 && animation.controlPoint2X <= 1 &&
+      isValidReduceMotionCode(animation.reduceMotion);
+}
+
+inline bool isValidProtocolV2Spring(const SpringAnimation &animation) {
+  return std::isfinite(animation.mass) && animation.mass > 0 &&
+      std::isfinite(animation.stiffness) && animation.stiffness > 0 &&
+      std::isfinite(animation.damping) && animation.damping >= 0 &&
+      std::isfinite(animation.initialVelocity) &&
+      isValidReduceMotionCode(animation.reduceMotion);
+}
+
+inline bool protocolV2SpringScaleIsProvablyPositive(
+    const Presentation &start,
+    const Presentation &target,
+    const SpringAnimation &animation) {
+  if (start.contentScale == target.contentScale) return true;
+  // With zero initial velocity, a critically/over-damped unit response is
+  // monotone, so it remains between two positive endpoints. Inherited or
+  // under-damped velocity can overshoot through zero and must be compiled to
+  // keyframes by the caller.
+  return !animation.inheritVelocity && animation.initialVelocity == 0 &&
+      animation.damping * animation.damping >=
+      4 * animation.mass * animation.stiffness;
+}
+
+inline bool isValidProtocolV2Keyframes(
+    const std::vector<Keyframe> &keyframes,
+    const Presentation &resolvedStart,
+    const Presentation &target,
+    bool requireExplicitStart) {
+  if (keyframes.size() < 2 || keyframes.front().offset != 0 ||
+      keyframes.back().offset != 1 ||
+      !protocolV2PresentationsEqual(keyframes.back().presentation, target)) {
+    return false;
+  }
+  if (requireExplicitStart && !protocolV2PresentationsEqual(
+                                  keyframes.front().presentation,
+                                  resolvedStart)) {
+    return false;
+  }
+  double previousOffset = -1;
+  for (const Keyframe &keyframe : keyframes) {
+    if (!std::isfinite(keyframe.offset) || keyframe.offset <= previousOffset ||
+        keyframe.offset < 0 || keyframe.offset > 1 ||
+        !isFiniteProtocolV2Presentation(keyframe.presentation) ||
+        keyframe.presentation.clip.curve != target.clip.curve) {
+      return false;
+    }
+    previousOffset = keyframe.offset;
+  }
+  return resolvedStart.clip.curve == target.clip.curve;
+}
+
+inline Presentation fromChannels(
+    const Channels &channels,
+    ClipCurve curve = ClipCurve::Circular) {
+  Geometry geometry{
+      channels[0], channels[1], channels[2], channels[3], 0.0};
+  geometry.topLeftRadius = channels[4];
+  geometry.topRightRadius = channels[5];
+  geometry.bottomRightRadius = channels[6];
+  geometry.bottomLeftRadius = channels[7];
+  geometry.radius = radiiAreUniform(
+      channels[4], channels[5], channels[6], channels[7])
+      ? channels[4]
+      : 0.0;
+  geometry.curve = curve;
+  return Presentation{geometry, channels[8], channels[9], channels[10]};
 }
 
 inline Presentation interpolate(
@@ -316,14 +446,13 @@ inline Presentation interpolate(
   const auto mix = [progress](double start, double end) {
     return start + (end - start) * progress;
   };
-  return Presentation{
-      {mix(from.clip.x, to.clip.x),
-       mix(from.clip.y, to.clip.y),
-       mix(from.clip.width, to.clip.width),
-       mix(from.clip.height, to.clip.height),
-       mix(from.clip.radius, to.clip.radius)},
-      mix(from.contentTranslateX, to.contentTranslateX),
-      mix(from.contentTranslateY, to.contentTranslateY)};
+  Channels blended{};
+  const Channels fromChannelsValue = toChannels(from);
+  const Channels toChannelsValue = toChannels(to);
+  for (std::size_t index = 0; index < kChannelCount; index += 1) {
+    blended[index] = mix(fromChannelsValue[index], toChannelsValue[index]);
+  }
+  return fromChannels(blended, from.clip.curve);
 }
 
 // Freezes a timing animation at one already-rendered raw-time phase and
@@ -361,95 +490,14 @@ inline TimingContinuation timingContinuationAtFrame(
 
 // --- Keyframe curve -------------------------------------------------------
 
-// Keyframes sampled from a smooth path, evaluated with monotone cubic Hermite
-// interpolation (Fritsch-Carlson).
-//
-// Straight lerping between keyframes is exact at every keyframe and wrong in
-// between in a way that matters more than its position error suggests: the
-// interpolated VELOCITY is a staircase that steps at every keyframe boundary,
-// beside content whose Reanimated curve is continuous. Consumers bake dozens of
-// keyframes precisely because their geometry path is not affine in progress, so
-// reconstructing that path smoothly is the honest reading of their intent.
-//
-// Monotone rather than plain Catmull-Rom because the alternative can overshoot,
-// and these channels do not tolerate it: width, height and radius must never
-// dip below zero or bulge past the values the consumer asked for. The
-// Fritsch-Carlson tangent clamp keeps every segment inside the range of its own
-// endpoints. Two keyframes degenerate to the old straight line (both tangents
-// equal the secant) — equal in real arithmetic, within one ulp (~1e-13 of the
-// travel) in doubles because the Hermite blend orders its operations
-// differently than the lerp it replaced. The jfloat delivery cast erases the
-// difference long before a pixel could see it.
-//
-// PARITY NOTE: iOS builds a CAKeyframeAnimation with `kCAAnimationLinear`
-// (SmoothClipView.mm) and cannot run this evaluator — CoreAnimation interpolates
-// off-thread. The platforms therefore differ mid-segment by the linearization
-// error this removes, sub-pixel at any realistic keyframe density and zero at
-// every keyframe. Closing it needs either `kCAAnimationCubic` (a different
-// spline that CAN overshoot, so no) or resampling the keyframes densely through
-// this curve before handing them to CA.
+// Keyframes interpolate segment-wise linearly on every platform. This is a
+// public V2 contract: consumers compile unsupported springs/easings into exact
+// scalar samples, and native must not reinterpret those samples as a spline.
 class KeyframeCurve {
  public:
   void reset(std::vector<Keyframe> frames) {
     frames_ = std::move(frames);
     cursor_ = 1;
-    tangents_.assign(frames_.size(), Channels{});
-    const std::size_t count = frames_.size();
-    if (count < 2) return;
-
-    // Secant slope of every segment, per channel. A non-increasing offset pair
-    // (the re-latch remap can produce one) contributes no slope rather than
-    // dividing by zero; evaluate() short-circuits those segments too.
-    std::vector<Channels> secants(count - 1);
-    for (std::size_t index = 0; index + 1 < count; index += 1) {
-      const double span = frames_[index + 1].offset - frames_[index].offset;
-      const Channels lower = toChannels(frames_[index].presentation);
-      const Channels upper = toChannels(frames_[index + 1].presentation);
-      for (std::size_t channel = 0; channel < kChannelCount; channel += 1) {
-        secants[index][channel] =
-            span > 0 ? (upper[channel] - lower[channel]) / span : 0.0;
-      }
-    }
-
-    // One-sided at the ends, averaged inside.
-    for (std::size_t channel = 0; channel < kChannelCount; channel += 1) {
-      tangents_[0][channel] = secants[0][channel];
-      tangents_[count - 1][channel] = secants[count - 2][channel];
-      for (std::size_t index = 1; index + 1 < count; index += 1) {
-        tangents_[index][channel] =
-            (secants[index - 1][channel] + secants[index][channel]) / 2.0;
-      }
-    }
-
-    // Fritsch-Carlson clamp: this is what makes the curve non-overshooting.
-    for (std::size_t index = 0; index + 1 < count; index += 1) {
-      for (std::size_t channel = 0; channel < kChannelCount; channel += 1) {
-        const double secant = secants[index][channel];
-        if (secant == 0.0) {
-          // Flat segment: pin both ends flat so the curve cannot bulge off a
-          // pair of equal keyframes.
-          tangents_[index][channel] = 0.0;
-          tangents_[index + 1][channel] = 0.0;
-          continue;
-        }
-        double alpha = tangents_[index][channel] / secant;
-        double beta = tangents_[index + 1][channel] / secant;
-        if (alpha < 0.0) {
-          tangents_[index][channel] = 0.0;
-          alpha = 0.0;
-        }
-        if (beta < 0.0) {
-          tangents_[index + 1][channel] = 0.0;
-          beta = 0.0;
-        }
-        const double magnitude = alpha * alpha + beta * beta;
-        if (magnitude > 9.0) {
-          const double scale = 3.0 / std::sqrt(magnitude);
-          tangents_[index][channel] = scale * alpha * secant;
-          tangents_[index + 1][channel] = scale * beta * secant;
-        }
-      }
-    }
   }
 
   const std::vector<Keyframe> &frames() const { return frames_; }
@@ -458,7 +506,7 @@ class KeyframeCurve {
 
   Presentation evaluate(double progress) {
     const std::size_t count = frames_.size();
-    if (count == 0) return Presentation{{0, 0, 0, 0, 0}, 0, 0};
+    if (count == 0) return Presentation{{0, 0, 0, 0, 0}, 0, 0, 1};
     if (count == 1) return frames_[0].presentation;
 
     // The scan resumes from the previous segment instead of restarting at 1.
@@ -476,30 +524,11 @@ class KeyframeCurve {
     if (span <= 0) return higher.presentation;
 
     const double t = clamp01((progress - lower.offset) / span);
-    const double t2 = t * t;
-    const double t3 = t2 * t;
-    // Cubic Hermite basis.
-    const double h00 = 2 * t3 - 3 * t2 + 1;
-    const double h10 = t3 - 2 * t2 + t;
-    const double h01 = -2 * t3 + 3 * t2;
-    const double h11 = t3 - t2;
-
-    const Channels from = toChannels(lower.presentation);
-    const Channels to = toChannels(higher.presentation);
-    const Channels &fromSlope = tangents_[upper - 1];
-    const Channels &toSlope = tangents_[upper];
-    Channels blended{};
-    for (std::size_t channel = 0; channel < kChannelCount; channel += 1) {
-      blended[channel] = h00 * from[channel] +
-          h10 * span * fromSlope[channel] + h01 * to[channel] +
-          h11 * span * toSlope[channel];
-    }
-    return fromChannels(blended);
+    return interpolate(lower.presentation, higher.presentation, t);
   }
 
- private:
+  private:
   std::vector<Keyframe> frames_;
-  std::vector<Channels> tangents_;
   std::size_t cursor_ = 1;
 };
 

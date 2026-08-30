@@ -8,10 +8,12 @@ export type DriverState = {
   source: SharedValue<SmoothClipPresentation>;
   activeAnimationId?: SharedValue<number>;
   ownership?: SharedValue<number>;
+  ready?: SharedValue<number>;
   onAnimationComplete: {
     current: ((result: ClipAnimationResult) => void) | undefined;
   };
   mountedViews: Set<object>;
+  readyViews: Set<object>;
   animationParticipants: Map<number, Set<object>>;
   failedAnimations: Set<number>;
   completionDeferrals: number;
@@ -64,7 +66,8 @@ export function createDriverState(
   source: SharedValue<SmoothClipPresentation>,
   onAnimationComplete: DriverState['onAnimationComplete'],
   activeAnimationId?: SharedValue<number>,
-  ownership?: SharedValue<number>
+  ownership?: SharedValue<number>,
+  ready?: SharedValue<number>
 ): DriverState {
   return {
     driverId,
@@ -72,8 +75,10 @@ export function createDriverState(
     source,
     activeAnimationId,
     ownership,
+    ready,
     onAnimationComplete,
     mountedViews: new Set(),
+    readyViews: new Set(),
     animationParticipants: new Map(),
     failedAnimations: new Set(),
     completionDeferrals: 0,
@@ -81,15 +86,49 @@ export function createDriverState(
   };
 }
 
-export function registerDriverView(driver: SmoothClipDriver): () => void {
+export type DriverViewReadinessRegistration = Readonly<{
+  setReady(ready: boolean): void;
+  unregister(): void;
+}>;
+
+function updateAggregateReadiness(state: DriverState): void {
+  if (state.ready) state.ready.value = state.readyViews.size > 0 ? 1 : 0;
+}
+
+export function registerDriverViewReadiness(
+  driver: SmoothClipDriver,
+  initiallyReady: boolean
+): DriverViewReadinessRegistration {
   const state = getDriverState(driver);
   const token = {};
   state.mountedViews.add(token);
+  if (initiallyReady) state.readyViews.add(token);
+  updateAggregateReadiness(state);
+  let registered = true;
+  return {
+    setReady(ready) {
+      if (!registered) return;
+      if (ready) state.readyViews.add(token);
+      else state.readyViews.delete(token);
+      updateAggregateReadiness(state);
+    },
+    unregister() {
+      if (!registered) return;
+      registered = false;
+      state.readyViews.delete(token);
+      state.mountedViews.delete(token);
+      updateAggregateReadiness(state);
+      for (const [animationId, participants] of state.animationParticipants) {
+        if (participants.has(token)) state.failedAnimations.add(animationId);
+      }
+    },
+  };
+}
+
+export function registerDriverView(driver: SmoothClipDriver): () => void {
+  const registration = registerDriverViewReadiness(driver, true);
   return () => {
-    state.mountedViews.delete(token);
-    for (const [animationId, participants] of state.animationParticipants) {
-      if (participants.has(token)) state.failedAnimations.add(animationId);
-    }
+    registration.unregister();
   };
 }
 

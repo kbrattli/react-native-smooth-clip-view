@@ -35,6 +35,27 @@ internal object SmoothClipBindings {
         lifecycleVisible: Boolean,
     )
 
+    external fun nativeRegisterViewV2(
+        driverId: Double,
+        view: SmoothClipView,
+        x: Double,
+        y: Double,
+        width: Double,
+        height: Double,
+        topLeftRadius: Double,
+        topRightRadius: Double,
+        bottomRightRadius: Double,
+        bottomLeftRadius: Double,
+        curveCode: Int,
+        contentTranslateX: Double,
+        contentTranslateY: Double,
+        contentScale: Double,
+        density: Double,
+        widthPx: Double,
+        heightPx: Double,
+        lifecycleVisible: Boolean,
+    )
+
     /**
      * Pushes a registered view's density and pixel host size so driver
      * deliveries are pre-normalized in C++; redelivers the visible value.

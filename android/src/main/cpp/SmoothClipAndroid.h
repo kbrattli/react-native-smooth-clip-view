@@ -18,10 +18,16 @@ struct JSmoothClipView : facebook::jni::JavaClass<JSmoothClipView> {
   static constexpr auto kJavaDescriptor = "Lcom/smoothclipview/SmoothClipView;";
 
   void applyClip(const Presentation &presentation) const;
+  void applyClipV2(const Presentation &presentation) const;
   void applyClipPx(
       const NormalizedClip &clip,
       double contentTranslateXPx,
       double contentTranslateYPx) const;
+  void applyClipV2Px(
+      const NormalizedClip &clip,
+      double contentTranslateXPx,
+      double contentTranslateYPx,
+      double contentScale) const;
 };
 
 // Called from Kotlin (SmoothClipViewManager) on the UI thread when a Fabric
@@ -56,6 +62,10 @@ void setViewLifecycleVisibilityAndroid(
 // inside Choreographer#doFrame with the frame's vsync timestamp converted to
 // seconds; never lets a failure unwind back into doFrame.
 void onFrameAndroid(double frameTimeS);
+
+// Non-destructive V2 snapshot for the public snapshotCurrentV2 binding.
+// beginInteraction remains the explicit ownership-taking/cancelling operation.
+Presentation snapshotCurrentAndroid(uint64_t driverId);
 
 // Installs `global.__SmoothClipView` (worklet-callable host functions) into the
 // JS runtime and wires native animation completion delivery through the

@@ -6,8 +6,9 @@
 namespace smoothclip {
 
 // The two most recent interactive samples used by `initialVelocity: 'inherit'`.
-// Channels are the seven presentation scalars (x, y, width, height, radius,
-// contentTranslateX, contentTranslateY) but the tracker is value-agnostic:
+// Channels are the eleven continuous V2 presentation scalars. Scale is stored
+// so histories remain coherent but excluded from velocity projection; each of
+// the four radius channels contributes one quarter of the legacy radius weight.
 // iOS records normalized (host-clamped) geometry, Android raw DIP — the
 // projection only needs both samples and the target in the same space.
 // Shared by ios/SmoothClipView.mm and android/.../SmoothClipRegistry.cpp; a
@@ -15,8 +16,8 @@ namespace smoothclip {
 struct VelocitySampleHistory {
   bool hasPrevious = false;
   bool hasLatest = false;
-  std::array<double, 7> previous{};
-  std::array<double, 7> latest{};
+  std::array<double, 11> previous{};
+  std::array<double, 11> latest{};
   double previousTimeS = 0;
   double latestTimeS = 0;
 };
@@ -40,7 +41,7 @@ inline constexpr double kVelocityFullCreditS = 1.0 / 60.0;
 
 inline void recordVelocitySample(
     VelocitySampleHistory &history,
-    const std::array<double, 7> &channels,
+    const std::array<double, 11> &channels,
     double nowS) {
   if (history.hasLatest && channels == history.latest) {
     // Identical re-record (a `from` seed equal to the last interactive
@@ -97,7 +98,7 @@ inline double velocityStalenessCredit(double holdS) {
 // Android seeds each integrator channel with scalar·displacement.
 inline double inheritedVelocity(
     const VelocitySampleHistory &history,
-    const std::array<double, 7> &target,
+    const std::array<double, 11> &target,
     double nowS) {
   if (!history.hasPrevious || !history.hasLatest) return 0;
   const double elapsed = history.latestTimeS - history.previousTimeS;
@@ -107,11 +108,14 @@ inline double inheritedVelocity(
   }
   double numerator = 0;
   double denominator = 0;
-  for (int index = 0; index < 7; index += 1) {
+  for (int index = 0; index < 11; index += 1) {
+    const double weight = index >= 4 && index <= 7
+        ? 0.25
+        : (index == 10 ? 0.0 : 1.0);
     const double sampleDelta = history.latest[index] - history.previous[index];
     const double destinationDelta = target[index] - history.latest[index];
-    numerator += sampleDelta * destinationDelta;
-    denominator += destinationDelta * destinationDelta;
+    numerator += weight * sampleDelta * destinationDelta;
+    denominator += weight * destinationDelta * destinationDelta;
   }
   if (denominator <= 1e-12) return 0;
   const double result = numerator / elapsed / denominator * credit;

@@ -9,6 +9,81 @@ export interface Spec extends TurboModule {
       finished: boolean;
     }>
   >;
+  readonly onClipGroupAnimationComplete: CodegenTypes.EventEmitter<
+    Readonly<{
+      controllerId: CodegenTypes.Double;
+      groupId: CodegenTypes.Int32;
+      finished: boolean;
+      driverIds: ReadonlyArray<CodegenTypes.Double>;
+    }>
+  >;
+  getPresentationProtocolVersion(): CodegenTypes.Int32;
+  supportsAutonomousComplexPathAnimation(): boolean;
+  beginGroupInteractionV2(
+    driverIds: ReadonlyArray<CodegenTypes.Double>
+  ): ReadonlyArray<CodegenTypes.Double>;
+  snapshotGroupV2(
+    driverIds: ReadonlyArray<CodegenTypes.Double>
+  ): ReadonlyArray<CodegenTypes.Double>;
+  setClipPresentationBatchV2(
+    entries: ReadonlyArray<CodegenTypes.Double>
+  ): boolean;
+  animateTimingGroupV2(
+    controllerId: CodegenTypes.Double,
+    entries: ReadonlyArray<CodegenTypes.Double>,
+    durationMs: CodegenTypes.Double,
+    controlPoint1X: CodegenTypes.Double,
+    controlPoint1Y: CodegenTypes.Double,
+    controlPoint2X: CodegenTypes.Double,
+    controlPoint2Y: CodegenTypes.Double,
+    reduceMotion: CodegenTypes.Int32,
+    suspensionPolicy: CodegenTypes.Int32
+  ): CodegenTypes.Int32;
+  animateSpringGroupV2(
+    controllerId: CodegenTypes.Double,
+    entries: ReadonlyArray<CodegenTypes.Double>,
+    mass: CodegenTypes.Double,
+    stiffness: CodegenTypes.Double,
+    damping: CodegenTypes.Double,
+    initialVelocity: CodegenTypes.Double,
+    inheritVelocity: boolean,
+    reduceMotion: CodegenTypes.Int32,
+    suspensionPolicy: CodegenTypes.Int32
+  ): CodegenTypes.Int32;
+  animateKeyframesGroupV2(
+    controllerId: CodegenTypes.Double,
+    entries: ReadonlyArray<CodegenTypes.Double>,
+    durationMs: CodegenTypes.Double,
+    reduceMotion: CodegenTypes.Int32,
+    suspensionPolicy: CodegenTypes.Int32
+  ): CodegenTypes.Int32;
+  cancelAnimationGroupV2(
+    groupId: CodegenTypes.Int32,
+    behavior: CodegenTypes.Int32
+  ): ReadonlyArray<CodegenTypes.Double>;
+  setClipPresentationV2(
+    driverId: CodegenTypes.Double,
+    x: CodegenTypes.Double,
+    y: CodegenTypes.Double,
+    width: CodegenTypes.Double,
+    height: CodegenTypes.Double,
+    topLeftRadius: CodegenTypes.Double,
+    topRightRadius: CodegenTypes.Double,
+    bottomRightRadius: CodegenTypes.Double,
+    bottomLeftRadius: CodegenTypes.Double,
+    curveCode: CodegenTypes.Int32,
+    contentTranslateX: CodegenTypes.Double,
+    contentTranslateY: CodegenTypes.Double,
+    contentScale: CodegenTypes.Double,
+    takeOwnership: boolean,
+    overridePendingAnimation: boolean
+  ): void;
+  beginInteractionV2(
+    driverId: CodegenTypes.Double
+  ): ReadonlyArray<CodegenTypes.Double>;
+  snapshotCurrentV2(
+    driverId: CodegenTypes.Double
+  ): ReadonlyArray<CodegenTypes.Double>;
   setClipPresentation(
     driverId: CodegenTypes.Double,
     x: CodegenTypes.Double,
@@ -48,6 +123,40 @@ export interface Spec extends TurboModule {
     controlPoint2Y: CodegenTypes.Double,
     reduceMotion: CodegenTypes.Int32
   ): CodegenTypes.Int32;
+  animateTimingV2(
+    driverId: CodegenTypes.Double,
+    hasInteractiveStart: boolean,
+    startX: CodegenTypes.Double,
+    startY: CodegenTypes.Double,
+    startWidth: CodegenTypes.Double,
+    startHeight: CodegenTypes.Double,
+    startTopLeftRadius: CodegenTypes.Double,
+    startTopRightRadius: CodegenTypes.Double,
+    startBottomRightRadius: CodegenTypes.Double,
+    startBottomLeftRadius: CodegenTypes.Double,
+    startCurveCode: CodegenTypes.Int32,
+    startContentTranslateX: CodegenTypes.Double,
+    startContentTranslateY: CodegenTypes.Double,
+    startContentScale: CodegenTypes.Double,
+    x: CodegenTypes.Double,
+    y: CodegenTypes.Double,
+    width: CodegenTypes.Double,
+    height: CodegenTypes.Double,
+    topLeftRadius: CodegenTypes.Double,
+    topRightRadius: CodegenTypes.Double,
+    bottomRightRadius: CodegenTypes.Double,
+    bottomLeftRadius: CodegenTypes.Double,
+    curveCode: CodegenTypes.Int32,
+    contentTranslateX: CodegenTypes.Double,
+    contentTranslateY: CodegenTypes.Double,
+    contentScale: CodegenTypes.Double,
+    durationMs: CodegenTypes.Double,
+    controlPoint1X: CodegenTypes.Double,
+    controlPoint1Y: CodegenTypes.Double,
+    controlPoint2X: CodegenTypes.Double,
+    controlPoint2Y: CodegenTypes.Double,
+    reduceMotion: CodegenTypes.Int32
+  ): CodegenTypes.Int32;
   animateSpring(
     driverId: CodegenTypes.Double,
     hasInteractiveStart: boolean,
@@ -65,6 +174,40 @@ export interface Spec extends TurboModule {
     radius: CodegenTypes.Double,
     contentTranslateX: CodegenTypes.Double,
     contentTranslateY: CodegenTypes.Double,
+    mass: CodegenTypes.Double,
+    stiffness: CodegenTypes.Double,
+    damping: CodegenTypes.Double,
+    initialVelocity: CodegenTypes.Double,
+    inheritVelocity: boolean,
+    reduceMotion: CodegenTypes.Int32
+  ): CodegenTypes.Int32;
+  animateSpringV2(
+    driverId: CodegenTypes.Double,
+    hasInteractiveStart: boolean,
+    startX: CodegenTypes.Double,
+    startY: CodegenTypes.Double,
+    startWidth: CodegenTypes.Double,
+    startHeight: CodegenTypes.Double,
+    startTopLeftRadius: CodegenTypes.Double,
+    startTopRightRadius: CodegenTypes.Double,
+    startBottomRightRadius: CodegenTypes.Double,
+    startBottomLeftRadius: CodegenTypes.Double,
+    startCurveCode: CodegenTypes.Int32,
+    startContentTranslateX: CodegenTypes.Double,
+    startContentTranslateY: CodegenTypes.Double,
+    startContentScale: CodegenTypes.Double,
+    x: CodegenTypes.Double,
+    y: CodegenTypes.Double,
+    width: CodegenTypes.Double,
+    height: CodegenTypes.Double,
+    topLeftRadius: CodegenTypes.Double,
+    topRightRadius: CodegenTypes.Double,
+    bottomRightRadius: CodegenTypes.Double,
+    bottomLeftRadius: CodegenTypes.Double,
+    curveCode: CodegenTypes.Int32,
+    contentTranslateX: CodegenTypes.Double,
+    contentTranslateY: CodegenTypes.Double,
+    contentScale: CodegenTypes.Double,
     mass: CodegenTypes.Double,
     stiffness: CodegenTypes.Double,
     damping: CodegenTypes.Double,
@@ -93,8 +236,140 @@ export interface Spec extends TurboModule {
     frames: ReadonlyArray<CodegenTypes.Double>,
     reduceMotion: CodegenTypes.Int32
   ): CodegenTypes.Int32;
+  animateKeyframesV2(
+    driverId: CodegenTypes.Double,
+    hasInteractiveStart: boolean,
+    startX: CodegenTypes.Double,
+    startY: CodegenTypes.Double,
+    startWidth: CodegenTypes.Double,
+    startHeight: CodegenTypes.Double,
+    startTopLeftRadius: CodegenTypes.Double,
+    startTopRightRadius: CodegenTypes.Double,
+    startBottomRightRadius: CodegenTypes.Double,
+    startBottomLeftRadius: CodegenTypes.Double,
+    startCurveCode: CodegenTypes.Int32,
+    startContentTranslateX: CodegenTypes.Double,
+    startContentTranslateY: CodegenTypes.Double,
+    startContentScale: CodegenTypes.Double,
+    x: CodegenTypes.Double,
+    y: CodegenTypes.Double,
+    width: CodegenTypes.Double,
+    height: CodegenTypes.Double,
+    topLeftRadius: CodegenTypes.Double,
+    topRightRadius: CodegenTypes.Double,
+    bottomRightRadius: CodegenTypes.Double,
+    bottomLeftRadius: CodegenTypes.Double,
+    curveCode: CodegenTypes.Int32,
+    contentTranslateX: CodegenTypes.Double,
+    contentTranslateY: CodegenTypes.Double,
+    contentScale: CodegenTypes.Double,
+    durationMs: CodegenTypes.Double,
+    frames: ReadonlyArray<CodegenTypes.Double>,
+    reduceMotion: CodegenTypes.Int32
+  ): CodegenTypes.Int32;
+  animateTimingFromV2(
+    driverId: CodegenTypes.Double,
+    startX: CodegenTypes.Double,
+    startY: CodegenTypes.Double,
+    startWidth: CodegenTypes.Double,
+    startHeight: CodegenTypes.Double,
+    startTopLeftRadius: CodegenTypes.Double,
+    startTopRightRadius: CodegenTypes.Double,
+    startBottomRightRadius: CodegenTypes.Double,
+    startBottomLeftRadius: CodegenTypes.Double,
+    startCurveCode: CodegenTypes.Int32,
+    startContentTranslateX: CodegenTypes.Double,
+    startContentTranslateY: CodegenTypes.Double,
+    startContentScale: CodegenTypes.Double,
+    x: CodegenTypes.Double,
+    y: CodegenTypes.Double,
+    width: CodegenTypes.Double,
+    height: CodegenTypes.Double,
+    topLeftRadius: CodegenTypes.Double,
+    topRightRadius: CodegenTypes.Double,
+    bottomRightRadius: CodegenTypes.Double,
+    bottomLeftRadius: CodegenTypes.Double,
+    curveCode: CodegenTypes.Int32,
+    contentTranslateX: CodegenTypes.Double,
+    contentTranslateY: CodegenTypes.Double,
+    contentScale: CodegenTypes.Double,
+    durationMs: CodegenTypes.Double,
+    controlPoint1X: CodegenTypes.Double,
+    controlPoint1Y: CodegenTypes.Double,
+    controlPoint2X: CodegenTypes.Double,
+    controlPoint2Y: CodegenTypes.Double,
+    reduceMotion: CodegenTypes.Int32
+  ): CodegenTypes.Int32;
+  animateSpringFromV2(
+    driverId: CodegenTypes.Double,
+    startX: CodegenTypes.Double,
+    startY: CodegenTypes.Double,
+    startWidth: CodegenTypes.Double,
+    startHeight: CodegenTypes.Double,
+    startTopLeftRadius: CodegenTypes.Double,
+    startTopRightRadius: CodegenTypes.Double,
+    startBottomRightRadius: CodegenTypes.Double,
+    startBottomLeftRadius: CodegenTypes.Double,
+    startCurveCode: CodegenTypes.Int32,
+    startContentTranslateX: CodegenTypes.Double,
+    startContentTranslateY: CodegenTypes.Double,
+    startContentScale: CodegenTypes.Double,
+    x: CodegenTypes.Double,
+    y: CodegenTypes.Double,
+    width: CodegenTypes.Double,
+    height: CodegenTypes.Double,
+    topLeftRadius: CodegenTypes.Double,
+    topRightRadius: CodegenTypes.Double,
+    bottomRightRadius: CodegenTypes.Double,
+    bottomLeftRadius: CodegenTypes.Double,
+    curveCode: CodegenTypes.Int32,
+    contentTranslateX: CodegenTypes.Double,
+    contentTranslateY: CodegenTypes.Double,
+    contentScale: CodegenTypes.Double,
+    mass: CodegenTypes.Double,
+    stiffness: CodegenTypes.Double,
+    damping: CodegenTypes.Double,
+    initialVelocity: CodegenTypes.Double,
+    inheritVelocity: boolean,
+    reduceMotion: CodegenTypes.Int32
+  ): CodegenTypes.Int32;
+  animateKeyframesFromV2(
+    driverId: CodegenTypes.Double,
+    startX: CodegenTypes.Double,
+    startY: CodegenTypes.Double,
+    startWidth: CodegenTypes.Double,
+    startHeight: CodegenTypes.Double,
+    startTopLeftRadius: CodegenTypes.Double,
+    startTopRightRadius: CodegenTypes.Double,
+    startBottomRightRadius: CodegenTypes.Double,
+    startBottomLeftRadius: CodegenTypes.Double,
+    startCurveCode: CodegenTypes.Int32,
+    startContentTranslateX: CodegenTypes.Double,
+    startContentTranslateY: CodegenTypes.Double,
+    startContentScale: CodegenTypes.Double,
+    x: CodegenTypes.Double,
+    y: CodegenTypes.Double,
+    width: CodegenTypes.Double,
+    height: CodegenTypes.Double,
+    topLeftRadius: CodegenTypes.Double,
+    topRightRadius: CodegenTypes.Double,
+    bottomRightRadius: CodegenTypes.Double,
+    bottomLeftRadius: CodegenTypes.Double,
+    curveCode: CodegenTypes.Int32,
+    contentTranslateX: CodegenTypes.Double,
+    contentTranslateY: CodegenTypes.Double,
+    contentScale: CodegenTypes.Double,
+    durationMs: CodegenTypes.Double,
+    frames: ReadonlyArray<CodegenTypes.Double>,
+    reduceMotion: CodegenTypes.Int32
+  ): CodegenTypes.Int32;
   rejectAnimation(driverId: CodegenTypes.Double): CodegenTypes.Int32;
   cancelAnimation(
+    driverId: CodegenTypes.Double,
+    animationId: CodegenTypes.Int32,
+    behavior: CodegenTypes.Int32
+  ): ReadonlyArray<CodegenTypes.Double>;
+  cancelAnimationV2(
     driverId: CodegenTypes.Double,
     animationId: CodegenTypes.Int32,
     behavior: CodegenTypes.Int32
