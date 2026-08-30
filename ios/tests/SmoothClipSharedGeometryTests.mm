@@ -82,4 +82,49 @@ typedef struct {
   }
 }
 
+- (void)testLinearAnimationEligibilityRequiresIdentityNormalization {
+  smoothclip::Geometry uniform{10, 20, 120, 80, 18};
+  XCTAssertTrue(smoothclip::SmoothClipGeometryNormalizationIsIdentity(
+      uniform, 200, 200));
+
+  smoothclip::Geometry unequal{10, 20, 120, 80, 0};
+  unequal.topLeftRadius = 24;
+  unequal.topRightRadius = 16;
+  unequal.bottomRightRadius = 8;
+  unequal.bottomLeftRadius = 4;
+  XCTAssertTrue(smoothclip::SmoothClipGeometryNormalizationIsIdentity(
+      unequal, 200, 200));
+
+  smoothclip::Geometry crossesLeft = uniform;
+  crossesLeft.x = -1;
+  XCTAssertFalse(smoothclip::SmoothClipGeometryNormalizationIsIdentity(
+      crossesLeft, 200, 200));
+
+  smoothclip::Geometry crossesRight = uniform;
+  crossesRight.x = 100;
+  XCTAssertFalse(smoothclip::SmoothClipGeometryNormalizationIsIdentity(
+      crossesRight, 200, 200));
+
+  smoothclip::Geometry overlappingRadii = uniform;
+  overlappingRadii.width = 30;
+  overlappingRadii.radius = 20;
+  XCTAssertFalse(smoothclip::SmoothClipGeometryNormalizationIsIdentity(
+      overlappingRadii, 200, 200));
+
+  // The autonomous-animation eligibility gate must not narrow static
+  // clipping: the same crossing geometry is still accepted and normalized.
+  smoothclip::NormalizedClip normalized;
+  XCTAssertTrue(smoothclip::SmoothClipNormalize(
+      crossesLeft.x,
+      crossesLeft.y,
+      crossesLeft.width,
+      crossesLeft.height,
+      crossesLeft.radius,
+      200,
+      200,
+      normalized));
+  XCTAssertEqualWithAccuracy(normalized.left, 0, 1e-9);
+  XCTAssertEqualWithAccuracy(normalized.right, 119, 1e-9);
+}
+
 @end

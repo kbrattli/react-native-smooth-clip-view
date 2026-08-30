@@ -39,6 +39,106 @@ class ClipGeometryNormalizerTest {
         return accepted to result
     }
 
+    private data class GeometryV2(
+        val left: Float,
+        val top: Float,
+        val right: Float,
+        val bottom: Float,
+        val topLeftRadius: Float,
+        val topRightRadius: Float,
+        val bottomRightRadius: Float,
+        val bottomLeftRadius: Float,
+        val curveCode: Int,
+    )
+
+    private fun normalizeV2(
+        x: Float,
+        y: Float,
+        width: Float,
+        height: Float,
+        topLeftRadius: Float,
+        topRightRadius: Float,
+        bottomRightRadius: Float,
+        bottomLeftRadius: Float,
+        curveCode: Int = CLIP_CURVE_CIRCULAR,
+        hostWidth: Float = 100f,
+        hostHeight: Float = 80f,
+    ): Pair<Boolean, GeometryV2?> {
+        var result: GeometryV2? = null
+        val accepted = normalizeClipGeometryV2Px(
+            x,
+            y,
+            width,
+            height,
+            topLeftRadius,
+            topRightRadius,
+            bottomRightRadius,
+            bottomLeftRadius,
+            curveCode,
+            hostWidth,
+            hostHeight,
+        ) { left, top, right, bottom, topLeft, topRight, bottomRight, bottomLeft, curve ->
+            result = GeometryV2(
+                left,
+                top,
+                right,
+                bottom,
+                topLeft,
+                topRight,
+                bottomRight,
+                bottomLeft,
+                curve,
+            )
+        }
+        return accepted to result
+    }
+
+    @Test
+    fun v2UsesOneCssOverlapFactorForAllCorners() {
+        val (accepted, result) = normalizeV2(
+            0f,
+            0f,
+            100f,
+            80f,
+            topLeftRadius = 80f,
+            topRightRadius = 20f,
+            bottomRightRadius = 20f,
+            bottomLeftRadius = 80f,
+            curveCode = CLIP_CURVE_CONTINUOUS,
+        )
+
+        assertTrue(accepted)
+        assertEquals(
+            GeometryV2(
+                0f,
+                0f,
+                100f,
+                80f,
+                40f,
+                10f,
+                10f,
+                40f,
+                CLIP_CURVE_CONTINUOUS,
+            ),
+            result,
+        )
+    }
+
+    @Test
+    fun v2RejectsInvalidCurveAndNonFiniteCornerAtomically() {
+        val (invalidCurveAccepted, invalidCurveResult) = normalizeV2(
+            0f, 0f, 100f, 80f, 10f, 10f, 10f, 10f, curveCode = 2,
+        )
+        val (nanAccepted, nanResult) = normalizeV2(
+            0f, 0f, 100f, 80f, Float.NaN, 10f, 10f, 10f,
+        )
+
+        assertFalse(invalidCurveAccepted)
+        assertEquals(null, invalidCurveResult)
+        assertFalse(nanAccepted)
+        assertEquals(null, nanResult)
+    }
+
     @Test
     fun intersectsGeometryAndClampsRadius() {
         val (accepted, result) = normalize(-20f, -10f, 70f, 50f, 99f)

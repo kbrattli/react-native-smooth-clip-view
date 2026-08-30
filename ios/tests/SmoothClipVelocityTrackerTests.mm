@@ -11,8 +11,8 @@
 // `initialVelocity: 'inherit'`. Android has no C++ test harness, so the
 // shared behavior is pinned here.
 
-static std::array<double, 7> Channels(double x, double y) {
-  return {x, y, 40, 40, 8, 0, 0};
+static std::array<double, 11> Channels(double x, double y) {
+  return {x, y, 40, 40, 8, 8, 8, 8, 0, 0, 1};
 }
 
 @interface SmoothClipVelocityTrackerTests : XCTestCase
@@ -181,9 +181,12 @@ static std::array<double, 7> Channels(double x, double y) {
 
 - (void)testProjectionMatchesReferenceVectorsAndGuardsZeroDenominator {
   smoothclip::VelocitySampleHistory history;
-  const std::array<double, 7> previous = {0, 0, 40, 40, 8, 0, 0};
-  const std::array<double, 7> latest = {2, 5, 42, 39, 8, -1, 3};
-  const std::array<double, 7> target = {10, 80, 100, 100, 12, -20, -30};
+  const std::array<double, 11> previous = {
+      0, 0, 40, 40, 8, 8, 8, 8, 0, 0, 1};
+  const std::array<double, 11> latest = {
+      2, 5, 42, 39, 8, 8, 8, 8, -1, 3, 1};
+  const std::array<double, 11> target = {
+      10, 80, 100, 100, 12, 12, 12, 12, -20, -30, 1};
   smoothclip::recordVelocitySample(history, previous, 0.0);
   smoothclip::recordVelocitySample(history, latest, 0.02);
 

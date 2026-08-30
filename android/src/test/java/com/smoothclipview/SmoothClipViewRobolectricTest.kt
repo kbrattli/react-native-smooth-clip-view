@@ -87,6 +87,110 @@ class SmoothClipViewRobolectricTest {
     }
 
     @Test
+    fun v2ContentScaleUsesCenteredPivotAndKeepsTranslationIndependent() {
+        view.setClipPresentationV2Px(
+            0f,
+            0f,
+            100f,
+            100f,
+            12f,
+            12f,
+            12f,
+            12f,
+            CLIP_CURVE_CIRCULAR,
+            7f,
+            -9f,
+            1.5f,
+        )
+
+        assertEquals(50f, view.contentContainer.pivotX)
+        assertEquals(50f, view.contentContainer.pivotY)
+        assertEquals(1.5f, view.contentContainer.scaleX)
+        assertEquals(1.5f, view.contentContainer.scaleY)
+        assertEquals(7f, view.contentContainer.translationX)
+        assertEquals(-9f, view.contentContainer.translationY)
+    }
+
+    @Test
+    fun v2UniformCircularGeometryUsesFloatOutlineWithoutLegacyResidual() {
+        view.setClipPresentationV2Px(
+            0.25f,
+            0.75f,
+            80.5f,
+            70.25f,
+            12.5f,
+            12.5f,
+            12.5f,
+            12.5f,
+            CLIP_CURVE_CIRCULAR,
+            0f,
+            0f,
+            1f,
+        )
+
+        assertTrue(privateBoolean("outlineUsesFloatRoundRect"))
+        assertEquals(0f, privateFloat("clipResidualX"))
+        assertEquals(0f, privateFloat("clipResidualY"))
+
+        // The same fractional V1 request deliberately keeps its historical
+        // integer outline plus residual placement behavior.
+        view.setClipPresentationPx(
+            0.25f,
+            0.75f,
+            80.5f,
+            70.25f,
+            12.5f,
+            0f,
+            0f,
+        )
+        assertFalse(privateBoolean("outlineUsesFloatRoundRect"))
+        assertEquals(0.25f, privateFloat("clipResidualX"))
+        assertEquals(-0.25f, privateFloat("clipResidualY"))
+    }
+
+    @Test
+    fun continuousCurveUsesPathHitTestingInsteadOfCircularCorners() {
+        view.setClipPresentationV2Px(
+            0f,
+            0f,
+            100f,
+            100f,
+            20f,
+            20f,
+            20f,
+            20f,
+            CLIP_CURVE_CONTINUOUS,
+            0f,
+            0f,
+            1f,
+        )
+
+        // This point is outside a radius-20 quarter circle but inside the
+        // library's continuous cubic, whose controls meet at the corner.
+        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 95f, 5f)))
+    }
+
+    @Test
+    fun v2RejectsInvalidScaleWithoutMutatingThePreviousPresentation() {
+        view.setClipPresentationV2Px(
+            0f, 0f, 100f, 100f,
+            0f, 0f, 0f, 0f,
+            CLIP_CURVE_CIRCULAR,
+            3f, 4f, 2f,
+        )
+        view.setClipPresentationV2Px(
+            0f, 0f, 100f, 100f,
+            0f, 0f, 0f, 0f,
+            CLIP_CURVE_CIRCULAR,
+            30f, 40f, 0f,
+        )
+
+        assertEquals(2f, view.contentContainer.scaleX)
+        assertEquals(3f, view.contentContainer.translationX)
+        assertEquals(4f, view.contentContainer.translationY)
+    }
+
+    @Test
     fun collapseWithoutAStreamDoesNotSynthesizeCancel() {
         view.setClipPresentationPx(0f, 0f, 0.49f, 100f, 0f, 0f, 0f)
 
@@ -138,4 +242,16 @@ class SmoothClipViewRobolectricTest {
 
     private fun event(action: Int, x: Float, y: Float): MotionEvent =
         MotionEvent.obtain(10L, 20L, action, x, y, 0)
+
+    private fun privateBoolean(name: String): Boolean =
+        SmoothClipView::class.java.getDeclaredField(name).let { field ->
+            field.isAccessible = true
+            field.getBoolean(view)
+        }
+
+    private fun privateFloat(name: String): Float =
+        SmoothClipView::class.java.getDeclaredField(name).let { field ->
+            field.isAccessible = true
+            field.getFloat(view)
+        }
 }

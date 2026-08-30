@@ -20,12 +20,8 @@ using smoothclip::Presentation;
 
 namespace {
 
-// The non-overshoot guarantee is exact in real arithmetic: the Hermite basis
-// term -2t^3 + 3t^2 peaks at exactly 1 when t == 1. Evaluating it in doubles
-// near that endpoint can round to 1 + 2eps, so an endpoint value comes back a
-// few ulps proud of its keyframe. This slack absorbs that and nothing more —
-// the overshoot a plain Catmull-Rom spline produces on the shapes below is
-// whole units, so it is still caught.
+// Linear interpolation cannot overshoot in real arithmetic. Keep a tiny
+// floating-point allowance for endpoint arithmetic.
 constexpr double kOvershootSlack = 1e-9;
 
 Presentation presentationWithRadius(double radius) {
@@ -329,8 +325,7 @@ std::vector<Keyframe> easeOutCubicSamples(size_t count, double travel) {
 }
 
 - (void)testTwoKeyframesStayLinearWithinFloatingPointTolerance {
-  // The degenerate case must be bit-for-bit what the old lerp produced, so a
-  // consumer passing a straight segment sees no behavior change at all.
+  // A two-frame plan is the simplest exact segment-wise-linear case.
   KeyframeCurve curve;
   curve.reset({{0.0, presentationWithX(10)}, {1.0, presentationWithX(50)}});
   for (double progress = 0; progress <= 1.0; progress += 0.05) {
@@ -340,9 +335,8 @@ std::vector<Keyframe> easeOutCubicSamples(size_t count, double travel) {
 }
 
 - (void)testCurveNeverOvershootsItsKeyframeRange {
-  // The reason this is monotone cubic and not Catmull-Rom: a plain spline
-  // overshoots on this shape, and radius/width/height must never leave the
-  // range the consumer asked for (a negative radius is not renderable).
+  // Exact linear segments stay inside adjacent frame ranges; radii and sizes
+  // must never leave the range the consumer supplied.
   KeyframeCurve curve;
   curve.reset({{0.0, presentationWithRadius(0)},
                {1.0 / 3.0, presentationWithRadius(0)},
@@ -367,11 +361,10 @@ std::vector<Keyframe> easeOutCubicSamples(size_t count, double travel) {
   }
 }
 
-- (void)testVelocityIsContinuousAcrossAnInteriorKeyframe {
-  // This is the whole point of the change. Linear interpolation is exact at
-  // every keyframe and has a DIFFERENT slope either side of it, so the
-  // rendered velocity steps at each boundary while parallel Reanimated content
-  // runs a continuous curve. The cubic's one-sided slopes must agree.
+- (void)testVelocityUsesTheExactAdjacentSegmentSlopes {
+  // V2 keyframes are samples, not spline control points. Native must preserve
+  // the exact straight segment on either side of an interior frame, including
+  // a deliberate velocity change at that frame.
   const std::vector<Keyframe> frames = easeOutCubicSamples(9, 700);
   KeyframeCurve curve;
   curve.reset(frames);
@@ -384,31 +377,27 @@ std::vector<Keyframe> easeOutCubicSamples(size_t count, double travel) {
   const double after =
       (curve.evaluate(boundary + epsilon).clip.x - curve.evaluate(boundary).clip.x) /
       epsilon;
-  XCTAssertEqualWithAccuracy(
-      before, after, std::fabs(before) * 1e-3,
-      "monotone cubic Hermite is C1: the tangent at a keyframe is shared");
-
-  // And prove the data really has a kink to smooth — the secants either side
-  // differ, which is exactly the staircase the old lerp rendered.
   const double secantBefore =
       (frames[2].presentation.clip.x - frames[1].presentation.clip.x) /
       (frames[2].offset - frames[1].offset);
   const double secantAfter =
       (frames[3].presentation.clip.x - frames[2].presentation.clip.x) /
       (frames[3].offset - frames[2].offset);
-  XCTAssertGreaterThan(std::fabs(secantBefore - secantAfter), 1.0);
+  XCTAssertEqualWithAccuracy(before, secantBefore, 1e-3);
+  XCTAssertEqualWithAccuracy(after, secantAfter, 1e-3);
+  XCTAssertGreaterThan(std::fabs(before - after), 1.0);
 }
 
-- (void)testCurveTracksTheSampledPathMoreCloselyThanStraightSegments {
-  // Sample coarsely so the linearization error is measurable, then compare
-  // both reconstructions against the true ease-out-cubic they were sampled
-  // from. The cubic must be strictly better, not merely different.
+- (void)testCurveMatchesStraightSegmentReconstructionExactly {
+  // Samples are interpolated segment-wise linearly on iOS, Android and web.
+  // Compare the shared evaluator to an independent straight-segment
+  // reconstruction across the complete sampled easing.
   const double travel = 700;
   const std::vector<Keyframe> frames = easeOutCubicSamples(6, travel);
   KeyframeCurve curve;
   curve.reset(frames);
 
-  double worstCubic = 0;
+  double worstDifference = 0;
   double worstLinear = 0;
   for (double progress = 0; progress <= 1.0; progress += 0.001) {
     const double inverse = 1 - progress;
@@ -425,11 +414,13 @@ std::vector<Keyframe> easeOutCubicSamples(size_t count, double travel) {
          frames[upper - 1].presentation.clip.x) *
             local;
 
-    worstCubic =
-        std::max(worstCubic, std::fabs(curve.evaluate(progress).clip.x - truth));
+    worstDifference = std::max(
+        worstDifference,
+        std::fabs(curve.evaluate(progress).clip.x - linear));
     worstLinear = std::max(worstLinear, std::fabs(linear - truth));
   }
-  XCTAssertLessThan(worstCubic, worstLinear);
+  XCTAssertLessThan(worstDifference, 1e-9);
+  XCTAssertGreaterThan(worstLinear, 0.0);
 }
 
 - (void)testCachedSegmentCursorDoesNotChangeResults {
