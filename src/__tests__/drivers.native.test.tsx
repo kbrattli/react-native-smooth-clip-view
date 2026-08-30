@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
-import type { SmoothClipPresentation } from '../geometry';
+import {
+  canonicalizeClipPresentation,
+  type SmoothClipPresentation,
+} from '../geometry';
 
 let mockRNRuntime = false;
 // The suite defaults to Android because the start-stamp tests below pin the
@@ -124,6 +127,9 @@ const target: SmoothClipPresentation = {
   contentTranslateY: -20,
 };
 
+const canonicalInitial = canonicalizeClipPresentation(initial)!;
+const canonicalTarget = canonicalizeClipPresentation(target)!;
+
 const timing = {
   type: 'timing' as const,
   duration: 250,
@@ -193,7 +199,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       false
     );
     // The SharedValue intentionally stays stale on the hot path.
-    expect(driver.presentation.value).toBe(initial);
+    expect(driver.presentation.value).toEqual(canonicalInitial);
   });
 
   it('setScalars records velocity samples when velocityTracking is on', () => {
@@ -327,7 +333,7 @@ describe('hybrid native driver (iOS + Android)', () => {
     // finished:false completion is emitted for the call.
     expect(animationId).toBe(99);
     expect(mockNative.rejectAnimation).toHaveBeenCalled();
-    expect(driver.presentation.value).toBe(initial);
+    expect(driver.presentation.value).toEqual(canonicalInitial);
 
     // The listener must not be stuck: a later write still fans out.
     jest.clearAllMocks();
@@ -408,11 +414,13 @@ describe('hybrid native driver (iOS + Android)', () => {
     const driver = useSmoothClipDriver(initial);
 
     const result = await driver.react.cancel();
-    expect(result).toEqual({
-      clip: { x: 0, y: 0, width: 100, height: 80, radius: 12 },
-      contentTranslateX: -4,
-      contentTranslateY: -8,
-    });
+    expect(result).toEqual(
+      canonicalizeClipPresentation({
+        clip: { x: 0, y: 0, width: 100, height: 80, radius: 12 },
+        contentTranslateX: -4,
+        contentTranslateY: -8,
+      })
+    );
   });
 
   it('treats only the numeric 1 as a handled cancel flag', () => {
@@ -431,16 +439,18 @@ describe('hybrid native driver (iOS + Android)', () => {
       0,
       0,
     ]);
-    expect(driver.ui.cancel()).toEqual(target);
+    expect(driver.ui.cancel()).toEqual(canonicalTarget);
 
     driver.ui.animateTo(target, timing);
     mockNative.cancelAnimation.mockReturnValueOnce([1, 5, 6, 50, 40, 8, 0, 0]);
     const result = driver.ui.cancel();
-    expect(result).toEqual({
-      clip: { x: 5, y: 6, width: 50, height: 40, radius: 8 },
-      contentTranslateX: 0,
-      contentTranslateY: 0,
-    });
+    expect(result).toEqual(
+      canonicalizeClipPresentation({
+        clip: { x: 5, y: 6, width: 50, height: 40, radius: 8 },
+        contentTranslateX: 0,
+        contentTranslateY: 0,
+      })
+    );
 
     // Ownership is interactive again: the next distinct write fans out.
     jest.clearAllMocks();
@@ -595,11 +605,13 @@ describe('hybrid native driver (iOS + Android)', () => {
 
     const visible = driver.ui.beginInteraction();
 
-    expect(visible).toEqual({
-      clip: { x: 5, y: 6, width: 50, height: 40, radius: 8 },
-      contentTranslateX: 1,
-      contentTranslateY: 2,
-    });
+    expect(visible).toEqual(
+      canonicalizeClipPresentation({
+        clip: { x: 5, y: 6, width: 50, height: 40, radius: 8 },
+        contentTranslateX: 1,
+        contentTranslateY: 2,
+      })
+    );
     expect(mockNative.setClipPresentation).not.toHaveBeenCalled();
 
     driver.presentation.value = target;
@@ -656,7 +668,7 @@ describe('hybrid native driver (iOS + Android)', () => {
     // The fused hot write marks scalars stale, so native starts from its
     // own latest value (== from) instead of the stale SharedValue.
     expect(mockNative.animateTiming.mock.calls[0]?.[1]).toBe(false);
-    expect(driver.presentation.value).toBe(target);
+    expect(driver.presentation.value).toEqual(canonicalTarget);
   });
 
   it('fused from on keyframes seeds frame zero before the handoff', () => {
@@ -711,12 +723,12 @@ describe('hybrid native driver (iOS + Android)', () => {
 
     const animationId = driver.ui.animateTo(target, timing);
     expect(animationId).toBe(7);
-    expect(driver.presentation.value).toBe(target);
+    expect(driver.presentation.value).toEqual(canonicalTarget);
     expect(mockNative.setClipPresentation).not.toHaveBeenCalled();
 
     tasks.shift()?.();
     expect(mockNative.setClipPresentation).not.toHaveBeenCalled();
-    expect(driver.presentation.value).toBe(target);
+    expect(driver.presentation.value).toEqual(canonicalTarget);
     mockUIState().__smoothClipTestQueueUI = false;
   });
 
@@ -882,20 +894,41 @@ describe('hybrid native driver (iOS + Android)', () => {
     );
   });
 
-  it('rejects out-of-range timing control point x values', () => {
+  it('preserves finite V1 timing values and bridge arity', () => {
     const driver = useSmoothClipDriver(initial);
 
-    // x outside [0,1] is undefined for a CSS/CA cubic bezier: CoreAnimation
-    // clamps while the Android bisection solve returns garbage, so the call
-    // must reject instead of diverging silently per platform.
     const animationId = driver.ui.animateTo(target, {
       ...timing,
+      duration: -25,
       controlPoints: [1.5, 0, 0.58, 1] as const,
     });
 
-    expect(animationId).toBe(99);
-    expect(mockNative.rejectAnimation).toHaveBeenCalled();
-    expect(mockNative.animateTiming).not.toHaveBeenCalled();
+    expect(animationId).toBe(7);
+    expect(mockNative.animateTiming).toHaveBeenCalledTimes(1);
+    expect(mockNative.animateTiming.mock.calls[0]).toHaveLength(23);
+    expect(mockNative.animateTiming.mock.calls[0]?.[16]).toBe(0);
+    expect(mockNative.animateTiming.mock.calls[0]?.slice(17, 21)).toEqual([
+      1.5, 0, 0.58, 1,
+    ]);
+  });
+
+  it('preserves finite V1 spring clamping', () => {
+    const driver = useSmoothClipDriver(initial);
+
+    expect(
+      driver.ui.animateTo(target, {
+        type: 'spring',
+        mass: -2,
+        stiffness: 0,
+        damping: -4,
+        initialVelocity: -3,
+      })
+    ).toBe(8);
+
+    expect(mockNative.animateSpring.mock.calls[0]).toHaveLength(23);
+    expect(mockNative.animateSpring.mock.calls[0]?.slice(16, 20)).toEqual([
+      0.0001, 0.0001, 0, -3,
+    ]);
   });
 
   it('resolves fire-and-forget react promises benignly at teardown', async () => {
@@ -992,7 +1025,7 @@ describe('hybrid native driver (iOS + Android)', () => {
       from: fromPresentation,
     });
     expect(rejected).toBe(99);
-    expect(driver.presentation.value).toBe(initial);
+    expect(driver.presentation.value).toEqual(canonicalInitial);
     mockNative.animateTiming.mockReturnValue(7);
     driver.ui.animateTo(target, timing);
     expect(mockNative.animateTiming.mock.calls[1]?.[1]).toBe(false);
@@ -1048,5 +1081,368 @@ describe('hybrid native driver (iOS + Android)', () => {
       target.contentTranslateX,
       target.contentTranslateY,
     ]);
+  });
+});
+
+describe('hybrid native driver protocol V2 animation validation', () => {
+  it('rejects unsafe scale springs and accepts a monotonic proof', () => {
+    const v2 = {
+      getPresentationProtocolVersion: jest.fn(() => 2),
+      supportsAutonomousComplexPathAnimation: jest.fn(() => false),
+      setClipPresentationV2: jest.fn(),
+      beginInteractionV2: jest.fn(() => [
+        0, 0, 100, 80, 12, 12, 12, 12, 0, -4, -8, 1,
+      ]),
+      snapshotCurrentV2: jest.fn(() => [
+        0, 0, 100, 80, 12, 12, 12, 12, 0, -4, -8, 1,
+      ]),
+      animateTimingV2: jest.fn(() => 87),
+      animateSpringV2: jest.fn(() => 88),
+      animateKeyframesV2: jest.fn(() => 89),
+      cancelAnimationV2: jest.fn(() => []),
+    };
+    Object.assign(mockNative, v2);
+
+    let useV2Driver: typeof useSmoothClipDriver | undefined;
+    jest.isolateModules(() => {
+      useV2Driver = (
+        require('../drivers.native') as typeof import('../drivers.native')
+      ).useSmoothClipDriver;
+    });
+
+    const driver = useV2Driver!(initial);
+    const scaledTarget = { ...target, contentScale: 0.2 };
+
+    expect(
+      driver.ui.animateTo(scaledTarget, {
+        type: 'spring',
+        mass: 1,
+        stiffness: 100,
+        damping: 10,
+        initialVelocity: 0,
+      })
+    ).toBe(99);
+    expect(
+      driver.ui.animateTo(scaledTarget, {
+        type: 'spring',
+        mass: 1,
+        stiffness: 100,
+        damping: 20,
+      })
+    ).toBe(99);
+    expect(v2.animateSpringV2).not.toHaveBeenCalled();
+
+    expect(
+      driver.ui.animateTo(scaledTarget, {
+        type: 'spring',
+        mass: 1,
+        stiffness: 100,
+        damping: 20,
+        initialVelocity: 0,
+      })
+    ).toBe(88);
+    expect(v2.snapshotCurrentV2).toHaveBeenCalled();
+    expect(v2.animateSpringV2).toHaveBeenCalledTimes(1);
+
+    for (const key of Object.keys(v2)) {
+      Reflect.deleteProperty(mockNative, key);
+    }
+  });
+
+  it('validates an implicit retarget curve against native visible state', () => {
+    const v2 = {
+      getPresentationProtocolVersion: jest.fn(() => 2),
+      supportsAutonomousComplexPathAnimation: jest.fn(() => false),
+      setClipPresentationV2: jest.fn(),
+      beginInteractionV2: jest.fn(() => [
+        0, 0, 100, 80, 12, 12, 12, 12, 1, -4, -8, 1,
+      ]),
+      snapshotCurrentV2: jest.fn(() => [
+        0, 0, 100, 80, 12, 12, 12, 12, 1, -4, -8, 1,
+      ]),
+      animateTimingV2: jest.fn(() => 87),
+      animateSpringV2: jest.fn(() => 88),
+      animateKeyframesV2: jest.fn(() => 89),
+      cancelAnimationV2: jest.fn(() => []),
+    };
+    Object.assign(mockNative, v2);
+
+    let useV2Driver: typeof useSmoothClipDriver | undefined;
+    jest.isolateModules(() => {
+      useV2Driver = (
+        require('../drivers.native') as typeof import('../drivers.native')
+      ).useSmoothClipDriver;
+    });
+
+    const driver = useV2Driver!(initial);
+    driver.ui.setPresentationScalars(
+      0,
+      0,
+      100,
+      80,
+      12,
+      12,
+      12,
+      12,
+      1,
+      -4,
+      -8,
+      1
+    );
+    const continuousTarget: SmoothClipPresentation = {
+      ...target,
+      clip: { ...target.clip, curve: 'continuous' },
+    };
+    const rejectionCount = mockNative.rejectAnimation.mock.calls.length;
+
+    expect(driver.ui.animateTo(continuousTarget, timing)).toBe(87);
+    expect(v2.snapshotCurrentV2).toHaveBeenCalledTimes(1);
+    expect(v2.animateTimingV2).toHaveBeenCalledTimes(1);
+    expect(mockNative.rejectAnimation).toHaveBeenCalledTimes(rejectionCount);
+
+    for (const key of Object.keys(v2)) {
+      Reflect.deleteProperty(mockNative, key);
+    }
+  });
+
+  it('keeps V1-representable plans on the unchanged V1 bridge', () => {
+    const v2 = {
+      getPresentationProtocolVersion: jest.fn(() => 2),
+      supportsAutonomousComplexPathAnimation: jest.fn(() => false),
+      setClipPresentationV2: jest.fn(),
+      beginInteractionV2: jest.fn(() => []),
+      snapshotCurrentV2: jest.fn(() => []),
+      animateTimingV2: jest.fn(() => 87),
+      animateSpringV2: jest.fn(() => 88),
+      animateKeyframesV2: jest.fn(() => 89),
+      animateTimingFromV2: jest.fn(() => 90),
+      animateSpringFromV2: jest.fn(() => 91),
+      animateKeyframesFromV2: jest.fn(() => 92),
+      cancelAnimationV2: jest.fn(() => []),
+    };
+    Object.assign(mockNative, v2);
+    let useV2Driver: typeof useSmoothClipDriver | undefined;
+    jest.isolateModules(() => {
+      useV2Driver = (
+        require('../drivers.native') as typeof import('../drivers.native')
+      ).useSmoothClipDriver;
+    });
+
+    const driver = useV2Driver!(initial);
+    expect(driver.ui.animateTo(target, { ...timing, duration: -1 })).toBe(7);
+    expect(mockNative.animateTiming).toHaveBeenCalledTimes(1);
+    expect(mockNative.animateTiming.mock.calls[0]).toHaveLength(23);
+    expect(mockNative.animateTiming.mock.calls[0]?.[16]).toBe(0);
+    expect(v2.snapshotCurrentV2).not.toHaveBeenCalled();
+    expect(v2.animateTimingV2).not.toHaveBeenCalled();
+
+    for (const key of Object.keys(v2)) Reflect.deleteProperty(mockNative, key);
+  });
+
+  it('rejects old-native V2 from plans before sampling or mutation', () => {
+    const v2WithoutFrom = {
+      getPresentationProtocolVersion: jest.fn(() => 2),
+      supportsAutonomousComplexPathAnimation: jest.fn(() => false),
+      setClipPresentationV2: jest.fn(),
+      beginInteractionV2: jest.fn(() => []),
+      snapshotCurrentV2: jest.fn(() => [
+        0, 0, 100, 80, 12, 12, 12, 12, 1, -4, -8, 1,
+      ]),
+      animateTimingV2: jest.fn(() => 87),
+      animateSpringV2: jest.fn(() => 88),
+      animateKeyframesV2: jest.fn(() => 89),
+      cancelAnimationV2: jest.fn(() => []),
+    };
+    Object.assign(mockNative, v2WithoutFrom);
+    let useV2Driver: typeof useSmoothClipDriver | undefined;
+    jest.isolateModules(() => {
+      useV2Driver = (
+        require('../drivers.native') as typeof import('../drivers.native')
+      ).useSmoothClipDriver;
+    });
+    const driver = useV2Driver!(initial);
+    const widenedFrom: SmoothClipPresentation = {
+      ...initial,
+      clip: { ...initial.clip, curve: 'continuous' },
+    };
+    const widenedTarget: SmoothClipPresentation = {
+      ...target,
+      clip: { ...target.clip, curve: 'continuous' },
+    };
+    const seedCalls = v2WithoutFrom.setClipPresentationV2.mock.calls.length;
+
+    expect(
+      driver.ui.animateTo(widenedTarget, { ...timing, from: widenedFrom })
+    ).toBe(99);
+    expect(driver.presentation.value).toEqual(canonicalInitial);
+    expect(v2WithoutFrom.snapshotCurrentV2).not.toHaveBeenCalled();
+    expect(v2WithoutFrom.animateTimingV2).not.toHaveBeenCalled();
+    expect(v2WithoutFrom.setClipPresentationV2).toHaveBeenCalledTimes(
+      seedCalls
+    );
+
+    for (const key of Object.keys(v2WithoutFrom)) {
+      Reflect.deleteProperty(mockNative, key);
+    }
+  });
+
+  it('uses one atomic V2 from call and commits JS ownership only on success', () => {
+    const v2 = {
+      getPresentationProtocolVersion: jest.fn(() => 2),
+      supportsAutonomousComplexPathAnimation: jest.fn(() => false),
+      setClipPresentationV2: jest.fn(),
+      beginInteractionV2: jest.fn(() => []),
+      snapshotCurrentV2: jest.fn(() => []),
+      animateTimingV2: jest.fn(() => 87),
+      animateSpringV2: jest.fn(() => 88),
+      animateKeyframesV2: jest.fn(() => 89),
+      animateTimingFromV2: jest.fn(() => 0),
+      animateSpringFromV2: jest.fn(() => 91),
+      animateKeyframesFromV2: jest.fn(() => 92),
+      cancelAnimationV2: jest.fn(() => []),
+    };
+    Object.assign(mockNative, v2);
+    let useV2Driver: typeof useSmoothClipDriver | undefined;
+    jest.isolateModules(() => {
+      useV2Driver = (
+        require('../drivers.native') as typeof import('../drivers.native')
+      ).useSmoothClipDriver;
+    });
+    const driver = useV2Driver!(initial);
+    const widenedFrom: SmoothClipPresentation = {
+      ...initial,
+      clip: {
+        ...initial.clip,
+        topLeftRadius: 18,
+        curve: 'continuous',
+      },
+      contentScale: 0.9,
+    };
+    const widenedTarget: SmoothClipPresentation = {
+      ...target,
+      clip: {
+        ...target.clip,
+        topLeftRadius: 30,
+        curve: 'continuous',
+      },
+      contentScale: 0.8,
+    };
+    const seedCalls = v2.setClipPresentationV2.mock.calls.length;
+
+    expect(
+      driver.ui.animateTo(widenedTarget, { ...timing, from: widenedFrom })
+    ).toBe(99);
+    expect(driver.presentation.value).toEqual(canonicalInitial);
+    expect(v2.setClipPresentationV2).toHaveBeenCalledTimes(seedCalls);
+    expect(v2.snapshotCurrentV2).not.toHaveBeenCalled();
+    expect(v2.animateTimingV2).not.toHaveBeenCalled();
+    expect(v2.animateTimingFromV2.mock.calls[0]).toHaveLength(32);
+
+    v2.animateTimingFromV2.mockReturnValueOnce(90);
+    expect(
+      driver.ui.animateTo(widenedTarget, { ...timing, from: widenedFrom })
+    ).toBe(90);
+    expect(driver.presentation.value).toEqual(
+      canonicalizeClipPresentation(widenedTarget)
+    );
+    expect(v2.setClipPresentationV2).toHaveBeenCalledTimes(seedCalls);
+    expect(v2.animateTimingFromV2).toHaveBeenCalledTimes(2);
+
+    for (const key of Object.keys(v2)) Reflect.deleteProperty(mockNative, key);
+  });
+
+  it('rejects a V2 keyframe from that differs from frame zero atomically', () => {
+    const v2 = {
+      getPresentationProtocolVersion: jest.fn(() => 2),
+      supportsAutonomousComplexPathAnimation: jest.fn(() => false),
+      setClipPresentationV2: jest.fn(),
+      beginInteractionV2: jest.fn(() => []),
+      snapshotCurrentV2: jest.fn(() => []),
+      animateTimingV2: jest.fn(() => 87),
+      animateSpringV2: jest.fn(() => 88),
+      animateKeyframesV2: jest.fn(() => 89),
+      animateTimingFromV2: jest.fn(() => 90),
+      animateSpringFromV2: jest.fn(() => 91),
+      animateKeyframesFromV2: jest.fn(() => 92),
+      cancelAnimationV2: jest.fn(() => []),
+    };
+    Object.assign(mockNative, v2);
+    let useV2Driver: typeof useSmoothClipDriver | undefined;
+    jest.isolateModules(() => {
+      useV2Driver = (
+        require('../drivers.native') as typeof import('../drivers.native')
+      ).useSmoothClipDriver;
+    });
+    const driver = useV2Driver!(initial);
+    const frameZero: SmoothClipPresentation = {
+      ...initial,
+      clip: { ...initial.clip, curve: 'continuous' },
+    };
+    const explicitFrom: SmoothClipPresentation = {
+      ...frameZero,
+      contentTranslateX: 4,
+    };
+    const widenedTarget: SmoothClipPresentation = {
+      ...target,
+      clip: { ...target.clip, curve: 'continuous' },
+    };
+    const seedCalls = v2.setClipPresentationV2.mock.calls.length;
+
+    expect(
+      driver.ui.animateTo(widenedTarget, {
+        type: 'keyframes',
+        duration: 250,
+        from: explicitFrom,
+        frames: [
+          { offset: 0, presentation: frameZero },
+          { offset: 1, presentation: widenedTarget },
+        ],
+      })
+    ).toBe(99);
+    expect(driver.presentation.value).toEqual(canonicalInitial);
+    expect(v2.animateKeyframesFromV2).not.toHaveBeenCalled();
+    expect(v2.setClipPresentationV2).toHaveBeenCalledTimes(seedCalls);
+
+    for (const key of Object.keys(v2)) Reflect.deleteProperty(mockNative, key);
+  });
+
+  it('keeps strict cubic-bezier validation on V2-only plans', () => {
+    const v2 = {
+      getPresentationProtocolVersion: jest.fn(() => 2),
+      supportsAutonomousComplexPathAnimation: jest.fn(() => false),
+      setClipPresentationV2: jest.fn(),
+      beginInteractionV2: jest.fn(() => []),
+      snapshotCurrentV2: jest.fn(() => []),
+      animateTimingV2: jest.fn(() => 87),
+      animateSpringV2: jest.fn(() => 88),
+      animateKeyframesV2: jest.fn(() => 89),
+      animateTimingFromV2: jest.fn(() => 90),
+      animateSpringFromV2: jest.fn(() => 91),
+      animateKeyframesFromV2: jest.fn(() => 92),
+      cancelAnimationV2: jest.fn(() => []),
+    };
+    Object.assign(mockNative, v2);
+    let useV2Driver: typeof useSmoothClipDriver | undefined;
+    jest.isolateModules(() => {
+      useV2Driver = (
+        require('../drivers.native') as typeof import('../drivers.native')
+      ).useSmoothClipDriver;
+    });
+    const driver = useV2Driver!(initial);
+    const widenedTarget: SmoothClipPresentation = {
+      ...target,
+      contentScale: 0.8,
+    };
+
+    expect(
+      driver.ui.animateTo(widenedTarget, {
+        ...timing,
+        controlPoints: [1.5, 0, 0.58, 1],
+      })
+    ).toBe(99);
+    expect(v2.snapshotCurrentV2).not.toHaveBeenCalled();
+    expect(v2.animateTimingV2).not.toHaveBeenCalled();
+
+    for (const key of Object.keys(v2)) Reflect.deleteProperty(mockNative, key);
   });
 });

@@ -29,10 +29,13 @@ import {
   setDriverState,
   snapshotDriverViews,
 } from './driverState';
+import { allocateFallbackAnimationId } from './fallbackAnimationId';
 import {
+  canonicalizeClipPresentation,
   createClipPresentation,
   clipPresentationEquals,
   isFiniteClipPresentation,
+  type CanonicalSmoothClipPresentation,
   type ClipGeometry,
   type SmoothClipPresentation,
 } from './geometry';
@@ -62,23 +65,39 @@ function animationIsFinite(animation: SmoothClipAnimation): boolean {
     return false;
   }
   if (animation.type === 'timing') {
+    const [x1, , x2] = animation.controlPoints;
     return (
       Number.isFinite(animation.duration) &&
-      animation.controlPoints.every(Number.isFinite)
+      animation.duration >= 0 &&
+      animation.controlPoints.every(Number.isFinite) &&
+      x1 >= 0 &&
+      x1 <= 1 &&
+      x2 >= 0 &&
+      x2 <= 1
     );
   }
   if (animation.type === 'spring') {
-    return [
-      animation.mass ?? 1,
-      animation.stiffness ?? 100,
-      animation.damping ?? 10,
+    const mass = animation.mass ?? 1;
+    const stiffness = animation.stiffness ?? 100;
+    const damping = animation.damping ?? 10;
+    const initialVelocity =
       animation.initialVelocity === 'inherit'
         ? 0
-        : (animation.initialVelocity ?? 0),
-    ].every(Number.isFinite);
+        : (animation.initialVelocity ?? 0);
+    return (
+      [mass, stiffness, damping, initialVelocity].every(Number.isFinite) &&
+      mass > 0 &&
+      stiffness > 0 &&
+      damping >= 0
+    );
   }
+  if (animation.type !== 'keyframes') return false;
   let previousOffset = -1;
-  if (!Number.isFinite(animation.duration) || animation.frames.length < 2) {
+  if (
+    !Number.isFinite(animation.duration) ||
+    animation.duration < 0 ||
+    animation.frames.length < 2
+  ) {
     return false;
   }
   for (const frame of animation.frames) {
@@ -96,23 +115,58 @@ function animationIsFinite(animation: SmoothClipAnimation): boolean {
   return animation.frames[0]?.offset === 0 && previousOffset === 1;
 }
 
+function springScaleIsProvablyPositive(
+  start: CanonicalSmoothClipPresentation,
+  target: CanonicalSmoothClipPresentation,
+  animation: SpringClipAnimation
+): boolean {
+  'worklet';
+  if (start.contentScale === target.contentScale) return true;
+  const mass = animation.mass ?? 1;
+  const stiffness = animation.stiffness ?? 100;
+  const damping = animation.damping ?? 10;
+  return (
+    animation.initialVelocity === 0 && damping * damping >= 4 * mass * stiffness
+  );
+}
+
 function interpolatePresentation(
-  from: SmoothClipPresentation,
-  to: SmoothClipPresentation,
+  from: CanonicalSmoothClipPresentation,
+  to: CanonicalSmoothClipPresentation,
   progress: number
-): SmoothClipPresentation {
+): CanonicalSmoothClipPresentation {
   'worklet';
   const mix = (start: number, end: number) => start + (end - start) * progress;
+  const topLeftRadius = mix(from.clip.topLeftRadius, to.clip.topLeftRadius);
+  const topRightRadius = mix(from.clip.topRightRadius, to.clip.topRightRadius);
+  const bottomRightRadius = mix(
+    from.clip.bottomRightRadius,
+    to.clip.bottomRightRadius
+  );
+  const bottomLeftRadius = mix(
+    from.clip.bottomLeftRadius,
+    to.clip.bottomLeftRadius
+  );
+  const uniform =
+    topLeftRadius === topRightRadius &&
+    topLeftRadius === bottomRightRadius &&
+    topLeftRadius === bottomLeftRadius;
   return {
     clip: {
       x: mix(from.clip.x, to.clip.x),
       y: mix(from.clip.y, to.clip.y),
       width: mix(from.clip.width, to.clip.width),
       height: mix(from.clip.height, to.clip.height),
-      radius: mix(from.clip.radius, to.clip.radius),
+      radius: uniform ? topLeftRadius : 0,
+      topLeftRadius,
+      topRightRadius,
+      bottomRightRadius,
+      bottomLeftRadius,
+      curve: from.clip.curve,
     },
     contentTranslateX: mix(from.contentTranslateX, to.contentTranslateX),
     contentTranslateY: mix(from.contentTranslateY, to.contentTranslateY),
+    contentScale: mix(from.contentScale, to.contentScale),
   };
 }
 
@@ -132,20 +186,31 @@ export function useSmoothClipDriver(
   initialValue: ClipGeometry | SmoothClipPresentation,
   options: SmoothClipDriverOptions = {}
 ): SmoothClipDriver {
-  const initialPresentation =
+  const requestedInitialPresentation =
     'clip' in initialValue
       ? initialValue
       : createClipPresentation(initialValue);
-  const presentation = useSharedValue(initialPresentation);
+  const initialPresentation = canonicalizeClipPresentation(
+    requestedInitialPresentation
+  );
+  if (initialPresentation === null) {
+    throw new Error('[SmoothClipView] Initial presentation must be finite.');
+  }
+  const presentation =
+    useSharedValue<SmoothClipPresentation>(initialPresentation);
+  const ownership = useSharedValue(0);
+  const disposed = useSharedValue(0);
+  const ready = useSharedValue(0);
   const activeAnimationId = useSharedValue(0);
-  const nextAnimationId = useSharedValue(0);
-  const latestTarget = useSharedValue(initialPresentation);
-  const animationStart = useSharedValue(initialPresentation);
+  const latestTarget =
+    useSharedValue<CanonicalSmoothClipPresentation>(initialPresentation);
+  const animationStart =
+    useSharedValue<CanonicalSmoothClipPresentation>(initialPresentation);
   const animationProgress = useSharedValue(0);
   const keyframes = useSharedValue<
     readonly Readonly<{
       offset: number;
-      presentation: SmoothClipPresentation;
+      presentation: CanonicalSmoothClipPresentation;
     }>[]
   >([]);
   const callbackRef = useRef(options.onAnimationComplete);
@@ -191,20 +256,25 @@ export function useSmoothClipDriver(
       options.reduceMotion ?? 'system'
     );
 
-    const beginOnUI = (): SmoothClipPresentation => {
+    const beginOnUI = (): CanonicalSmoothClipPresentation => {
       'worklet';
       cancelReanimatedAnimation(animationProgress);
       activeAnimationId.value = 0;
-      return presentation.value;
+      ownership.value = 0;
+      return (
+        canonicalizeClipPresentation(presentation.value) ?? initialPresentation
+      );
     };
 
     const setOnUI = (next: SmoothClipPresentation): void => {
       'worklet';
-      if (!isFiniteClipPresentation(next)) return;
+      const canonical = canonicalizeClipPresentation(next);
+      if (canonical === null) return;
       cancelReanimatedAnimation(animationProgress);
       activeAnimationId.value = 0;
-      latestTarget.value = next;
-      presentation.value = next;
+      ownership.value = 0;
+      latestTarget.value = canonical;
+      presentation.value = canonical;
     };
 
     const animateOnUI = (
@@ -212,21 +282,96 @@ export function useSmoothClipDriver(
       animation: SmoothClipAnimation
     ): number => {
       'worklet';
-      nextAnimationId.value = (nextAnimationId.value % 0x7ffffffe) + 1;
-      const animationId = nextAnimationId.value;
-      if (!isFiniteClipPresentation(next) || !animationIsFinite(animation)) {
+      const animationId = allocateFallbackAnimationId();
+      const canonicalNext = canonicalizeClipPresentation(next);
+      const canonicalFrom =
+        animation.from === undefined
+          ? undefined
+          : canonicalizeClipPresentation(animation.from);
+      if (
+        canonicalNext === null ||
+        (animation.from !== undefined && canonicalFrom === null) ||
+        !animationIsFinite(animation)
+      ) {
+        scheduleOnRN(finishFallback, driverId, animationId, false);
+        return animationId;
+      }
+      const resolvedFrom = canonicalFrom ?? undefined;
+
+      const current =
+        canonicalizeClipPresentation(presentation.value) ?? initialPresentation;
+      if (canonicalNext.clip.curve !== (resolvedFrom ?? current).clip.curve) {
         scheduleOnRN(finishFallback, driverId, animationId, false);
         return animationId;
       }
 
-      if (animation.from !== undefined) {
+      let canonicalKeyframes:
+        | {
+            offset: number;
+            presentation: CanonicalSmoothClipPresentation;
+          }[]
+        | null = null;
+      if (animation.type === 'keyframes') {
+        canonicalKeyframes = [];
+        for (const frame of animation.frames) {
+          const canonical = canonicalizeClipPresentation(frame.presentation);
+          if (
+            canonical === null ||
+            canonical.clip.curve !== canonicalNext.clip.curve
+          ) {
+            scheduleOnRN(finishFallback, driverId, animationId, false);
+            return animationId;
+          }
+          canonicalKeyframes.push({
+            offset: frame.offset,
+            presentation: canonical,
+          });
+        }
+        if (
+          !clipPresentationEquals(
+            canonicalKeyframes[canonicalKeyframes.length - 1]?.presentation ??
+              null,
+            canonicalNext
+          ) ||
+          (resolvedFrom !== undefined &&
+            !clipPresentationEquals(
+              canonicalKeyframes[0]?.presentation ?? null,
+              resolvedFrom
+            ))
+        ) {
+          scheduleOnRN(finishFallback, driverId, animationId, false);
+          return animationId;
+        }
+        if (resolvedFrom === undefined && canonicalKeyframes[0]) {
+          canonicalKeyframes[0] = {
+            ...canonicalKeyframes[0],
+            presentation: current,
+          };
+        }
+      }
+
+      if (
+        animation.type === 'spring' &&
+        !springScaleIsProvablyPositive(
+          resolvedFrom ?? current,
+          canonicalNext,
+          animation
+        )
+      ) {
+        scheduleOnRN(finishFallback, driverId, animationId, false);
+        return animationId;
+      }
+
+      if (resolvedFrom !== undefined) {
         // Fused explicit start: on the fallback driver the setScalars hot
         // path is a plain presentation write, so the desugar is the same.
-        presentation.value = animation.from;
+        presentation.value = resolvedFrom;
       }
       activeAnimationId.value = animationId;
-      animationStart.value = presentation.value;
-      latestTarget.value = next;
+      ownership.value = 1;
+      animationStart.value =
+        canonicalizeClipPresentation(presentation.value) ?? initialPresentation;
+      latestTarget.value = canonicalNext;
       keyframes.value = [];
       animationProgress.value = 0;
       scheduleOnRN(snapshotDriverViews, driverId, animationId);
@@ -234,6 +379,7 @@ export function useSmoothClipDriver(
         'worklet';
         if (activeAnimationId.value === animationId) {
           activeAnimationId.value = 0;
+          ownership.value = 0;
         }
         scheduleOnRN(finishFallback, driverId, animationId, finished === true);
       };
@@ -266,17 +412,7 @@ export function useSmoothClipDriver(
           onComplete
         );
       } else {
-        if (
-          !clipPresentationEquals(
-            animation.frames[animation.frames.length - 1]?.presentation ?? null,
-            next
-          )
-        ) {
-          scheduleOnRN(finishFallback, driverId, animationId, false);
-          activeAnimationId.value = 0;
-          return animationId;
-        }
-        keyframes.value = animation.frames;
+        keyframes.value = canonicalKeyframes!;
         animationProgress.value = withTiming(
           1,
           {
@@ -293,15 +429,20 @@ export function useSmoothClipDriver(
     const cancelOnUI = (
       animationId = 0,
       behavior: 'current' | 'target' = 'current'
-    ): SmoothClipPresentation => {
+    ): CanonicalSmoothClipPresentation => {
       'worklet';
+      const current =
+        canonicalizeClipPresentation(presentation.value) ?? initialPresentation;
       if (animationId !== 0 && animationId !== activeAnimationId.value) {
-        return presentation.value;
+        return current;
       }
       cancelReanimatedAnimation(animationProgress);
       activeAnimationId.value = 0;
+      ownership.value = 0;
       if (behavior === 'target') presentation.value = latestTarget.value;
-      return presentation.value;
+      return (
+        canonicalizeClipPresentation(presentation.value) ?? initialPresentation
+      );
     };
 
     const setScalarsOnUI = (
@@ -321,6 +462,45 @@ export function useSmoothClipDriver(
       });
     };
 
+    const setPresentationScalarsOnUI = (
+      x: number,
+      y: number,
+      width: number,
+      height: number,
+      topLeftRadius: number,
+      topRightRadius: number,
+      bottomRightRadius: number,
+      bottomLeftRadius: number,
+      curveCode: number,
+      contentTranslateX: number,
+      contentTranslateY: number,
+      contentScale: number
+    ): void => {
+      'worklet';
+      if (curveCode !== 0 && curveCode !== 1) return;
+      const uniform =
+        topLeftRadius === topRightRadius &&
+        topLeftRadius === bottomRightRadius &&
+        topLeftRadius === bottomLeftRadius;
+      setOnUI({
+        clip: {
+          x,
+          y,
+          width,
+          height,
+          radius: uniform ? topLeftRadius : 0,
+          topLeftRadius,
+          topRightRadius,
+          bottomRightRadius,
+          bottomLeftRadius,
+          curve: curveCode === 1 ? 'continuous' : 'circular',
+        },
+        contentTranslateX,
+        contentTranslateY,
+        contentScale,
+      });
+    };
+
     const driver: SmoothClipDriver = {
       kind: 'hybrid',
       presentation,
@@ -331,13 +511,14 @@ export function useSmoothClipDriver(
         beginInteraction: beginOnUI,
         set: setOnUI,
         setScalars: setScalarsOnUI,
+        setPresentationScalars: setPresentationScalarsOnUI,
         animateTo: animateOnUI,
         cancel: cancelOnUI,
       },
       react: {
         beginInteraction() {
           const { requestId, promise } =
-            createReactRequest<SmoothClipPresentation>(driverId);
+            createReactRequest<CanonicalSmoothClipPresentation>(driverId);
           scheduleOnUI(() => {
             'worklet';
             const result = beginOnUI();
@@ -374,7 +555,7 @@ export function useSmoothClipDriver(
         },
         cancel(animationId = 0, behavior = 'current') {
           const { requestId, promise } =
-            createReactRequest<SmoothClipPresentation>(driverId, true);
+            createReactRequest<CanonicalSmoothClipPresentation>(driverId, true);
           scheduleOnUI(() => {
             'worklet';
             const result = cancelOnUI(animationId, behavior);
@@ -389,6 +570,14 @@ export function useSmoothClipDriver(
           return promise;
         },
       },
+      __smoothClipHandle: {
+        driverId,
+        presentation,
+        ownership,
+        activeAnimationId,
+        disposed,
+        ready,
+      },
     };
     setDriverState(
       driver,
@@ -397,7 +586,9 @@ export function useSmoothClipDriver(
         initialPresentation,
         presentation,
         callbackRef,
-        activeAnimationId
+        activeAnimationId,
+        ownership,
+        ready
       )
     );
     driverRef.current = driver;
@@ -408,15 +599,17 @@ export function useSmoothClipDriver(
     const currentDriver = driverRef.current;
     if (!currentDriver) return undefined;
     const state = getDriverState(currentDriver);
+    disposed.value = 0;
     // Re-attach on effect replays (StrictMode/<Activity>) after a cleanup
     // detached this state.
     attachDriverState(state);
     return () => {
       cancelReanimatedAnimation(animationProgress);
+      disposed.value = 1;
       rejectDriverRequests(state.driverId);
       detachDriverState(state);
     };
-  }, [animationProgress]);
+  }, [animationProgress, disposed]);
   return driver;
 }
 

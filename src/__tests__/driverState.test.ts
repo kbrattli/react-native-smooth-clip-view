@@ -6,7 +6,9 @@ import {
   createDriverState,
   deliverDriverCompletion,
   finishDriverAnimation,
+  getDriverState,
   registerDriverView,
+  registerDriverViewReadiness,
   setDriverState,
   snapshotDriverViews,
 } from '../driverState';
@@ -26,6 +28,7 @@ function makeDriver(
       beginInteraction: () => initialPresentation,
       set: () => undefined,
       setScalars: () => undefined,
+      setPresentationScalars: () => undefined,
       animateTo: () => 1,
       cancel: () => initialPresentation,
     },
@@ -72,5 +75,23 @@ describe('hybrid driver lifecycle state', () => {
     unregister();
 
     expect(finishDriverAnimation(503, 11, true)).toBe(true);
+  });
+
+  it('aggregates per-host readiness instead of treating registration as ready', () => {
+    const driver = makeDriver(504);
+    const ready = { value: 0 };
+    getDriverState(driver).ready = ready as never;
+    const first = registerDriverViewReadiness(driver, false);
+    const second = registerDriverViewReadiness(driver, false);
+
+    expect(ready.value).toBe(0);
+    first.setReady(true);
+    expect(ready.value).toBe(1);
+    second.setReady(true);
+    first.setReady(false);
+    expect(ready.value).toBe(1);
+    second.unregister();
+    expect(ready.value).toBe(0);
+    first.unregister();
   });
 });
