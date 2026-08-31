@@ -7,7 +7,7 @@
 #include <cmath>
 
 // Shared vector table: mirrored in ClipGeometryNormalizerTest.kt so the
-// Kotlin legacy path, the shared C++ normalizer (Android driver deliveries),
+// Kotlin, the shared C++ normalizer (Android driver deliveries),
 // and the iOS normalizer provably agree.
 typedef struct {
   double x, y, width, height, radius, hostWidth, hostHeight;

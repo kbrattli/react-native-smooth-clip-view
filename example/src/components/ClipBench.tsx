@@ -117,8 +117,13 @@ function ScalarsStreamBench() {
       presentation.clip.width,
       presentation.clip.height,
       presentation.clip.radius,
+      presentation.clip.radius,
+      presentation.clip.radius,
+      presentation.clip.radius,
+      presentation.clip.curve === 'continuous' ? 1 : 0,
       presentation.contentTranslateX,
-      presentation.contentTranslateY
+      presentation.contentTranslateY,
+      presentation.contentScale ?? 1
     );
   });
 
@@ -135,7 +140,7 @@ function ScalarsStreamBench() {
   );
 }
 
-// One worklet computes both V2 presentations and commits them in a single
+// One worklet computes both presentations and commits them in a single
 // native transaction. This is the correctness-first streaming path used by
 // consumers before a motion plan is eligible for native ownership.
 function BatchStreamBench() {
@@ -158,14 +163,14 @@ function BatchStreamBench() {
   return (
     <View pointerEvents="none" style={styles.overlay}>
       <SmoothClipView driver={first} style={styles.host} testID="bench-batch-a">
-        <BenchSheet label="V2 setBatch · participant A" />
+        <BenchSheet label="setBatch · participant A" />
       </SmoothClipView>
       <SmoothClipView
         driver={second}
         style={styles.host}
         testID="bench-batch-b"
       >
-        <BenchSheet label="V2 setBatch · participant B" />
+        <BenchSheet label="setBatch · participant B" />
       </SmoothClipView>
     </View>
   );
@@ -301,8 +306,8 @@ type BenchMode =
 
 const MODES: ReadonlyArray<{ mode: BenchMode; label: string }> = [
   { mode: 'group-native', label: 'Grouped native settlement' },
-  { mode: 'batch-stream', label: 'V2 atomic setBatch stream' },
-  { mode: 'scalars-stream', label: 'Legacy V1 setScalars stream' },
+  { mode: 'batch-stream', label: 'Atomic setBatch stream' },
+  { mode: 'scalars-stream', label: 'setScalars stream' },
   { mode: 'reanimated', label: 'Naive Reanimated baseline' },
 ];
 

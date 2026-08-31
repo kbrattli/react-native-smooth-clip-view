@@ -17,13 +17,11 @@ function makeDriver(
 ): SmoothClipDriver {
   const source = { value: initialPresentation } as never;
   const driver: SmoothClipDriver = {
-    kind: 'hybrid',
     presentation: source,
     ui: {
       beginInteraction: () => initialPresentation,
       set: () => undefined,
       setScalars: () => undefined,
-      setPresentationScalars: () => undefined,
       animateTo: () => 1,
       cancel: () => initialPresentation,
     },

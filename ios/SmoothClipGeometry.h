@@ -16,8 +16,7 @@ typedef NS_ENUM(NSInteger, SmoothClipCornerCurve) {
 
 typedef struct {
   CGRect rect;
-  // Retained for the V1 uniform-radius contract. V2 callers should consume
-  // `radii`; this field is zero when the normalized radii are unequal.
+  // Uniform-radius fast-path value; zero when normalized radii are unequal.
   CGFloat radius;
   SmoothClipCornerRadii radii;
   SmoothClipCornerCurve curve;
@@ -48,13 +47,13 @@ NS_INLINE CGFloat SmoothClipSafeOverlapFactor(
 }
 
 /**
- * Normalizes the V2 rectangle and four radii without allocating.
+ * Normalizes the rectangle and four radii without allocating.
  *
  * The proportional overlap rule matches CSS border radii and the shared
  * Android/C++ contract: all corners use one scale factor, preserving their
  * relative shape while no opposing pair exceeds its edge.
  */
-NS_INLINE BOOL SmoothClipNormalizeGeometryV2(
+NS_INLINE BOOL SmoothClipNormalizeGeometry(
     CGFloat x,
     CGFloat y,
     CGFloat width,
@@ -131,7 +130,7 @@ NS_INLINE BOOL SmoothClipNormalizeGeometry(
     CGFloat radius,
     CGSize hostSize,
     SmoothNormalizedClipGeometry *result) {
-  return SmoothClipNormalizeGeometryV2(
+  return SmoothClipNormalizeGeometry(
       x,
       y,
       width,
@@ -146,15 +145,17 @@ NS_INLINE BOOL SmoothClipNormalizeGeometry(
 }
 
 /**
- * Creates the stable nine-segment rounded-rectangle topology used by the
- * unequal-corner CAShapeLayer mask. Every corner is one cubic, including a
- * zero-radius corner, so Core Animation can interpolate paths without a
- * topology change.
+ * Creates an empty path for an empty clip. Non-empty rounded rectangles use a
+ * stable nine-segment topology. Every corner is one cubic, including a
+ * zero-radius corner, so Core Animation can interpolate non-empty paths
+ * without a topology change.
  */
 NS_INLINE CGPathRef SmoothClipCreateRoundedRectPath(
     CGRect rect,
     SmoothClipCornerRadii radii,
     SmoothClipCornerCurve curve) CF_RETURNS_RETAINED {
+  CGMutablePathRef path = CGPathCreateMutable();
+  if (CGRectIsEmpty(rect)) return path;
   const CGFloat minX = CGRectGetMinX(rect);
   const CGFloat minY = CGRectGetMinY(rect);
   const CGFloat maxX = CGRectGetMaxX(rect);
@@ -171,7 +172,6 @@ NS_INLINE CGPathRef SmoothClipCreateRoundedRectPath(
       ? 1.0
       : 0.5522847498307936;
 
-  CGMutablePathRef path = CGPathCreateMutable();
   CGPathMoveToPoint(path, NULL, minX + radii.topLeft, minY);
   CGPathAddLineToPoint(path, NULL, maxX - radii.topRight, minY);
   CGPathAddCurveToPoint(

@@ -151,8 +151,13 @@ function HarnessOverlay({
         presentation.clip.width,
         presentation.clip.height,
         presentation.clip.radius,
+        presentation.clip.radius,
+        presentation.clip.radius,
+        presentation.clip.radius,
+        presentation.clip.curve === 'continuous' ? 1 : 0,
         presentation.contentTranslateX,
-        presentation.contentTranslateY
+        presentation.contentTranslateY,
+        presentation.contentScale ?? 1
       );
     },
     [dragTy, dragging, driver]
@@ -278,8 +283,13 @@ function BenchProbe({ onDone }: { onDone: () => void }) {
             p.clip.width,
             p.clip.height,
             p.clip.radius,
+            p.clip.radius,
+            p.clip.radius,
+            p.clip.radius,
+            p.clip.curve === 'continuous' ? 1 : 0,
             p.contentTranslateX,
-            p.contentTranslateY
+            p.contentTranslateY,
+            p.contentScale ?? 1
           );
         };
         const ITERATIONS = 10000;

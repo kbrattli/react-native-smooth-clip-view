@@ -35,7 +35,7 @@ inline double SmoothClipResolvedRadius(double overrideValue, double radius) {
  * between accepted anchors.
  *
  * Static clipping deliberately does not use this gate: out-of-bounds geometry
- * remains valid and is still clipped by SmoothClipNormalizeV2.
+ * remains valid and is still clipped by SmoothClipNormalize.
  */
 inline bool SmoothClipGeometryNormalizationIsIdentity(
     const Geometry &geometry,
@@ -89,7 +89,7 @@ inline bool SmoothClipGeometryNormalizationIsIdentity(
       rightRadii <= geometry.height;
 }
 
-inline bool SmoothClipNormalizeV2(
+inline bool SmoothClipNormalize(
     double x,
     double y,
     double width,
@@ -170,7 +170,7 @@ inline bool SmoothClipNormalize(
     double hostWidth,
     double hostHeight,
     NormalizedClip &out) {
-  return SmoothClipNormalizeV2(
+  return SmoothClipNormalize(
       x,
       y,
       width,

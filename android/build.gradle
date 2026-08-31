@@ -78,12 +78,12 @@ android {
   defaultConfig {
     // Outline.setPath only guarantees arbitrary path clipping from API 33.
     // Keep this as a hard library floor: allowing a consuming root project to
-    // override it lower would make the V2 per-corner/continuous path silently
+    // override it lower would make the per-corner/continuous path silently
     // unsupported at runtime.
     minSdkVersion SmoothClipView.minSdkVersion
     targetSdkVersion getExtOrDefault("targetSdkVersion")
-    // C++ resolves SmoothClipView by name and calls setClipPresentationDip via
-    // a cached jmethodID; consumer minification must not rename or strip them.
+    // C++ resolves SmoothClipView by name and calls its presentation setters via
+    // cached jmethodIDs; consumer minification must not rename or strip them.
     consumerProguardFiles "proguard-rules.pro"
 
     externalNativeBuild {

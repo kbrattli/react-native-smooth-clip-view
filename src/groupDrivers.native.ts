@@ -3,9 +3,12 @@ import { Platform } from 'react-native';
 import { useSharedValue } from 'react-native-reanimated';
 import { isRNRuntime, scheduleOnRN, scheduleOnUI } from 'react-native-worklets';
 import NativeSmoothClipModule from './smoothClipNative';
-import { getSmoothClipCapabilities } from './capabilities';
 import { allocateDriverId } from './driverState';
-import type { SmoothClipDriver, SmoothClipDriverHandle } from './driverTypes';
+import type {
+  InternalSmoothClipDriver,
+  SmoothClipDriver,
+  SmoothClipDriverHandle,
+} from './driverTypes';
 import type {
   SmoothClipBatchEntry,
   SmoothClipGroupAnimationResult,
@@ -23,41 +26,39 @@ import {
   clipPresentationEquals,
   type CanonicalSmoothClipPresentation,
 } from './geometry';
+import {
+  appendPresentationPacket,
+  PRESENTATION_STRIDE,
+  presentationFromPacket,
+} from './presentationCodec';
+import { subscribeGroupCompletion } from './nativeCompletion';
 
 const INTERACTIVE = 0;
 const NATIVE = 1;
-const PRESENTATION_STRIDE = 12;
-const SNAPSHOT_STRIDE = 13;
-const MOTION_ENTRY_STRIDE = 26;
+const SNAPSHOT_STRIDE = PRESENTATION_STRIDE + 1;
+const MOTION_ENTRY_STRIDE = PRESENTATION_STRIDE * 2 + 2;
 const NEEDS_START_STAMP = Platform.OS === 'android';
-const GROUPS_SUPPORTED = getSmoothClipCapabilities().groups;
 
 type NativeGroupHostFunctions = Readonly<{
-  beginGroupInteractionV2(driverIds: readonly number[]): readonly number[];
-  snapshotGroupV2(driverIds: readonly number[]): readonly number[];
-  setClipPresentationBatchV2(entries: readonly number[]): boolean;
-  animateTimingGroupV2(...args: readonly unknown[]): number;
-  animateSpringGroupV2(...args: readonly unknown[]): number;
-  animateKeyframesGroupV2(...args: readonly unknown[]): number;
-  cancelAnimationGroupV2(groupId: number, behavior: number): readonly number[];
-  onClipGroupAnimationComplete?: typeof NativeSmoothClipModule.onClipGroupAnimationComplete;
+  beginGroupInteraction(driverIds: readonly number[]): readonly number[];
+  snapshotGroup(driverIds: readonly number[]): readonly number[];
+  setClipPresentationBatch(entries: readonly number[]): boolean;
+  animateTimingGroup(...args: readonly unknown[]): number;
+  animateSpringGroup(...args: readonly unknown[]): number;
+  animateKeyframesGroup(...args: readonly unknown[]): number;
+  cancelAnimationGroup(groupId: number, behavior: number): readonly number[];
 }>;
-type RequiredNativeGroupCommands = Required<
-  Omit<NativeGroupHostFunctions, 'onClipGroupAnimationComplete'>
->;
 
-const nativeGroups =
-  NativeSmoothClipModule as unknown as Partial<NativeGroupHostFunctions>;
-const beginGroupInteractionV2HostFunction =
-  nativeGroups.beginGroupInteractionV2;
-const snapshotGroupV2HostFunction = nativeGroups.snapshotGroupV2;
-const setClipPresentationBatchV2HostFunction =
-  nativeGroups.setClipPresentationBatchV2;
-const animateTimingGroupV2HostFunction = nativeGroups.animateTimingGroupV2;
-const animateSpringGroupV2HostFunction = nativeGroups.animateSpringGroupV2;
-const animateKeyframesGroupV2HostFunction =
-  nativeGroups.animateKeyframesGroupV2;
-const cancelAnimationGroupV2HostFunction = nativeGroups.cancelAnimationGroupV2;
+const nativeGroupHost =
+  NativeSmoothClipModule as unknown as NativeGroupHostFunctions;
+const beginGroupInteractionHostFunction = nativeGroupHost.beginGroupInteraction;
+const snapshotGroupHostFunction = nativeGroupHost.snapshotGroup;
+const setClipPresentationBatchHostFunction =
+  nativeGroupHost.setClipPresentationBatch;
+const animateTimingGroupHostFunction = nativeGroupHost.animateTimingGroup;
+const animateSpringGroupHostFunction = nativeGroupHost.animateSpringGroup;
+const animateKeyframesGroupHostFunction = nativeGroupHost.animateKeyframesGroup;
+const cancelAnimationGroupHostFunction = nativeGroupHost.cancelAnimationGroup;
 
 type RuntimeGroupRecord = Readonly<{
   controllerId: number;
@@ -127,63 +128,17 @@ function uiOnly(): never {
   );
 }
 
-function curveCode(presentation: CanonicalSmoothClipPresentation): number {
-  'worklet';
-  return presentation.clip.curve === 'continuous' ? 1 : 0;
-}
-
-function appendPresentation(
-  values: number[],
-  presentation: CanonicalSmoothClipPresentation
-): void {
-  'worklet';
-  const { clip, contentTranslateX, contentTranslateY, contentScale } =
-    presentation;
-  values.push(
-    clip.x,
-    clip.y,
-    clip.width,
-    clip.height,
-    clip.topLeftRadius,
-    clip.topRightRadius,
-    clip.bottomRightRadius,
-    clip.bottomLeftRadius,
-    curveCode(presentation),
-    contentTranslateX,
-    contentTranslateY,
-    contentScale
-  );
-}
-
-function presentationFromValues(
-  values: readonly number[],
-  offset: number
-): CanonicalSmoothClipPresentation | null {
-  'worklet';
-  if (values.length < offset + PRESENTATION_STRIDE) return null;
-  return canonicalizeClipPresentation({
-    clip: {
-      x: values[offset] as number,
-      y: values[offset + 1] as number,
-      width: values[offset + 2] as number,
-      height: values[offset + 3] as number,
-      radius: 0,
-      topLeftRadius: values[offset + 4] as number,
-      topRightRadius: values[offset + 5] as number,
-      bottomRightRadius: values[offset + 6] as number,
-      bottomLeftRadius: values[offset + 7] as number,
-      curve: values[offset + 8] === 1 ? 'continuous' : 'circular',
-    },
-    contentTranslateX: values[offset + 9] as number,
-    contentTranslateY: values[offset + 10] as number,
-    contentScale: values[offset + 11] as number,
-  });
-}
-
 type ValidDriver = Readonly<{
   driver: SmoothClipDriver;
   handle: SmoothClipDriverHandle;
 }>;
+
+function driverHandle(
+  driver: SmoothClipDriver | undefined
+): SmoothClipDriverHandle | undefined {
+  'worklet';
+  return (driver as InternalSmoothClipDriver | undefined)?.__smoothClipHandle;
+}
 
 function validateDrivers(
   drivers: readonly SmoothClipDriver[]
@@ -193,9 +148,10 @@ function validateDrivers(
   const seen: Record<string, true> = {};
   const result: ValidDriver[] = [];
   for (const driver of drivers) {
-    const handle = driver.__smoothClipHandle;
+    const internal = driver as InternalSmoothClipDriver;
+    const handle = driverHandle(driver);
     if (
-      driver.kind !== 'hybrid' ||
+      internal.kind !== 'hybrid' ||
       handle === undefined ||
       !Number.isSafeInteger(handle.driverId) ||
       handle.driverId <= 0 ||
@@ -209,31 +165,6 @@ function validateDrivers(
     result.push({ driver, handle });
   }
   return result;
-}
-
-function requireNativeGroups(): RequiredNativeGroupCommands {
-  'worklet';
-  if (
-    !GROUPS_SUPPORTED ||
-    beginGroupInteractionV2HostFunction === undefined ||
-    snapshotGroupV2HostFunction === undefined ||
-    setClipPresentationBatchV2HostFunction === undefined ||
-    animateTimingGroupV2HostFunction === undefined ||
-    animateSpringGroupV2HostFunction === undefined ||
-    animateKeyframesGroupV2HostFunction === undefined ||
-    cancelAnimationGroupV2HostFunction === undefined
-  ) {
-    return fail('Native grouped presentation protocol V2 is unavailable.');
-  }
-  return {
-    beginGroupInteractionV2: beginGroupInteractionV2HostFunction,
-    snapshotGroupV2: snapshotGroupV2HostFunction,
-    setClipPresentationBatchV2: setClipPresentationBatchV2HostFunction,
-    animateTimingGroupV2: animateTimingGroupV2HostFunction,
-    animateSpringGroupV2: animateSpringGroupV2HostFunction,
-    animateKeyframesGroupV2: animateKeyframesGroupV2HostFunction,
-    cancelAnimationGroupV2: cancelAnimationGroupV2HostFunction,
-  };
 }
 
 type ParsedGroupSnapshots = Readonly<{
@@ -254,13 +185,13 @@ function parseSnapshots(
   for (let index = 0; index < drivers.length; index += 1) {
     const offset = index * SNAPSHOT_STRIDE;
     const readyCode = values[offset];
-    let presentation = presentationFromValues(values, offset + 1);
+    let presentation = presentationFromPacket(values, offset + 1);
     if (readyCode !== 0 && readyCode !== 1) {
       return fail('Native returned an invalid group snapshot.');
     }
     if (presentation === null && readyCode === 0) {
       presentation = canonicalizeClipPresentation(
-        drivers[index]?.__smoothClipHandle?.presentation.value as never
+        driverHandle(drivers[index])?.presentation.value as never
       );
       unavailable = true;
     }
@@ -283,11 +214,11 @@ function applyInteractiveSnapshots(
   // Keep individual driver listeners from re-emitting a transaction that the
   // group engine has already committed atomically.
   for (const snapshot of snapshots) {
-    const handle = snapshot.driver.__smoothClipHandle;
+    const handle = driverHandle(snapshot.driver);
     if (handle) handle.ownership.value = NATIVE;
   }
   for (const snapshot of snapshots) {
-    const handle = snapshot.driver.__smoothClipHandle;
+    const handle = driverHandle(snapshot.driver);
     if (!handle) continue;
     handle.activeAnimationId.value = 0;
     handle.presentation.value = snapshot.presentation;
@@ -411,7 +342,7 @@ function snapshotsForMotionStarts(
   const sampled = missingFrom
     ? parseSnapshots(
         validDrivers.map((entry) => entry.driver),
-        requireNativeGroups().snapshotGroupV2(
+        snapshotGroupHostFunction(
           validDrivers.map((entry) => entry.handle.driverId)
         )
       ).snapshots
@@ -439,7 +370,7 @@ function registerNativeGroup(
   const records = runtimeGroupRecords();
   records[String(groupId)] = { controllerId, drivers };
   for (let index = 0; index < drivers.length; index += 1) {
-    const handle = drivers[index]?.__smoothClipHandle;
+    const handle = driverHandle(drivers[index]);
     const target = targets[index];
     if (!handle || !target) continue;
     handle.ownership.value = NATIVE;
@@ -465,9 +396,7 @@ function synchronizeGroupCompletionOnUI(
     return;
   }
   for (let index = 0; index < record.drivers.length; index += 1) {
-    if (
-      record.drivers[index]?.__smoothClipHandle?.driverId !== driverIds[index]
-    ) {
+    if (driverHandle(record.drivers[index])?.driverId !== driverIds[index]) {
       return;
     }
   }
@@ -476,10 +405,8 @@ function synchronizeGroupCompletionOnUI(
     try {
       snapshots = parseSnapshots(
         record.drivers,
-        requireNativeGroups().snapshotGroupV2(
-          record.drivers.map(
-            (driver) => driver.__smoothClipHandle?.driverId ?? 0
-          )
+        snapshotGroupHostFunction(
+          record.drivers.map((driver) => driverHandle(driver)?.driverId ?? 0)
         )
       ).snapshots;
     } catch {
@@ -489,7 +416,7 @@ function synchronizeGroupCompletionOnUI(
   for (let index = 0; index < record.drivers.length; index += 1) {
     const driver = record.drivers[index];
     if (driver === undefined) continue;
-    const handle = driver.__smoothClipHandle;
+    const handle = driverHandle(driver);
     if (handle === undefined || handle.activeAnimationId.value !== groupId) {
       continue;
     }
@@ -656,7 +583,7 @@ export function useSmoothClipGroupDriver(
       'worklet';
       if (disposed.value !== 0) return fail('Group driver was destroyed.');
       const valid = validateDrivers(drivers);
-      const values = requireNativeGroups().beginGroupInteractionV2(
+      const values = beginGroupInteractionHostFunction(
         valid.map((entry) => entry.handle.driverId)
       );
       const parsed = parseSnapshots(drivers, values);
@@ -674,9 +601,7 @@ export function useSmoothClipGroupDriver(
       const valid = validateDrivers(drivers);
       return parseSnapshots(
         drivers,
-        requireNativeGroups().snapshotGroupV2(
-          valid.map((entry) => entry.handle.driverId)
-        )
+        snapshotGroupHostFunction(valid.map((entry) => entry.handle.driverId))
       ).snapshots;
     };
 
@@ -694,9 +619,9 @@ export function useSmoothClipGroupDriver(
           return fail('A batch presentation is invalid.');
         canonical.push(presentation);
         values.push(valid[index]?.handle.driverId as number);
-        appendPresentation(values, presentation);
+        appendPresentationPacket(values, presentation);
       }
-      if (!requireNativeGroups().setClipPresentationBatchV2(values)) {
+      if (!setClipPresentationBatchHostFunction(values)) {
         return fail('Native rejected the complete presentation batch.');
       }
       for (const entry of valid) entry.handle.ownership.value = NATIVE;
@@ -739,7 +664,6 @@ export function useSmoothClipGroupDriver(
         }
       }
 
-      const native = requireNativeGroups();
       const values: number[] = [];
       let groupId = 0;
       if (animation.type === 'keyframes') {
@@ -789,15 +713,15 @@ export function useSmoothClipGroupDriver(
           }
           values.push(valid[index]?.handle.driverId as number);
           values.push(entry.from === undefined ? 0 : 1);
-          appendPresentation(values, start);
-          appendPresentation(values, target);
+          appendPresentationPacket(values, start);
+          appendPresentationPacket(values, target);
           values.push(frames.length);
           for (const frame of frames) {
             values.push(frame.offset);
-            appendPresentation(values, frame.presentation);
+            appendPresentationPacket(values, frame.presentation);
           }
         }
-        groupId = native.animateKeyframesGroupV2(
+        groupId = animateKeyframesGroupHostFunction(
           controllerId,
           values,
           animation.duration,
@@ -810,11 +734,11 @@ export function useSmoothClipGroupDriver(
           const entry = entries[index] as SmoothClipGroupMotionEntry;
           values.push(valid[index]?.handle.driverId as number);
           values.push(entry.from === undefined ? 0 : 1);
-          appendPresentation(
+          appendPresentationPacket(
             values,
             starts[index] as CanonicalSmoothClipPresentation
           );
-          appendPresentation(
+          appendPresentationPacket(
             values,
             targets[index] as CanonicalSmoothClipPresentation
           );
@@ -824,7 +748,7 @@ export function useSmoothClipGroupDriver(
         }
         if (animation.type === 'timing') {
           const [x1, y1, x2, y2] = animation.controlPoints;
-          groupId = native.animateTimingGroupV2(
+          groupId = animateTimingGroupHostFunction(
             controllerId,
             values,
             animation.duration,
@@ -845,7 +769,7 @@ export function useSmoothClipGroupDriver(
           const inheritVelocity =
             animation.initialVelocity === undefined ||
             animation.initialVelocity === 'inherit';
-          groupId = native.animateSpringGroupV2(
+          groupId = animateSpringGroupHostFunction(
             controllerId,
             values,
             animation.mass ?? 1,
@@ -881,13 +805,13 @@ export function useSmoothClipGroupDriver(
       const records = runtimeGroupRecords();
       const record = records[String(groupId)];
       if (!record || record.controllerId !== controllerId) return [];
-      const values = requireNativeGroups().cancelAnimationGroupV2(
+      const values = cancelAnimationGroupHostFunction(
         groupId,
         behavior === 'finish' ? 1 : 0
       );
       if (values.length === 0) {
         for (const driver of record.drivers) {
-          const handle = driver.__smoothClipHandle;
+          const handle = driverHandle(driver);
           if (!handle || handle.activeAnimationId.value !== groupId) continue;
           handle.activeAnimationId.value = 0;
           handle.ownership.value = INTERACTIVE;
@@ -902,7 +826,6 @@ export function useSmoothClipGroupDriver(
     };
 
     const group: SmoothClipGroupDriver = {
-      kind: 'group',
       ui: {
         beginInteraction(drivers) {
           'worklet';
@@ -1095,49 +1018,36 @@ export function useSmoothClipGroupDriver(
     state.effectGeneration += 1;
     const effectGeneration = state.effectGeneration;
     nativeGroupDriverStates.set(controllerId, state);
-    let subscription: { remove(): void } | undefined;
-    if (GROUPS_SUPPORTED) {
-      try {
-        subscription = nativeGroups.onClipGroupAnimationComplete?.((result) => {
-          if (result.controllerId !== controllerId) return;
-          scheduleOnUI(
-            synchronizeGroupCompletionOnUI,
-            result.controllerId,
-            result.groupId,
-            result.finished,
-            result.driverIds
-          );
-          deliverNativeGroupCompletion(
-            controllerId,
-            result.groupId,
-            result.finished
-          );
-        });
-      } catch {
-        // A V1 native module may expose neither the event hook nor a compatible
-        // emitter facade. Unsupported setup is a no-op; UI methods still report
-        // the normal capability error when invoked.
+    const unsubscribeCompletion = subscribeGroupCompletion(
+      controllerId,
+      (result) => {
+        scheduleOnUI(
+          synchronizeGroupCompletionOnUI,
+          result.controllerId,
+          result.groupId,
+          result.finished,
+          result.driverIds
+        );
+        deliverNativeGroupCompletion(
+          controllerId,
+          result.groupId,
+          result.finished
+        );
       }
-    }
+    );
     return () => {
-      try {
-        subscription?.remove();
-      } catch {
-        // Older native event subscriptions are not guaranteed to support V2
-        // teardown. Cleanup must remain safe across a new-JS/V1-native pair.
-      }
+      unsubscribeCompletion();
       rejectGroupRequests(controllerId);
       scheduleOnUI(
         (ownerId: number, generation: number, gone: { value: number }) => {
           'worklet';
           gone.value = 1;
           const records = runtimeGroupRecords();
-          const native = GROUPS_SUPPORTED ? requireNativeGroups() : null;
           for (const key of Object.keys(records)) {
             const record = records[key];
             if (record?.controllerId !== ownerId) continue;
             const groupId = Number(key);
-            const values = native?.cancelAnimationGroupV2(groupId, 0) ?? [];
+            const values = cancelAnimationGroupHostFunction(groupId, 0);
             let snapshots: readonly SmoothClipGroupSnapshot[] = [];
             if (values.length !== 0) {
               try {
@@ -1147,7 +1057,7 @@ export function useSmoothClipGroupDriver(
               }
             }
             for (let index = 0; index < record.drivers.length; index += 1) {
-              const handle = record.drivers[index]?.__smoothClipHandle;
+              const handle = driverHandle(record.drivers[index]);
               if (!handle || handle.activeAnimationId.value !== groupId)
                 continue;
               const snapshot = snapshots[index];

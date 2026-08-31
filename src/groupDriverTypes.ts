@@ -111,7 +111,6 @@ export interface SmoothClipGroupReactControls {
 }
 
 export type SmoothClipGroupDriver = Readonly<{
-  kind: 'group';
   ui: SmoothClipGroupUIControls;
   react: SmoothClipGroupReactControls;
 }>;

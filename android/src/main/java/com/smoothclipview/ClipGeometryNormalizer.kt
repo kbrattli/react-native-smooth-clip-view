@@ -56,12 +56,12 @@ internal inline fun normalizeClipGeometryPx(
 }
 
 /**
- * V2 normalization with independent radii. Radii use the CSS overlap rule:
+ * Normalization with independent radii. Radii use the CSS overlap rule:
  * one shared factor keeps all four corners proportional when any opposing pair
- * exceeds the visible width or height. This mirrors SmoothClipNormalizeV2 in
+ * exceeds the visible width or height. This mirrors SmoothClipNormalize in
  * the shared C++ delivery path.
  */
-internal inline fun normalizeClipGeometryV2Px(
+internal inline fun normalizeClipGeometryPx(
     x: Float,
     y: Float,
     width: Float,
@@ -136,7 +136,7 @@ internal inline fun normalizeClipGeometryV2Px(
 }
 
 /**
- * Emits one fixed-topology rounded rectangle for both V2 curve families.
+ * Emits one fixed-topology rounded rectangle for both curve families.
  * Circular uses the standard quarter-circle cubic coefficient; continuous
  * keeps both control points at the rectangle corner (coefficient 1), yielding
  * zero endpoint curvature and a visibly smoother shoulder. "Continuous" is a
@@ -245,7 +245,7 @@ internal fun containsPathPoint(path: Path, x: Float, y: Float): Boolean {
     return inside
 }
 
-internal fun containsRoundedPointV2Px(
+internal fun containsRoundedPointPx(
     x: Float,
     y: Float,
     left: Float,

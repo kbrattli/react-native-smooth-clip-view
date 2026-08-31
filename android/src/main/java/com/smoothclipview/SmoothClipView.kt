@@ -1,8 +1,14 @@
 package com.smoothclipview
 
 import android.content.res.Configuration
+import android.graphics.BlurMaskFilter
+import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Outline
+import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.Region
+import android.os.Build
 import android.os.Trace
 import android.view.MotionEvent
 import android.view.View
@@ -11,14 +17,17 @@ import com.facebook.proguard.annotations.DoNotStrip
 import com.facebook.react.uimanager.PixelUtil
 import com.facebook.react.uimanager.ThemedReactContext
 import com.facebook.react.views.view.ReactViewGroup
+import kotlin.math.roundToInt
+import kotlin.math.abs
+import kotlin.math.pow
 
 class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
+    private val clipContainer = ReactViewGroup(context)
     internal val contentContainer = ReactViewGroup(context)
     private var requestedX = 0f
     private var requestedY = 0f
     private var requestedWidth = 0f
     private var requestedHeight = 0f
-    private var requestedRadius = 0f
     private var requestedTopLeftRadius = 0f
     private var requestedTopRightRadius = 0f
     private var requestedBottomRightRadius = 0f
@@ -27,7 +36,15 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     private var requestedContentTranslateX = 0f
     private var requestedContentTranslateY = 0f
     private var requestedContentScale = 1f
-    private var requestedUsesV2Geometry = false
+    private var requestedShadowEnabled = false
+    private var requestedShadowRed = 0f
+    private var requestedShadowGreen = 0f
+    private var requestedShadowBlue = 0f
+    private var requestedShadowAlpha = 1f
+    private var requestedShadowOffsetX = 0f
+    private var requestedShadowOffsetY = 0f
+    private var requestedShadowBlurRadius = 0f
+    private var requestedShadowSpreadDistance = 0f
     private var clipLeft = 0f
     private var clipTop = 0f
     private var clipRight = 0f
@@ -39,6 +56,8 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     private var clipBottomLeftRadius = 0f
     private var clipCurveCode = CLIP_CURVE_CIRCULAR
     private val clipPath = Path()
+    private var boxShadowPath: Path? = null
+    private var boxShadowPaint: Paint? = null
     private var outlineUsesPath = false
     private var outlineUsesFloatRoundRect = false
     // Rounded edges actually emitted to the outline provider. Sub-pixel changes
@@ -63,7 +82,7 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     /** Driver this view is registered with in the native registry (0 = none). */
     internal var boundDriverId: Double = 0.0
 
-    /** Set once a legacy command arrives; later initialClip* props are ignored. */
+    /** Set once a command arrives; later initial presentation props are ignored. */
     internal var commandIsAuthoritative = false
 
     private val clipOutlineProvider = object : ViewOutlineProvider() {
@@ -79,7 +98,7 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
                 // Android's public Outline.setRoundRect overload accepts only
                 // integer edges. Path.addRoundRect is the platform float
                 // round-rect primitive; Outline.setPath preserves those edges
-                // without falling back to V1's integer/residual placement.
+                // without snapping fractional edges to integer outline bounds.
                 outline.setPath(clipPath)
             } else {
                 outline.setRoundRect(
@@ -94,72 +113,19 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     }
 
     init {
-        super.addView(contentContainer)
-        outlineProvider = clipOutlineProvider
-        clipToOutline = true
+        clipContainer.addView(contentContainer)
+        super.addView(clipContainer)
+        clipContainer.outlineProvider = clipOutlineProvider
+        clipContainer.clipToOutline = true
+        clipToOutline = false
+        setWillNotDraw(false)
         visibility = INVISIBLE
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
     }
 
-    fun setClipGeometryDip(
-        x: Double,
-        y: Double,
-        width: Double,
-        height: Double,
-        radius: Double,
-    ) = setClipPresentationDip(x, y, width, height, radius, 0.0, 0.0)
-
+    /** DIP fallback used until a registered view has pushed host metrics. */
     @DoNotStrip
     fun setClipPresentationDip(
-        x: Double,
-        y: Double,
-        width: Double,
-        height: Double,
-        radius: Double,
-        contentTranslateX: Double,
-        contentTranslateY: Double,
-    ) {
-        if (!x.isFinite() || !y.isFinite() || !width.isFinite() ||
-            !height.isFinite() || !radius.isFinite() ||
-            !contentTranslateX.isFinite() || !contentTranslateY.isFinite()
-        ) {
-            return
-        }
-
-        val nextX = PixelUtil.toPixelFromDIP(x).toFloat()
-        val nextY = PixelUtil.toPixelFromDIP(y).toFloat()
-        val nextWidth = PixelUtil.toPixelFromDIP(width).toFloat()
-        val nextHeight = PixelUtil.toPixelFromDIP(height).toFloat()
-        val nextRadius = PixelUtil.toPixelFromDIP(radius).toFloat()
-        val nextContentTranslateX = PixelUtil.toPixelFromDIP(contentTranslateX).toFloat()
-        val nextContentTranslateY = PixelUtil.toPixelFromDIP(contentTranslateY).toFloat()
-        if (!nextX.isFinite() || !nextY.isFinite() || !nextWidth.isFinite() ||
-            !nextHeight.isFinite() || !nextRadius.isFinite() ||
-            !nextContentTranslateX.isFinite() || !nextContentTranslateY.isFinite()
-        ) {
-            return
-        }
-
-        requestedX = nextX
-        requestedY = nextY
-        requestedWidth = nextWidth
-        requestedHeight = nextHeight
-        requestedRadius = nextRadius
-        requestedTopLeftRadius = nextRadius
-        requestedTopRightRadius = nextRadius
-        requestedBottomRightRadius = nextRadius
-        requestedBottomLeftRadius = nextRadius
-        requestedCurveCode = CLIP_CURVE_CIRCULAR
-        requestedContentTranslateX = nextContentTranslateX
-        requestedContentTranslateY = nextContentTranslateY
-        requestedContentScale = 1f
-        requestedUsesV2Geometry = false
-        applyRequestedGeometry()
-    }
-
-    /** V2 DIP fallback used until a registered view has pushed host metrics. */
-    @DoNotStrip
-    fun setClipPresentationV2Dip(
         x: Double,
         y: Double,
         width: Double,
@@ -172,13 +138,29 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         contentTranslateX: Double,
         contentTranslateY: Double,
         contentScale: Double,
+        shadowEnabled: Boolean = false,
+        shadowRed: Double = 0.0,
+        shadowGreen: Double = 0.0,
+        shadowBlue: Double = 0.0,
+        shadowAlpha: Double = 1.0,
+        shadowOffsetX: Double = 0.0,
+        shadowOffsetY: Double = 0.0,
+        shadowBlurRadius: Double = 0.0,
+        shadowSpreadDistance: Double = 0.0,
     ) {
         if (!x.isFinite() || !y.isFinite() || !width.isFinite() ||
             !height.isFinite() || !topLeftRadius.isFinite() ||
             !topRightRadius.isFinite() || !bottomRightRadius.isFinite() ||
             !bottomLeftRadius.isFinite() || !contentTranslateX.isFinite() ||
             !contentTranslateY.isFinite() || !contentScale.isFinite() ||
-            contentScale <= 0.0 ||
+            !shadowRed.isFinite() || !shadowGreen.isFinite() ||
+            !shadowBlue.isFinite() || !shadowAlpha.isFinite() ||
+            !shadowOffsetX.isFinite() ||
+            !shadowOffsetY.isFinite() || !shadowBlurRadius.isFinite() ||
+            !shadowSpreadDistance.isFinite() || contentScale <= 0.0 ||
+            shadowRed !in 0.0..1.0 || shadowGreen !in 0.0..1.0 ||
+            shadowBlue !in 0.0..1.0 || shadowAlpha !in 0.0..1.0 ||
+            shadowBlurRadius < 0.0 ||
             (curveCode != CLIP_CURVE_CIRCULAR && curveCode != CLIP_CURVE_CONTINUOUS)
         ) {
             return
@@ -195,12 +177,19 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         val nextContentTranslateX = PixelUtil.toPixelFromDIP(contentTranslateX).toFloat()
         val nextContentTranslateY = PixelUtil.toPixelFromDIP(contentTranslateY).toFloat()
         val nextContentScale = contentScale.toFloat()
+        val nextShadowOffsetX = PixelUtil.toPixelFromDIP(shadowOffsetX).toFloat()
+        val nextShadowOffsetY = PixelUtil.toPixelFromDIP(shadowOffsetY).toFloat()
+        val nextShadowBlurRadius = PixelUtil.toPixelFromDIP(shadowBlurRadius).toFloat()
+        val nextShadowSpreadDistance =
+            PixelUtil.toPixelFromDIP(shadowSpreadDistance).toFloat()
         if (!nextX.isFinite() || !nextY.isFinite() || !nextWidth.isFinite() ||
             !nextHeight.isFinite() || !nextTopLeftRadius.isFinite() ||
             !nextTopRightRadius.isFinite() || !nextBottomRightRadius.isFinite() ||
             !nextBottomLeftRadius.isFinite() || !nextContentTranslateX.isFinite() ||
             !nextContentTranslateY.isFinite() || !nextContentScale.isFinite() ||
-            nextContentScale <= 0f
+            !nextShadowOffsetX.isFinite() || !nextShadowOffsetY.isFinite() ||
+            !nextShadowBlurRadius.isFinite() ||
+            !nextShadowSpreadDistance.isFinite() || nextContentScale <= 0f
         ) {
             return
         }
@@ -209,7 +198,6 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         requestedY = nextY
         requestedWidth = nextWidth
         requestedHeight = nextHeight
-        requestedRadius = 0f
         requestedTopLeftRadius = nextTopLeftRadius
         requestedTopRightRadius = nextTopRightRadius
         requestedBottomRightRadius = nextBottomRightRadius
@@ -218,47 +206,26 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         requestedContentTranslateX = nextContentTranslateX
         requestedContentTranslateY = nextContentTranslateY
         requestedContentScale = nextContentScale
-        requestedUsesV2Geometry = true
+        storeShadow(
+            shadowEnabled,
+            shadowRed.toFloat(),
+            shadowGreen.toFloat(),
+            shadowBlue.toFloat(),
+            shadowAlpha.toFloat(),
+            nextShadowOffsetX,
+            nextShadowOffsetY,
+            nextShadowBlurRadius,
+            nextShadowSpreadDistance,
+        )
         applyRequestedGeometry()
     }
 
     /**
-     * Driver hot path: called from the C++ registry with final pixel-space,
-     * pre-normalized values (see deliverToView in SmoothClipRegistry.cpp).
-     * No validation, scaling or normalization happens here.
-     */
-    @DoNotStrip
-    fun setClipPresentationPx(
-        left: Float,
-        top: Float,
-        right: Float,
-        bottom: Float,
-        radius: Float,
-        contentTranslateX: Float,
-        contentTranslateY: Float,
-    ) {
-        // Debug-only Perfetto slice for the Kotlin share of the C++
-        // SmoothClip.setPresentation section (see SmoothClipTrace.h).
-        if (BuildConfig.DEBUG) Trace.beginSection("SmoothClip.applyPx")
-        try {
-            // Stored only; applyNormalizedClipPx computes the clip residual and
-            // applyClipPlacement writes both translations together, because the
-            // content's final offset depends on the residual as well.
-            requestedContentTranslateX = contentTranslateX
-            requestedContentTranslateY = contentTranslateY
-            requestedContentScale = 1f
-            applyNormalizedClipPx(left, top, right, bottom, radius)
-        } finally {
-            if (BuildConfig.DEBUG) Trace.endSection()
-        }
-    }
-
-    /**
-     * V2 driver hot path. Geometry is already intersected with the host and
+     * Driver hot path. Geometry is already intersected with the host and
      * its four radii have already had the CSS overlap factor applied in C++.
      */
     @DoNotStrip
-    fun setClipPresentationV2Px(
+    fun setClipPresentationPx(
         left: Float,
         top: Float,
         right: Float,
@@ -271,24 +238,51 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         contentTranslateX: Float,
         contentTranslateY: Float,
         contentScale: Float,
+        shadowEnabled: Boolean = false,
+        shadowRed: Float = 0f,
+        shadowGreen: Float = 0f,
+        shadowBlue: Float = 0f,
+        shadowAlpha: Float = 1f,
+        shadowOffsetX: Float = 0f,
+        shadowOffsetY: Float = 0f,
+        shadowBlurRadius: Float = 0f,
+        shadowSpreadDistance: Float = 0f,
     ) {
         if (!left.isFinite() || !top.isFinite() || !right.isFinite() ||
             !bottom.isFinite() || !topLeftRadius.isFinite() ||
             !topRightRadius.isFinite() || !bottomRightRadius.isFinite() ||
             !bottomLeftRadius.isFinite() || !contentTranslateX.isFinite() ||
             !contentTranslateY.isFinite() || !contentScale.isFinite() ||
-            contentScale <= 0f ||
+            !shadowRed.isFinite() || !shadowGreen.isFinite() ||
+            !shadowBlue.isFinite() || !shadowAlpha.isFinite() ||
+            !shadowOffsetX.isFinite() ||
+            !shadowOffsetY.isFinite() || !shadowBlurRadius.isFinite() ||
+            !shadowSpreadDistance.isFinite() || contentScale <= 0f ||
+            shadowRed !in 0f..1f || shadowGreen !in 0f..1f ||
+            shadowBlue !in 0f..1f || shadowAlpha !in 0f..1f ||
+            shadowBlurRadius < 0f ||
             (curveCode != CLIP_CURVE_CIRCULAR && curveCode != CLIP_CURVE_CONTINUOUS)
         ) {
             return
         }
 
-        if (BuildConfig.DEBUG) Trace.beginSection("SmoothClip.applyV2Px")
+        if (BuildConfig.DEBUG) Trace.beginSection("SmoothClip.applyPresentationPx")
         try {
             requestedContentTranslateX = contentTranslateX
             requestedContentTranslateY = contentTranslateY
             requestedContentScale = contentScale
-            applyNormalizedClipV2Px(
+            storeShadow(
+                shadowEnabled,
+                shadowRed,
+                shadowGreen,
+                shadowBlue,
+                shadowAlpha,
+                shadowOffsetX,
+                shadowOffsetY,
+                shadowBlurRadius,
+                shadowSpreadDistance,
+            )
+            applyNormalizedClipPx(
                 left,
                 top,
                 right,
@@ -305,135 +299,151 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     }
 
     private fun applyRequestedGeometry() {
-        if (requestedUsesV2Geometry) {
-            normalizeClipGeometryV2Px(
-                requestedX,
-                requestedY,
-                requestedWidth,
-                requestedHeight,
-                requestedTopLeftRadius,
-                requestedTopRightRadius,
-                requestedBottomRightRadius,
-                requestedBottomLeftRadius,
-                requestedCurveCode,
-                width.toFloat(),
-                height.toFloat(),
-            ) { left, top, right, bottom, topLeft, topRight, bottomRight, bottomLeft, curve ->
-                applyNormalizedClipV2Px(
-                    left,
-                    top,
-                    right,
-                    bottom,
-                    topLeft,
-                    topRight,
-                    bottomRight,
-                    bottomLeft,
-                    curve,
-                )
-            }
-        } else {
-            normalizeClipGeometryPx(
-                requestedX,
-                requestedY,
-                requestedWidth,
-                requestedHeight,
-                requestedRadius,
-                width.toFloat(),
-                height.toFloat(),
-            ) { left, top, right, bottom, radius ->
-                applyNormalizedClipPx(left, top, right, bottom, radius)
-            }
+        normalizeClipGeometryPx(
+            requestedX,
+            requestedY,
+            requestedWidth,
+            requestedHeight,
+            requestedTopLeftRadius,
+            requestedTopRightRadius,
+            requestedBottomRightRadius,
+            requestedBottomLeftRadius,
+            requestedCurveCode,
+            width.toFloat(),
+            height.toFloat(),
+        ) { left, top, right, bottom, topLeft, topRight, bottomRight, bottomLeft, curve ->
+            applyNormalizedClipPx(
+                left,
+                top,
+                right,
+                bottom,
+                topLeft,
+                topRight,
+                bottomRight,
+                bottomLeft,
+                curve,
+            )
         }
+    }
+
+    private fun storeShadow(
+        enabled: Boolean,
+        red: Float,
+        green: Float,
+        blue: Float,
+        alpha: Float,
+        offsetX: Float,
+        offsetY: Float,
+        blurRadius: Float,
+        spreadDistance: Float,
+    ) {
+        val wasVisible = requestedShadowEnabled && requestedShadowAlpha > 0f
+        val isVisible = enabled && alpha > 0f
+        val paintChanged = red != requestedShadowRed ||
+            green != requestedShadowGreen || blue != requestedShadowBlue ||
+            alpha != requestedShadowAlpha || blurRadius != requestedShadowBlurRadius
+        val pathChanged = offsetX != requestedShadowOffsetX ||
+            offsetY != requestedShadowOffsetY ||
+            spreadDistance != requestedShadowSpreadDistance
+        requestedShadowEnabled = enabled
+        requestedShadowRed = red
+        requestedShadowGreen = green
+        requestedShadowBlue = blue
+        requestedShadowAlpha = alpha
+        requestedShadowOffsetX = offsetX
+        requestedShadowOffsetY = offsetY
+        requestedShadowBlurRadius = blurRadius
+        requestedShadowSpreadDistance = spreadDistance
+        if (!isVisible) {
+            if (wasVisible) invalidate()
+            return
+        }
+        if (paintChanged || boxShadowPaint == null) updateBoxShadowPaint()
+        if (pathChanged || !wasVisible || boxShadowPath == null) {
+            rebuildBoxShadowPath()
+        }
+        if (paintChanged || pathChanged || !wasVisible) invalidate()
+    }
+
+    private fun updateBoxShadowPaint() {
+        val paint = boxShadowPaint ?: Paint(Paint.ANTI_ALIAS_FLAG).also {
+            boxShadowPaint = it
+        }
+        paint.color = Color.argb(
+            (requestedShadowAlpha * 255f).roundToInt(),
+            (requestedShadowRed * 255f).roundToInt(),
+            (requestedShadowGreen * 255f).roundToInt(),
+            (requestedShadowBlue * 255f).roundToInt(),
+        )
+        val sigmaPx = requestedShadowBlurRadius * 0.5f
+        val maskRadius = if (sigmaPx > 0.5f) {
+            (sigmaPx - 0.5f) / 0.57735f
+        } else {
+            0f
+        }
+        paint.maskFilter = if (maskRadius > 0f) {
+            BlurMaskFilter(maskRadius, BlurMaskFilter.Blur.NORMAL)
+        } else {
+            null
+        }
+    }
+
+    private fun adjustedRadiusForSpread(radius: Float, spread: Float): Float {
+        val magnitude = abs(spread)
+        val multiplier = if (magnitude > 0f && radius < magnitude) {
+            1f + (radius / magnitude - 1f).pow(3)
+        } else {
+            1f
+        }
+        return (radius + spread * multiplier).coerceAtLeast(0f)
+    }
+
+    private fun rebuildBoxShadowPath() {
+        if (!requestedShadowEnabled || requestedShadowAlpha <= 0f) return
+        val path = boxShadowPath ?: Path().also { boxShadowPath = it }
+        path.reset()
+        if (clipIsEmpty) return
+        val spread = requestedShadowSpreadDistance
+        val left = clipLeft - spread + requestedShadowOffsetX
+        val top = clipTop - spread + requestedShadowOffsetY
+        val right = clipRight + spread + requestedShadowOffsetX
+        val bottom = clipBottom + spread + requestedShadowOffsetY
+        if (right <= left || bottom <= top) return
+        appendRoundedRectPath(
+            path,
+            left,
+            top,
+            right,
+            bottom,
+            adjustedRadiusForSpread(clipTopLeftRadius, spread),
+            adjustedRadiusForSpread(clipTopRightRadius, spread),
+            adjustedRadiusForSpread(clipBottomRightRadius, spread),
+            adjustedRadiusForSpread(clipBottomLeftRadius, spread),
+            clipCurveCode,
+        )
+    }
+
+    override fun dispatchDraw(canvas: Canvas) {
+        val shadowPath = boxShadowPath
+        val shadowPaint = boxShadowPaint
+        if (requestedShadowEnabled && !clipIsEmpty &&
+            requestedShadowAlpha > 0f && shadowPath != null &&
+            shadowPaint != null && !shadowPath.isEmpty
+        ) {
+            val saveCount = canvas.save()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                canvas.clipOutPath(clipPath)
+            } else {
+                @Suppress("DEPRECATION")
+                canvas.clipPath(clipPath, Region.Op.DIFFERENCE)
+            }
+            canvas.drawPath(shadowPath, shadowPaint)
+            canvas.restoreToCount(saveCount)
+        }
+        super.dispatchDraw(canvas)
     }
 
     private fun applyNormalizedClipPx(
-        left: Float,
-        top: Float,
-        right: Float,
-        bottom: Float,
-        radius: Float,
-    ) {
-        // Far edges are derived, not rounded independently: see outlineFarEdge.
-        // Independent rounding breathes the emitted size by 1 px under pure
-        // translation, which is the visible artifact once an animation's tail
-        // slows below a pixel per frame.
-        val nextOutlineLeft = outlineOrigin(left)
-        val nextOutlineTop = outlineOrigin(top)
-        val nextOutlineRight = outlineFarEdge(left, right)
-        val nextOutlineBottom = outlineFarEdge(top, bottom)
-        // Outline.setRoundRect collapses a degenerate integer rect to empty.
-        // Use the exact emitted geometry as the single semantic source for
-        // rendering, visibility, accessibility and hit testing.
-        val isEmpty = outlineRectIsEmpty(
-            nextOutlineLeft,
-            nextOutlineTop,
-            nextOutlineRight,
-            nextOutlineBottom,
-        )
-        val outlineGeometryChanged = outlineUsesPath || outlineUsesFloatRoundRect || outlineChanged(
-            nextOutlineLeft,
-            nextOutlineTop,
-            nextOutlineRight,
-            nextOutlineBottom,
-            radius,
-            outlineLeft,
-            outlineTop,
-            outlineRight,
-            outlineBottom,
-            clipRadius,
-        )
-
-        clipLeft = left
-        clipTop = top
-        clipRight = right
-        clipBottom = bottom
-        clipRadius = radius
-        clipTopLeftRadius = radius
-        clipTopRightRadius = radius
-        clipBottomRightRadius = radius
-        clipBottomLeftRadius = radius
-        clipCurveCode = CLIP_CURVE_CIRCULAR
-        // Whatever integer rounding threw away, carried on this view's own
-        // translation so the clip edge still lands where the driver asked
-        // instead of snapping to the pixel grid while the content it clips
-        // slides in floats. It is a single scalar per axis only because the far
-        // edges are derived from the origin — with independently rounded edges
-        // no one translation could place both.
-        clipResidualX = left - nextOutlineLeft
-        clipResidualY = top - nextOutlineTop
-        applyClipPlacement()
-
-        if (isEmpty != clipIsEmpty) {
-            if (isEmpty) cancelAcceptedTouchStream()
-            clipIsEmpty = isEmpty
-            visibility = clipVisibility(isEmpty)
-            importantForAccessibility = clipAccessibility(
-                isEmpty,
-                requestedImportantForAccessibility,
-            )
-        }
-
-        // An emptiness transition necessarily changes at least one emitted
-        // edge, so the existing edge/radius key cannot skip invalidateOutline.
-        if (!outlineGeometryChanged) return
-
-        outlineUsesPath = false
-        outlineUsesFloatRoundRect = false
-        clipPath.reset()
-        outlineLeft = nextOutlineLeft
-        outlineTop = nextOutlineTop
-        outlineRight = nextOutlineRight
-        outlineBottom = nextOutlineBottom
-        // Schedules the traversal too: invalidateOutline() ends in
-        // invalidateViewProperty(), which damages this view in its parent up
-        // to ViewRootImpl.scheduleTraversals(). A plain invalidate() on top
-        // would only add PFLAG_INVALIDATED, forcing a display-list re-record
-        // every frame to restage an outline the RenderNode applies as a
-        // property.
-        invalidateOutline()
-    }
-
-    private fun applyNormalizedClipV2Px(
         left: Float,
         top: Float,
         right: Float,
@@ -449,7 +459,7 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
             topLeftRadius == bottomLeftRadius
         val needsPath = curveCode == CLIP_CURVE_CONTINUOUS || !radiiAreUniform
         if (!needsPath) {
-            applyNormalizedFloatRoundRectV2Px(
+            applyNormalizedFloatRoundRectPx(
                 left,
                 top,
                 right,
@@ -477,8 +487,8 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         clipBottomRightRadius = bottomRightRadius
         clipBottomLeftRadius = bottomLeftRadius
         clipCurveCode = curveCode
-        // Path outlines retain physical-pixel floats, so unlike the legacy
-        // integer round rect they need no residual translation compensation.
+        // Path outlines retain physical-pixel floats and need no residual
+        // translation compensation.
         clipResidualX = 0f
         clipResidualY = 0f
         applyClipPlacement()
@@ -512,15 +522,13 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
                 curveCode,
             )
         }
-        invalidateOutline()
+        rebuildBoxShadowPath()
+        clipContainer.invalidateOutline()
+        if (requestedShadowEnabled) invalidate()
     }
 
-    /**
-     * Protocol V2 uniform circular geometry stays entirely in float physical
-     * pixels. V1 intentionally continues through applyNormalizedClipPx so its
-     * integer outline and residual placement remain byte-for-byte compatible.
-     */
-    private fun applyNormalizedFloatRoundRectV2Px(
+    /** Uniform circular geometry stays entirely in float physical pixels. */
+    private fun applyNormalizedFloatRoundRectPx(
         left: Float,
         top: Float,
         right: Float,
@@ -572,7 +580,9 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
                 Path.Direction.CW,
             )
         }
-        invalidateOutline()
+        rebuildBoxShadowPath()
+        clipContainer.invalidateOutline()
+        if (requestedShadowEnabled) invalidate()
     }
 
     /**
@@ -621,6 +631,7 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        clipContainer.layout(0, 0, w, h)
         contentContainer.layout(0, 0, w, h)
         applyClipPlacement()
         if (boundDriverId != 0.0) {
@@ -807,7 +818,6 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         requestedY = 0f
         requestedWidth = 0f
         requestedHeight = 0f
-        requestedRadius = 0f
         requestedTopLeftRadius = 0f
         requestedTopRightRadius = 0f
         requestedBottomRightRadius = 0f
@@ -816,7 +826,17 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         requestedContentTranslateX = 0f
         requestedContentTranslateY = 0f
         requestedContentScale = 1f
-        requestedUsesV2Geometry = false
+        requestedShadowEnabled = false
+        requestedShadowRed = 0f
+        requestedShadowGreen = 0f
+        requestedShadowBlue = 0f
+        requestedShadowAlpha = 1f
+        requestedShadowOffsetX = 0f
+        requestedShadowOffsetY = 0f
+        requestedShadowBlurRadius = 0f
+        requestedShadowSpreadDistance = 0f
+        boxShadowPaint = null
+        boxShadowPath = null
         clipResidualX = 0f
         clipResidualY = 0f
         applyClipPlacement()

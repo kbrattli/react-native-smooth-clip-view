@@ -6,13 +6,15 @@ import {
   it,
   jest,
 } from '@jest/globals';
-import type { SmoothClipDriver } from '../driverTypes';
+import type {
+  InternalSmoothClipDriver,
+  SmoothClipDriver,
+} from '../driverTypes';
 import {
   canonicalizeClipPresentation,
   type SmoothClipPresentation,
 } from '../geometry';
-
-var mockGroupsSupported: boolean | undefined;
+import { PRESENTATION_STRIDE, presentationPacket } from '../presentationCodec';
 
 function mockMakeSharedValue<T>(initial: T) {
   return { value: initial };
@@ -52,17 +54,6 @@ jest.mock('react-native-worklets', () => ({
     fn(...args),
 }));
 
-jest.mock('../capabilities', () => ({
-  getSmoothClipCapabilities: () => ({
-    presentationProtocolVersion: 2,
-    groups: mockGroupsSupported ?? true,
-    perCornerRadii: true,
-    continuousCurve: true,
-    contentScale: true,
-    autonomousComplexPathAnimation: true,
-  }),
-}));
-
 let completionListener:
   | ((result: {
       controllerId: number;
@@ -75,13 +66,13 @@ let completionListener:
 jest.mock('../smoothClipNative', () => ({
   __esModule: true,
   default: {
-    beginGroupInteractionV2: jest.fn(),
-    snapshotGroupV2: jest.fn(),
-    setClipPresentationBatchV2: jest.fn(() => true),
-    animateTimingGroupV2: jest.fn(() => 21),
-    animateSpringGroupV2: jest.fn(() => 22),
-    animateKeyframesGroupV2: jest.fn(() => 23),
-    cancelAnimationGroupV2: jest.fn(),
+    beginGroupInteraction: jest.fn(),
+    snapshotGroup: jest.fn(),
+    setClipPresentationBatch: jest.fn(() => true),
+    animateTimingGroup: jest.fn(() => 21),
+    animateSpringGroup: jest.fn(() => 22),
+    animateKeyframesGroup: jest.fn(() => 23),
+    cancelAnimationGroup: jest.fn(),
     onClipGroupAnimationComplete: jest.fn(
       (listener: typeof completionListener) => {
         completionListener = listener;
@@ -95,13 +86,13 @@ import { useSmoothClipGroupDriver } from '../groupDrivers.native';
 import nativeModule from '../smoothClipNative';
 
 const native = nativeModule as unknown as {
-  beginGroupInteractionV2: jest.Mock;
-  snapshotGroupV2: jest.Mock;
-  setClipPresentationBatchV2: jest.Mock;
-  animateTimingGroupV2: jest.Mock;
-  animateSpringGroupV2: jest.Mock;
-  animateKeyframesGroupV2: jest.Mock;
-  cancelAnimationGroupV2: jest.Mock;
+  beginGroupInteraction: jest.Mock;
+  snapshotGroup: jest.Mock;
+  setClipPresentationBatch: jest.Mock;
+  animateTimingGroup: jest.Mock;
+  animateSpringGroup: jest.Mock;
+  animateKeyframesGroup: jest.Mock;
+  cancelAnimationGroup: jest.Mock;
 };
 
 const firstPresentation: SmoothClipPresentation = {
@@ -135,21 +126,9 @@ const firstCircularPresentation: SmoothClipPresentation = {
 };
 
 function presentationValues(presentation: SmoothClipPresentation): number[] {
-  const clip = presentation.clip;
-  return [
-    clip.x,
-    clip.y,
-    clip.width,
-    clip.height,
-    clip.topLeftRadius ?? clip.radius,
-    clip.topRightRadius ?? clip.radius,
-    clip.bottomRightRadius ?? clip.radius,
-    clip.bottomLeftRadius ?? clip.radius,
-    clip.curve === 'continuous' ? 1 : 0,
-    presentation.contentTranslateX,
-    presentation.contentTranslateY,
-    presentation.contentScale ?? 1,
-  ];
+  const canonical = canonicalizeClipPresentation(presentation);
+  if (canonical === null) throw new Error('invalid test presentation');
+  return presentationPacket(canonical);
 }
 
 function snapshots(
@@ -164,7 +143,7 @@ function snapshots(
 function unavailableSnapshots(count: number): number[] {
   return Array.from({ length: count }, () => [
     0,
-    ...Array.from({ length: 12 }, () => Number.NaN),
+    ...Array.from({ length: PRESENTATION_STRIDE }, () => Number.NaN),
   ]).flat();
 }
 
@@ -172,7 +151,7 @@ let nextDriverId = 100;
 
 function createDriver(
   presentation: SmoothClipPresentation = secondPresentation
-): SmoothClipDriver {
+): InternalSmoothClipDriver {
   nextDriverId += 1;
   const source = mockMakeSharedValue(presentation);
   return {
@@ -187,44 +166,26 @@ function createDriver(
       activeAnimationId: mockMakeSharedValue(0),
       disposed: mockMakeSharedValue(0),
     },
-  } as unknown as SmoothClipDriver;
+  } as unknown as InternalSmoothClipDriver;
 }
 
 describe('native SmoothClip group driver', () => {
   beforeEach(() => {
-    mockGroupsSupported = true;
     jest.clearAllMocks();
     completionListener = undefined;
     mockEffects.length = 0;
-    native.setClipPresentationBatchV2.mockReturnValue(true);
-    native.animateTimingGroupV2.mockReturnValue(21);
-    native.animateSpringGroupV2.mockReturnValue(22);
-    native.animateKeyframesGroupV2.mockReturnValue(23);
-    native.cancelAnimationGroupV2.mockReturnValue([]);
-  });
-
-  it('tears down safely when running against a V1 native module', () => {
-    mockGroupsSupported = false;
-    let useV1GroupDriver: typeof useSmoothClipGroupDriver | undefined;
-    jest.isolateModules(() => {
-      useV1GroupDriver = (
-        require('../groupDrivers.native') as typeof import('../groupDrivers.native')
-      ).useSmoothClipGroupDriver;
-    });
-
-    useV1GroupDriver!();
-    const registration = mockEffects[mockEffects.length - 1];
-
-    expect(() => registration?.cleanup?.()).not.toThrow();
-    registration!.cleanup = undefined;
-    expect(native.cancelAnimationGroupV2).not.toHaveBeenCalled();
+    native.setClipPresentationBatch.mockReturnValue(true);
+    native.animateTimingGroup.mockReturnValue(21);
+    native.animateSpringGroup.mockReturnValue(22);
+    native.animateKeyframesGroup.mockReturnValue(23);
+    native.cancelAnimationGroup.mockReturnValue([]);
   });
 
   afterEach(() => {
     mockRunCleanups();
   });
 
-  it('encodes and commits a complete batch in one V2 call', () => {
+  it('encodes and commits a complete batch in one native call', () => {
     const first = createDriver();
     const second = createDriver();
     const group = useSmoothClipGroupDriver();
@@ -234,7 +195,7 @@ describe('native SmoothClip group driver', () => {
       { driver: second, presentation: secondPresentation },
     ]);
 
-    expect(native.setClipPresentationBatchV2).toHaveBeenCalledWith([
+    expect(native.setClipPresentationBatch).toHaveBeenCalledWith([
       first.__smoothClipHandle?.driverId,
       ...presentationValues(firstPresentation),
       second.__smoothClipHandle?.driverId,
@@ -254,13 +215,13 @@ describe('native SmoothClip group driver', () => {
         { driver, presentation: secondPresentation },
       ])
     ).toThrow('duplicate drivers');
-    expect(native.setClipPresentationBatchV2).not.toHaveBeenCalled();
+    expect(native.setClipPresentationBatch).not.toHaveBeenCalled();
   });
 
   it('returns snapshot readiness and driver identity in input order', () => {
     const first = createDriver();
     const second = createDriver();
-    native.snapshotGroupV2.mockReturnValue(
+    native.snapshotGroup.mockReturnValue(
       snapshots([true, firstCircularPresentation], [false, secondPresentation])
     );
     const group = useSmoothClipGroupDriver();
@@ -275,8 +236,8 @@ describe('native SmoothClip group driver', () => {
 
   it('uses the handle presentation when native reports an unavailable host', () => {
     const driver = createDriver(secondPresentation);
-    native.snapshotGroupV2.mockReturnValue(unavailableSnapshots(1));
-    native.beginGroupInteractionV2.mockReturnValue(unavailableSnapshots(1));
+    native.snapshotGroup.mockReturnValue(unavailableSnapshots(1));
+    native.beginGroupInteraction.mockReturnValue(unavailableSnapshots(1));
     const group = useSmoothClipGroupDriver();
 
     expect(group.ui.snapshotCurrent([driver])).toEqual([
@@ -303,7 +264,7 @@ describe('native SmoothClip group driver', () => {
   it('encodes one timing group and clears only its matching ownership', () => {
     const first = createDriver();
     const second = createDriver();
-    native.snapshotGroupV2.mockReturnValue(
+    native.snapshotGroup.mockReturnValue(
       snapshots([true, secondPresentation], [true, secondPresentation])
     );
     const onAnimationComplete = jest.fn();
@@ -322,10 +283,9 @@ describe('native SmoothClip group driver', () => {
     );
 
     expect(groupId).toBe(21);
-    expect(native.animateTimingGroupV2.mock.calls[0]?.[1]).toHaveLength(52);
+    expect(native.animateTimingGroup.mock.calls[0]?.[1]).toHaveLength(88);
     expect(first.__smoothClipHandle?.activeAnimationId.value).toBe(21);
-    const controllerId = native.animateTimingGroupV2.mock
-      .calls[0]?.[0] as number;
+    const controllerId = native.animateTimingGroup.mock.calls[0]?.[0] as number;
     completionListener?.({
       controllerId,
       groupId: 21,
@@ -342,7 +302,7 @@ describe('native SmoothClip group driver', () => {
     });
   });
 
-  it('uses keyframe stride 13 and rejects inconsistent frame zero', () => {
+  it('uses the shared keyframe packet stride and rejects inconsistent frame zero', () => {
     const driver = createDriver();
     const group = useSmoothClipGroupDriver();
 
@@ -362,7 +322,7 @@ describe('native SmoothClip group driver', () => {
     );
 
     expect(groupId).toBe(23);
-    expect(native.animateKeyframesGroupV2.mock.calls[0]?.[1]).toHaveLength(53);
+    expect(native.animateKeyframesGroup.mock.calls[0]?.[1]).toHaveLength(89);
     expect(() =>
       group.ui.animateTo(
         [
@@ -383,9 +343,7 @@ describe('native SmoothClip group driver', () => {
 
   it('substitutes the sampled start into implicit keyframe frame zero', () => {
     const driver = createDriver(secondPresentation);
-    native.snapshotGroupV2.mockReturnValue(
-      snapshots([true, secondPresentation])
-    );
+    native.snapshotGroup.mockReturnValue(snapshots([true, secondPresentation]));
     const group = useSmoothClipGroupDriver();
 
     group.ui.animateTo(
@@ -402,19 +360,16 @@ describe('native SmoothClip group driver', () => {
       { type: 'keyframes', duration: 180 }
     );
 
-    const values = native.animateKeyframesGroupV2.mock
-      .calls[0]?.[1] as number[];
+    const values = native.animateKeyframesGroup.mock.calls[0]?.[1] as number[];
     expect(values[1]).toBe(0);
-    expect(values.slice(28, 40)).toEqual(
+    expect(values.slice(46, 67)).toEqual(
       presentationValues(secondPresentation)
     );
   });
 
   it('rejects curve changes and unproven scale springs before dispatch', () => {
     const driver = createDriver(secondPresentation);
-    native.snapshotGroupV2.mockReturnValue(
-      snapshots([true, secondPresentation])
-    );
+    native.snapshotGroup.mockReturnValue(snapshots([true, secondPresentation]));
     const group = useSmoothClipGroupDriver();
 
     expect(() =>
@@ -435,7 +390,7 @@ describe('native SmoothClip group driver', () => {
         { type: 'spring', damping: 10, mass: 1, stiffness: 100 }
       )
     ).toThrow('not provably positive');
-    expect(native.animateSpringGroupV2).not.toHaveBeenCalled();
+    expect(native.animateSpringGroup).not.toHaveBeenCalled();
   });
 
   it('strictly rejects malformed animations and cancel behavior', () => {
@@ -467,18 +422,18 @@ describe('native SmoothClip group driver', () => {
     expect(() => group.ui.cancel(1, 'current' as never)).toThrow(
       'cancel behavior is invalid'
     );
-    expect(native.animateTimingGroupV2).not.toHaveBeenCalled();
-    expect(native.animateKeyframesGroupV2).not.toHaveBeenCalled();
-    expect(native.cancelAnimationGroupV2).not.toHaveBeenCalled();
+    expect(native.animateTimingGroup).not.toHaveBeenCalled();
+    expect(native.animateKeyframesGroup).not.toHaveBeenCalled();
+    expect(native.cancelAnimationGroup).not.toHaveBeenCalled();
   });
 
   it('returns all participant snapshots on cancellation', () => {
     const first = createDriver();
     const second = createDriver();
-    native.snapshotGroupV2.mockReturnValue(
+    native.snapshotGroup.mockReturnValue(
       snapshots([true, secondPresentation], [true, secondPresentation])
     );
-    native.cancelAnimationGroupV2.mockReturnValue(
+    native.cancelAnimationGroup.mockReturnValue(
       snapshots([true, firstCircularPresentation], [false, secondPresentation])
     );
     const group = useSmoothClipGroupDriver();
@@ -496,7 +451,7 @@ describe('native SmoothClip group driver', () => {
 
     const result = group.ui.cancel(groupId, 'freeze');
 
-    expect(native.cancelAnimationGroupV2).toHaveBeenCalledWith(groupId, 0);
+    expect(native.cancelAnimationGroup).toHaveBeenCalledWith(groupId, 0);
     expect(result).toHaveLength(2);
     expect(result[0]?.driver).toBe(first);
     expect(result[1]?.ready).toBe(false);
@@ -519,7 +474,7 @@ describe('native SmoothClip group driver', () => {
         controlPoints: [0, 0, 1, 1],
       }
     );
-    native.cancelAnimationGroupV2.mockReturnValue([]);
+    native.cancelAnimationGroup.mockReturnValue([]);
 
     expect(group.ui.cancel(groupId)).toEqual([]);
     expect(driver.__smoothClipHandle?.activeAnimationId.value).toBe(0);
@@ -546,7 +501,7 @@ describe('native SmoothClip group driver', () => {
     );
 
     expect(stranger.ui.cancel(groupId)).toEqual([]);
-    expect(native.cancelAnimationGroupV2).not.toHaveBeenCalled();
+    expect(native.cancelAnimationGroup).not.toHaveBeenCalled();
     expect(driver.__smoothClipHandle?.activeAnimationId.value).toBe(groupId);
   });
 
@@ -568,11 +523,8 @@ describe('native SmoothClip group driver', () => {
         controlPoints: [0, 0, 1, 1],
       }
     );
-    native.snapshotGroupV2.mockReturnValue(
-      snapshots([true, secondPresentation])
-    );
-    const controllerId = native.animateTimingGroupV2.mock
-      .calls[0]?.[0] as number;
+    native.snapshotGroup.mockReturnValue(snapshots([true, secondPresentation]));
+    const controllerId = native.animateTimingGroup.mock.calls[0]?.[0] as number;
 
     completionListener?.({
       controllerId,
@@ -581,7 +533,7 @@ describe('native SmoothClip group driver', () => {
       driverIds: [driver.__smoothClipHandle?.driverId as number],
     });
 
-    expect(native.snapshotGroupV2).toHaveBeenCalledWith([
+    expect(native.snapshotGroup).toHaveBeenCalledWith([
       driver.__smoothClipHandle?.driverId,
     ]);
     expect(driver.presentation.value).toEqual(
@@ -619,14 +571,14 @@ describe('native SmoothClip group driver', () => {
         controlPoints: [0, 0, 1, 1],
       }
     );
-    native.cancelAnimationGroupV2.mockReturnValue(
+    native.cancelAnimationGroup.mockReturnValue(
       snapshots([true, secondPresentation], [true, secondPresentation])
     );
     second.__smoothClipHandle!.activeAnimationId.value = 999;
 
     mockRunCleanups();
 
-    expect(native.cancelAnimationGroupV2).toHaveBeenCalledWith(groupId, 0);
+    expect(native.cancelAnimationGroup).toHaveBeenCalledWith(groupId, 0);
     expect(first.presentation.value).toEqual(
       canonicalizeClipPresentation(secondPresentation)
     );
@@ -650,7 +602,7 @@ describe('native SmoothClip group driver', () => {
     const group = useSmoothClipGroupDriver({
       onAnimationComplete: () => order.push('callback'),
     });
-    native.animateTimingGroupV2.mockImplementation((controllerId: unknown) => {
+    native.animateTimingGroup.mockImplementation((controllerId: unknown) => {
       queueMicrotask(() => {
         completionListener?.({
           controllerId: controllerId as number,

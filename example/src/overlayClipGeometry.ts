@@ -1,4 +1,7 @@
-import type { ClipGeometry } from 'react-native-smooth-clip-view';
+import {
+  normalizeClipPresentation,
+  type ClipGeometry,
+} from 'react-native-smooth-clip-view';
 
 export type OverlayClipGeometryInput = Readonly<{
   progress: number;
@@ -30,6 +33,43 @@ export type OverlayClipGeometryResult = Readonly<{
   /** Reveal height in content space, before the drag's shrink. */
   contentVisibleHeight: number;
 }>;
+
+/**
+ * Moves screen-space overlay geometry into a three-screen-wide native host.
+ * The real screen occupies the host's middle third, so a rounded rectangle can
+ * travel beyond either screen edge without becoming an off-host animation
+ * endpoint. A screen-sized parent performs the final viewport crop.
+ */
+export function normalizeOverlayPresentation(
+  presentation: OverlayClipGeometryResult,
+  screenWidth: number,
+  screenHeight: number
+): OverlayClipGeometryResult | null {
+  'worklet';
+  const horizontalInset = screenWidth;
+  const normalized = normalizeClipPresentation(
+    {
+      ...presentation,
+      clip: {
+        ...presentation.clip,
+        x: presentation.clip.x + horizontalInset,
+      },
+    },
+    {
+      width: screenWidth * 3,
+      height: screenHeight,
+    }
+  );
+  if (normalized === null) return null;
+
+  return {
+    ...presentation,
+    clip: normalized.clip,
+    contentTranslateX: normalized.contentTranslateX,
+    contentTranslateY: normalized.contentTranslateY,
+    contentScale: normalized.contentScale,
+  };
+}
 
 // Content zoom-out while dragging to dismiss. Squaring an even ramp eases the
 // shrink OUT — most of the scale is given up in the first part of the drag, so
@@ -79,8 +119,8 @@ export function resolveDragClipRadius(
 }
 
 /**
- * Produces both the reveal window and the transform-only content motion used by
- * the card-to-fullscreen overlay. It intentionally contains no layout state.
+ * Produces both the reveal window and the native content transform used by the
+ * card-to-fullscreen overlay. It intentionally contains no layout state.
  *
  * The reveal window and its downward drag travel are untouched by the zoom: the
  * window still shrinks toward the minimum size and stays bottom-heavy via
@@ -144,7 +184,7 @@ export function calculateOverlayClipGeometry({
         maximumDragRadius
       ),
     },
-    // React Native scales the fixed fullscreen child around its own centre.
+    // Native scales the fixed fullscreen content container around its centre.
     // These terms re-anchor that scale onto the base rectangle: horizontally
     // centred, vertically pinned to its top edge. Both vanish at scale 1, so
     // every non-drag state is byte-identical.

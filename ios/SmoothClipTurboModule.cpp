@@ -10,6 +10,11 @@
 namespace facebook::react {
 namespace {
 
+constexpr size_t kPresentationStride = 21;
+constexpr size_t kSnapshotStride = kPresentationStride + 1;
+constexpr size_t kKeyframeStride = kPresentationStride + 1;
+constexpr size_t kMotionEntryStride = kPresentationStride * 2 + 2;
+
 constexpr double kMaxSafeJavaScriptInteger = 9007199254740991.0;
 
 bool validDriverId(double value) {
@@ -21,12 +26,6 @@ bool finiteGeometry(const smoothclip::Geometry &geometry) {
   return std::isfinite(geometry.x) && std::isfinite(geometry.y) &&
       std::isfinite(geometry.width) && std::isfinite(geometry.height) &&
       std::isfinite(geometry.radius);
-}
-
-bool finitePresentation(const smoothclip::Presentation &presentation) {
-  return finiteGeometry(presentation.clip) &&
-      std::isfinite(presentation.contentTranslateX) &&
-      std::isfinite(presentation.contentTranslateY);
 }
 
 bool validCurveCode(int32_t curveCode) {
@@ -53,7 +52,7 @@ bool numberAt(
   return std::isfinite(result);
 }
 
-smoothclip::Presentation presentationV2(
+smoothclip::Presentation makePresentation(
     double x,
     double y,
     double width,
@@ -65,7 +64,16 @@ smoothclip::Presentation presentationV2(
     int32_t curveCode,
     double contentTranslateX,
     double contentTranslateY,
-    double contentScale) {
+    double contentScale,
+    bool shadowEnabled = false,
+    double shadowRed = 0,
+    double shadowGreen = 0,
+    double shadowBlue = 0,
+    double shadowAlpha = 1,
+    double shadowOffsetX = 0,
+    double shadowOffsetY = 0,
+    double shadowBlurRadius = 0,
+    double shadowSpreadDistance = 0) {
   const bool uniform = topLeftRadius == topRightRadius &&
       topLeftRadius == bottomRightRadius &&
       topLeftRadius == bottomLeftRadius;
@@ -76,10 +84,16 @@ smoothclip::Presentation presentationV2(
   geometry.bottomRightRadius = bottomRightRadius;
   geometry.bottomLeftRadius = bottomLeftRadius;
   geometry.curve = static_cast<smoothclip::ClipCurve>(curveCode);
-  return {geometry, contentTranslateX, contentTranslateY, contentScale};
+  return {
+      geometry,
+      contentTranslateX,
+      contentTranslateY,
+      contentScale,
+      {shadowEnabled, shadowRed, shadowGreen, shadowBlue, shadowAlpha,
+       shadowOffsetX, shadowOffsetY, shadowBlurRadius, shadowSpreadDistance}};
 }
 
-bool finitePresentationV2(const smoothclip::Presentation &presentation) {
+bool finitePresentation(const smoothclip::Presentation &presentation) {
   const smoothclip::Geometry &geometry = presentation.clip;
   return finiteGeometry(geometry) &&
       std::isfinite(geometry.topLeftRadius) &&
@@ -90,23 +104,37 @@ bool finitePresentationV2(const smoothclip::Presentation &presentation) {
       std::isfinite(presentation.contentTranslateX) &&
       std::isfinite(presentation.contentTranslateY) &&
       std::isfinite(presentation.contentScale) &&
-      presentation.contentScale > 0;
+      presentation.contentScale > 0 &&
+      std::isfinite(presentation.shadow.red) &&
+      std::isfinite(presentation.shadow.green) &&
+      std::isfinite(presentation.shadow.blue) &&
+      std::isfinite(presentation.shadow.alpha) &&
+      std::isfinite(presentation.shadow.offsetX) &&
+      std::isfinite(presentation.shadow.offsetY) &&
+      std::isfinite(presentation.shadow.blurRadius) &&
+      std::isfinite(presentation.shadow.spreadDistance) &&
+      presentation.shadow.red >= 0 && presentation.shadow.red <= 1 &&
+      presentation.shadow.green >= 0 && presentation.shadow.green <= 1 &&
+      presentation.shadow.blue >= 0 && presentation.shadow.blue <= 1 &&
+      presentation.shadow.alpha >= 0 && presentation.shadow.alpha <= 1 &&
+      presentation.shadow.blurRadius >= 0;
 }
 
-bool presentationV2At(
+bool presentationAt(
     jsi::Runtime &runtime,
     const jsi::Array &array,
     size_t offset,
     smoothclip::Presentation &result) {
-  double values[12];
-  for (size_t index = 0; index < 12; index += 1) {
+  double values[kPresentationStride];
+  for (size_t index = 0; index < kPresentationStride; index += 1) {
     if (!numberAt(runtime, array, offset + index, values[index])) {
       return false;
     }
   }
   const int32_t curveCode = static_cast<int32_t>(values[8]);
-  if (values[8] != curveCode || !validCurveCode(curveCode)) return false;
-  result = presentationV2(
+  if (values[8] != curveCode || !validCurveCode(curveCode) ||
+      (values[12] != 0 && values[12] != 1)) return false;
+  result = makePresentation(
       values[0],
       values[1],
       values[2],
@@ -118,11 +146,14 @@ bool presentationV2At(
       curveCode,
       values[9],
       values[10],
-      values[11]);
-  return finitePresentationV2(result);
+      values[11],
+      values[12] == 1,
+      values[13], values[14], values[15], values[16],
+      values[17], values[18], values[19], values[20]);
+  return finitePresentation(result);
 }
 
-void writePresentationV2(
+void writePresentation(
     jsi::Runtime &runtime,
     jsi::Array &result,
     size_t offset,
@@ -149,17 +180,26 @@ void writePresentationV2(
   result.setValueAtIndex(runtime, offset + 9, presentation.contentTranslateX);
   result.setValueAtIndex(runtime, offset + 10, presentation.contentTranslateY);
   result.setValueAtIndex(runtime, offset + 11, presentation.contentScale);
+  result.setValueAtIndex(runtime, offset + 12, presentation.shadow.enabled ? 1.0 : 0.0);
+  result.setValueAtIndex(runtime, offset + 13, presentation.shadow.red);
+  result.setValueAtIndex(runtime, offset + 14, presentation.shadow.green);
+  result.setValueAtIndex(runtime, offset + 15, presentation.shadow.blue);
+  result.setValueAtIndex(runtime, offset + 16, presentation.shadow.alpha);
+  result.setValueAtIndex(runtime, offset + 17, presentation.shadow.offsetX);
+  result.setValueAtIndex(runtime, offset + 18, presentation.shadow.offsetY);
+  result.setValueAtIndex(runtime, offset + 19, presentation.shadow.blurRadius);
+  result.setValueAtIndex(runtime, offset + 20, presentation.shadow.spreadDistance);
 }
 
-jsi::Array snapshotArrayV2(
+jsi::Array snapshotArray(
     jsi::Runtime &runtime,
     const std::vector<smoothclip::DriverSnapshot> &snapshots) {
-  jsi::Array result(runtime, snapshots.size() * 13);
+  jsi::Array result(runtime, snapshots.size() * kSnapshotStride);
   for (size_t index = 0; index < snapshots.size(); index += 1) {
-    const size_t offset = index * 13;
+    const size_t offset = index * kSnapshotStride;
     result.setValueAtIndex(
         runtime, offset, snapshots[index].ready ? 1.0 : 0.0);
-    writePresentationV2(
+    writePresentation(
         runtime, result, offset + 1, snapshots[index].presentation);
   }
   return result;
@@ -186,7 +226,7 @@ bool fixedGroupEntriesAt(
     jsi::Runtime &runtime,
     const jsi::Array &array,
     std::vector<smoothclip::GroupMotionEntry> &result) {
-  constexpr size_t stride = 26;
+  constexpr size_t stride = kMotionEntryStride;
   const size_t count = array.size(runtime);
   if (count == 0 || count % stride != 0) return false;
   result.clear();
@@ -200,8 +240,9 @@ bool fixedGroupEntriesAt(
         !validDriverId(rawDriverId) ||
         !numberAt(runtime, array, offset + 1, rawHasFrom) ||
         (rawHasFrom != 0 && rawHasFrom != 1) ||
-        !presentationV2At(runtime, array, offset + 2, from) ||
-        !presentationV2At(runtime, array, offset + 14, target)) {
+        !presentationAt(runtime, array, offset + 2, from) ||
+        !presentationAt(
+            runtime, array, offset + 2 + kPresentationStride, target)) {
       return false;
     }
     result.push_back({
@@ -224,7 +265,7 @@ bool keyframeGroupEntriesAt(
   result.clear();
   size_t cursor = 0;
   while (cursor < count) {
-    constexpr size_t prefix = 27;
+    constexpr size_t prefix = kMotionEntryStride + 1;
     if (count - cursor < prefix) return false;
     double rawDriverId = 0;
     double rawHasFrom = 0;
@@ -235,25 +276,27 @@ bool keyframeGroupEntriesAt(
         !validDriverId(rawDriverId) ||
         !numberAt(runtime, array, cursor + 1, rawHasFrom) ||
         (rawHasFrom != 0 && rawHasFrom != 1) ||
-        !presentationV2At(runtime, array, cursor + 2, from) ||
-        !presentationV2At(runtime, array, cursor + 14, target) ||
-        !numberAt(runtime, array, cursor + 26, rawFrameCount) ||
+        !presentationAt(runtime, array, cursor + 2, from) ||
+        !presentationAt(
+            runtime, array, cursor + 2 + kPresentationStride, target) ||
+        !numberAt(
+            runtime, array, cursor + kMotionEntryStride, rawFrameCount) ||
         rawFrameCount < 2 || std::floor(rawFrameCount) != rawFrameCount) {
       return false;
     }
     const size_t frameCount = static_cast<size_t>(rawFrameCount);
-    if (frameCount > (count - cursor - prefix) / 13) return false;
+    if (frameCount > (count - cursor - prefix) / kKeyframeStride) return false;
     std::vector<smoothclip::Keyframe> keyframes;
     keyframes.reserve(frameCount);
     double previousOffset = -1;
     const size_t framesOffset = cursor + prefix;
     for (size_t frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
-      const size_t frameOffset = framesOffset + frameIndex * 13;
+      const size_t frameOffset = framesOffset + frameIndex * kKeyframeStride;
       double offset = 0;
       smoothclip::Presentation presentation;
       if (!numberAt(runtime, array, frameOffset, offset) || offset < 0 ||
           offset > 1 || offset <= previousOffset ||
-          !presentationV2At(
+          !presentationAt(
               runtime, array, frameOffset + 1, presentation)) {
         return false;
       }
@@ -270,7 +313,7 @@ bool keyframeGroupEntriesAt(
         target,
         std::move(keyframes),
     });
-    cursor = framesOffset + frameCount * 13;
+    cursor = framesOffset + frameCount * kKeyframeStride;
   }
   return !result.empty();
 }
@@ -281,30 +324,9 @@ jsi::Array presentationArray(
     bool includeHandled = false,
     bool handled = true) {
   const size_t offset = includeHandled ? 1 : 0;
-  jsi::Array result(runtime, offset + 7);
-  // JS checks `values[0] !== 1`, so the handled flag must be a number: a jsi
-  // bool would make every comparison fail and leave the driver stuck in
-  // native ownership after cancelAnimation.
+  jsi::Array result(runtime, offset + kPresentationStride);
   if (includeHandled) result.setValueAtIndex(runtime, 0, handled ? 1.0 : 0.0);
-  result.setValueAtIndex(runtime, offset, presentation.clip.x);
-  result.setValueAtIndex(runtime, offset + 1, presentation.clip.y);
-  result.setValueAtIndex(runtime, offset + 2, presentation.clip.width);
-  result.setValueAtIndex(runtime, offset + 3, presentation.clip.height);
-  result.setValueAtIndex(runtime, offset + 4, presentation.clip.radius);
-  result.setValueAtIndex(runtime, offset + 5, presentation.contentTranslateX);
-  result.setValueAtIndex(runtime, offset + 6, presentation.contentTranslateY);
-  return result;
-}
-
-jsi::Array presentationArrayV2(
-    jsi::Runtime &runtime,
-    smoothclip::Presentation presentation,
-    bool includeHandled = false,
-    bool handled = true) {
-  const size_t offset = includeHandled ? 1 : 0;
-  jsi::Array result(runtime, offset + 12);
-  if (includeHandled) result.setValueAtIndex(runtime, 0, handled ? 1.0 : 0.0);
-  writePresentationV2(runtime, result, offset, presentation);
+  writePresentation(runtime, result, offset, presentation);
   return result;
 }
 
@@ -346,40 +368,36 @@ SmoothClipTurboModule::~SmoothClipTurboModule() {
   smoothclip::clearGroupCompletionCallback(this);
 }
 
-int32_t SmoothClipTurboModule::getPresentationProtocolVersion(jsi::Runtime &) {
-  return 2;
-}
-
 bool SmoothClipTurboModule::supportsAutonomousComplexPathAnimation(
     jsi::Runtime &) {
   return false;
 }
 
-jsi::Array SmoothClipTurboModule::beginGroupInteractionV2(
+jsi::Array SmoothClipTurboModule::beginGroupInteraction(
     jsi::Runtime &runtime,
     jsi::Array driverIds) {
   std::vector<uint64_t> parsed;
   if (!driverIdsAt(runtime, driverIds, parsed)) {
     return jsi::Array(runtime, 0);
   }
-  return snapshotArrayV2(
+  return snapshotArray(
       runtime, smoothclip::beginGroupInteraction(parsed));
 }
 
-jsi::Array SmoothClipTurboModule::snapshotGroupV2(
+jsi::Array SmoothClipTurboModule::snapshotGroup(
     jsi::Runtime &runtime,
     jsi::Array driverIds) {
   std::vector<uint64_t> parsed;
   if (!driverIdsAt(runtime, driverIds, parsed)) {
     return jsi::Array(runtime, 0);
   }
-  return snapshotArrayV2(runtime, smoothclip::snapshotGroup(parsed));
+  return snapshotArray(runtime, smoothclip::snapshotGroup(parsed));
 }
 
-bool SmoothClipTurboModule::setClipPresentationBatchV2(
+bool SmoothClipTurboModule::setClipPresentationBatch(
     jsi::Runtime &runtime,
     jsi::Array entries) {
-  constexpr size_t stride = 13;
+  constexpr size_t stride = kSnapshotStride;
   const size_t count = entries.size(runtime);
   if (count % stride != 0) return false;
   std::vector<smoothclip::BatchEntry> parsed;
@@ -389,7 +407,7 @@ bool SmoothClipTurboModule::setClipPresentationBatchV2(
     smoothclip::Presentation presentation;
     if (!numberAt(runtime, entries, offset, driverId) ||
         !validDriverId(driverId) ||
-        !presentationV2At(runtime, entries, offset + 1, presentation)) {
+        !presentationAt(runtime, entries, offset + 1, presentation)) {
       return false;
     }
     parsed.push_back(
@@ -398,7 +416,7 @@ bool SmoothClipTurboModule::setClipPresentationBatchV2(
   return smoothclip::setPresentationBatch(parsed);
 }
 
-int32_t SmoothClipTurboModule::animateTimingGroupV2(
+int32_t SmoothClipTurboModule::animateTimingGroup(
     jsi::Runtime &runtime,
     double controllerId,
     jsi::Array entries,
@@ -430,7 +448,7 @@ int32_t SmoothClipTurboModule::animateTimingGroupV2(
       static_cast<smoothclip::GroupSuspensionPolicy>(suspensionPolicy));
 }
 
-int32_t SmoothClipTurboModule::animateSpringGroupV2(
+int32_t SmoothClipTurboModule::animateSpringGroup(
     jsi::Runtime &runtime,
     double controllerId,
     jsi::Array entries,
@@ -462,7 +480,7 @@ int32_t SmoothClipTurboModule::animateSpringGroupV2(
       static_cast<smoothclip::GroupSuspensionPolicy>(suspensionPolicy));
 }
 
-int32_t SmoothClipTurboModule::animateKeyframesGroupV2(
+int32_t SmoothClipTurboModule::animateKeyframesGroup(
     jsi::Runtime &runtime,
     double controllerId,
     jsi::Array entries,
@@ -484,7 +502,7 @@ int32_t SmoothClipTurboModule::animateKeyframesGroupV2(
       static_cast<smoothclip::GroupSuspensionPolicy>(suspensionPolicy));
 }
 
-jsi::Array SmoothClipTurboModule::cancelAnimationGroupV2(
+jsi::Array SmoothClipTurboModule::cancelAnimationGroup(
     jsi::Runtime &runtime,
     int32_t groupId,
     int32_t behavior) {
@@ -495,14 +513,30 @@ jsi::Array SmoothClipTurboModule::cancelAnimationGroupV2(
                        smoothclip::GroupCancelBehavior::Finish))) {
     return jsi::Array(runtime, 0);
   }
-  return snapshotArrayV2(
+  return snapshotArray(
       runtime,
       smoothclip::cancelAnimationGroup(
           groupId,
           static_cast<smoothclip::GroupCancelBehavior>(behavior)));
 }
 
-void SmoothClipTurboModule::setClipPresentationV2(
+void SmoothClipTurboModule::setClipPresentation(
+    jsi::Runtime &runtime,
+    double driverId,
+    jsi::Array values,
+    bool takeOwnership,
+    bool overridePendingAnimation) {
+  smoothclip::Presentation presentation{};
+  if (values.size(runtime) == kPresentationStride &&
+      validDriverId(driverId) &&
+      presentationAt(runtime, values, 0, presentation)) {
+    smoothclip::setPresentation(
+        static_cast<uint64_t>(driverId), presentation, takeOwnership,
+        overridePendingAnimation);
+  }
+}
+
+void SmoothClipTurboModule::setClipPresentationScalars(
     jsi::Runtime &,
     double driverId,
     double x,
@@ -517,177 +551,67 @@ void SmoothClipTurboModule::setClipPresentationV2(
     double contentTranslateX,
     double contentTranslateY,
     double contentScale,
-    bool takeOwnership,
-    bool overridePendingAnimation) {
-  const smoothclip::Presentation presentation = presentationV2(
+    bool overridePendingAnimation,
+    bool recordVelocity) {
+  const smoothclip::Presentation parsed = makePresentation(
       x, y, width, height, topLeftRadius, topRightRadius,
       bottomRightRadius, bottomLeftRadius, curveCode,
       contentTranslateX, contentTranslateY, contentScale);
-  if (validDriverId(driverId) && finitePresentationV2(presentation)) {
-    smoothclip::setPresentation(
-        static_cast<uint64_t>(driverId), presentation, takeOwnership,
-        overridePendingAnimation);
-  }
-}
-
-jsi::Array SmoothClipTurboModule::beginInteractionV2(
-    jsi::Runtime &runtime,
-    double driverId) {
-  if (!validDriverId(driverId)) {
-    return presentationArrayV2(
-        runtime, presentationV2(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1));
-  }
-  return presentationArrayV2(
-      runtime,
-      smoothclip::beginInteraction(static_cast<uint64_t>(driverId)));
-}
-
-jsi::Array SmoothClipTurboModule::snapshotCurrentV2(
-    jsi::Runtime &runtime,
-    double driverId) {
-  if (!validDriverId(driverId)) {
-    return presentationArrayV2(
-        runtime, presentationV2(NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN,
-                                0, NAN, NAN, NAN));
-  }
-  return presentationArrayV2(
-      runtime,
-      smoothclip::snapshotCurrent(static_cast<uint64_t>(driverId)));
-}
-
-void SmoothClipTurboModule::setClipPresentation(
-    jsi::Runtime &,
-    double driverId,
-    double x,
-    double y,
-    double width,
-    double height,
-    double radius,
-    double contentTranslateX,
-    double contentTranslateY,
-    bool takeOwnership,
-    bool overridePendingAnimation) {
-  const smoothclip::Presentation presentation{
-      {x, y, width, height, radius}, contentTranslateX, contentTranslateY};
-  if (validDriverId(driverId) && finitePresentation(presentation)) {
-    smoothclip::setPresentation(
-        static_cast<uint64_t>(driverId), presentation, takeOwnership,
-        overridePendingAnimation);
-  }
+  if (!validDriverId(driverId) || !finitePresentation(parsed)) return;
+  smoothclip::setScalars(
+      static_cast<uint64_t>(driverId), parsed.clip,
+      contentTranslateX, contentTranslateY, contentScale,
+      overridePendingAnimation, recordVelocity);
 }
 
 jsi::Array SmoothClipTurboModule::beginInteraction(
     jsi::Runtime &runtime,
     double driverId) {
   if (!validDriverId(driverId)) {
-    return presentationArray(runtime, {{0, 0, 0, 0, 0}, 0, 0});
+    return presentationArray(
+        runtime, makePresentation(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1));
   }
   return presentationArray(
       runtime,
       smoothclip::beginInteraction(static_cast<uint64_t>(driverId)));
 }
 
-int32_t SmoothClipTurboModule::animateTiming(
-    jsi::Runtime &,
-    double driverId,
-    bool hasInteractiveStart,
-    double startX,
-    double startY,
-    double startWidth,
-    double startHeight,
-    double startRadius,
-    double startContentTranslateX,
-    double startContentTranslateY,
-    double x,
-    double y,
-    double width,
-    double height,
-    double radius,
-    double contentTranslateX,
-    double contentTranslateY,
-    double durationMs,
-    double controlPoint1X,
-    double controlPoint1Y,
-    double controlPoint2X,
-    double controlPoint2Y,
-    int32_t reduceMotion) {
-  const smoothclip::Presentation startPresentation{
-      {startX, startY, startWidth, startHeight, startRadius},
-      startContentTranslateX,
-      startContentTranslateY};
-  const smoothclip::Presentation presentation{
-      {x, y, width, height, radius}, contentTranslateX, contentTranslateY};
-  const smoothclip::TimingAnimation animation{
-      durationMs,
-      controlPoint1X,
-      controlPoint1Y,
-      controlPoint2X,
-      controlPoint2Y,
-      reduceMotion};
-  if (!validDriverId(driverId) ||
-      !finitePresentation(startPresentation) ||
-      !finitePresentation(presentation) ||
-      !std::isfinite(durationMs) || !std::isfinite(controlPoint1X) ||
-      !std::isfinite(controlPoint1Y) || !std::isfinite(controlPoint2X) ||
-      !std::isfinite(controlPoint2Y)) return 0;
-
-  return smoothclip::animateTiming(
-      static_cast<uint64_t>(driverId),
-      {hasInteractiveStart, startPresentation},
-      presentation,
-      animation,
-      smoothclip::AnimationValidationMode::LegacyV1);
+jsi::Array SmoothClipTurboModule::snapshotCurrent(
+    jsi::Runtime &runtime,
+    double driverId) {
+  if (!validDriverId(driverId)) {
+    return presentationArray(
+        runtime, makePresentation(NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN,
+                                0, NAN, NAN, NAN));
+  }
+  return presentationArray(
+      runtime,
+      smoothclip::snapshotCurrent(static_cast<uint64_t>(driverId)));
 }
 
-int32_t SmoothClipTurboModule::animateTimingV2(
-    jsi::Runtime &,
+int32_t SmoothClipTurboModule::animateTiming(
+    jsi::Runtime &runtime,
     double driverId,
-    bool hasInteractiveStart,
-    double startX,
-    double startY,
-    double startWidth,
-    double startHeight,
-    double startTopLeftRadius,
-    double startTopRightRadius,
-    double startBottomRightRadius,
-    double startBottomLeftRadius,
-    int32_t startCurveCode,
-    double startContentTranslateX,
-    double startContentTranslateY,
-    double startContentScale,
-    double x,
-    double y,
-    double width,
-    double height,
-    double topLeftRadius,
-    double topRightRadius,
-    double bottomRightRadius,
-    double bottomLeftRadius,
-    int32_t curveCode,
-    double contentTranslateX,
-    double contentTranslateY,
-    double contentScale,
+    jsi::Array start,
+    jsi::Array target,
     double durationMs,
     double controlPoint1X,
     double controlPoint1Y,
     double controlPoint2X,
     double controlPoint2Y,
     int32_t reduceMotion) {
-  const smoothclip::Presentation startPresentation = presentationV2(
-      startX, startY, startWidth, startHeight,
-      startTopLeftRadius, startTopRightRadius,
-      startBottomRightRadius, startBottomLeftRadius, startCurveCode,
-      startContentTranslateX, startContentTranslateY, startContentScale);
-  const smoothclip::Presentation presentation = presentationV2(
-      x, y, width, height, topLeftRadius, topRightRadius,
-      bottomRightRadius, bottomLeftRadius, curveCode,
-      contentTranslateX, contentTranslateY, contentScale);
+  const bool hasInteractiveStart = start.size(runtime) != 0;
+  smoothclip::Presentation startPresentation{};
+  smoothclip::Presentation presentation{};
   const smoothclip::TimingAnimation animation{
       durationMs, controlPoint1X, controlPoint1Y,
       controlPoint2X, controlPoint2Y, reduceMotion};
   if (!validDriverId(driverId) ||
-      !finitePresentationV2(startPresentation) ||
-      !finitePresentationV2(presentation) ||
+      (hasInteractiveStart &&
+       (start.size(runtime) != kPresentationStride ||
+        !presentationAt(runtime, start, 0, startPresentation))) ||
+      target.size(runtime) != kPresentationStride ||
+      !presentationAt(runtime, target, 0, presentation) ||
       !std::isfinite(durationMs) || !std::isfinite(controlPoint1X) ||
       !std::isfinite(controlPoint1Y) || !std::isfinite(controlPoint2X) ||
       !std::isfinite(controlPoint2Y)) {
@@ -701,105 +625,28 @@ int32_t SmoothClipTurboModule::animateTimingV2(
 }
 
 int32_t SmoothClipTurboModule::animateSpring(
-    jsi::Runtime &,
+    jsi::Runtime &runtime,
     double driverId,
-    bool hasInteractiveStart,
-    double startX,
-    double startY,
-    double startWidth,
-    double startHeight,
-    double startRadius,
-    double startContentTranslateX,
-    double startContentTranslateY,
-    double x,
-    double y,
-    double width,
-    double height,
-    double radius,
-    double contentTranslateX,
-    double contentTranslateY,
+    jsi::Array start,
+    jsi::Array target,
     double mass,
     double stiffness,
     double damping,
     double initialVelocity,
     bool inheritVelocity,
     int32_t reduceMotion) {
-  const smoothclip::Presentation startPresentation{
-      {startX, startY, startWidth, startHeight, startRadius},
-      startContentTranslateX,
-      startContentTranslateY};
-  const smoothclip::Presentation presentation{
-      {x, y, width, height, radius}, contentTranslateX, contentTranslateY};
-  const smoothclip::SpringAnimation animation{
-      mass,
-      stiffness,
-      damping,
-      initialVelocity,
-      inheritVelocity,
-      reduceMotion};
-  if (!validDriverId(driverId) ||
-      !finitePresentation(startPresentation) ||
-      !finitePresentation(presentation) ||
-      !std::isfinite(mass) || !std::isfinite(stiffness) ||
-      !std::isfinite(damping) || !std::isfinite(initialVelocity)) return 0;
-
-  return smoothclip::animateSpring(
-      static_cast<uint64_t>(driverId),
-      {hasInteractiveStart, startPresentation},
-      presentation,
-      animation,
-      smoothclip::AnimationValidationMode::LegacyV1);
-}
-
-int32_t SmoothClipTurboModule::animateSpringV2(
-    jsi::Runtime &,
-    double driverId,
-    bool hasInteractiveStart,
-    double startX,
-    double startY,
-    double startWidth,
-    double startHeight,
-    double startTopLeftRadius,
-    double startTopRightRadius,
-    double startBottomRightRadius,
-    double startBottomLeftRadius,
-    int32_t startCurveCode,
-    double startContentTranslateX,
-    double startContentTranslateY,
-    double startContentScale,
-    double x,
-    double y,
-    double width,
-    double height,
-    double topLeftRadius,
-    double topRightRadius,
-    double bottomRightRadius,
-    double bottomLeftRadius,
-    int32_t curveCode,
-    double contentTranslateX,
-    double contentTranslateY,
-    double contentScale,
-    double mass,
-    double stiffness,
-    double damping,
-    double initialVelocity,
-    bool inheritVelocity,
-    int32_t reduceMotion) {
-  const smoothclip::Presentation startPresentation = presentationV2(
-      startX, startY, startWidth, startHeight,
-      startTopLeftRadius, startTopRightRadius,
-      startBottomRightRadius, startBottomLeftRadius, startCurveCode,
-      startContentTranslateX, startContentTranslateY, startContentScale);
-  const smoothclip::Presentation presentation = presentationV2(
-      x, y, width, height, topLeftRadius, topRightRadius,
-      bottomRightRadius, bottomLeftRadius, curveCode,
-      contentTranslateX, contentTranslateY, contentScale);
+  const bool hasInteractiveStart = start.size(runtime) != 0;
+  smoothclip::Presentation startPresentation{};
+  smoothclip::Presentation presentation{};
   const smoothclip::SpringAnimation animation{
       mass, stiffness, damping, initialVelocity,
       inheritVelocity, reduceMotion};
   if (!validDriverId(driverId) ||
-      !finitePresentationV2(startPresentation) ||
-      !finitePresentationV2(presentation) ||
+      (hasInteractiveStart &&
+       (start.size(runtime) != kPresentationStride ||
+        !presentationAt(runtime, start, 0, startPresentation))) ||
+      target.size(runtime) != kPresentationStride ||
+      !presentationAt(runtime, target, 0, presentation) ||
       !std::isfinite(mass) || !std::isfinite(stiffness) ||
       !std::isfinite(damping) || !std::isfinite(initialVelocity) ||
       mass <= 0 || stiffness <= 0 || damping < 0) {
@@ -815,140 +662,36 @@ int32_t SmoothClipTurboModule::animateSpringV2(
 int32_t SmoothClipTurboModule::animateKeyframes(
     jsi::Runtime &runtime,
     double driverId,
-    bool hasInteractiveStart,
-    double startX,
-    double startY,
-    double startWidth,
-    double startHeight,
-    double startRadius,
-    double startContentTranslateX,
-    double startContentTranslateY,
-    double x,
-    double y,
-    double width,
-    double height,
-    double radius,
-    double contentTranslateX,
-    double contentTranslateY,
+    jsi::Array start,
+    jsi::Array target,
     double durationMs,
     jsi::Array frames,
     int32_t reduceMotion) {
-  const smoothclip::Presentation startPresentation{
-      {startX, startY, startWidth, startHeight, startRadius},
-      startContentTranslateX,
-      startContentTranslateY};
-  const smoothclip::Presentation presentation{
-      {x, y, width, height, radius}, contentTranslateX, contentTranslateY};
-  if (!validDriverId(driverId) ||
-      !finitePresentation(startPresentation) ||
-      !finitePresentation(presentation) || !std::isfinite(durationMs) ||
-      frames.size(runtime) < 16 || frames.size(runtime) % 8 != 0) {
-    return 0;
-  }
-
-  std::vector<smoothclip::Keyframe> keyframes;
-  keyframes.reserve(frames.size(runtime) / 8);
-  double previousOffset = -1;
-  for (size_t index = 0; index < frames.size(runtime); index += 8) {
-    const double offset = frames.getValueAtIndex(runtime, index).asNumber();
-    smoothclip::Presentation frame{
-        {frames.getValueAtIndex(runtime, index + 1).asNumber(),
-         frames.getValueAtIndex(runtime, index + 2).asNumber(),
-         frames.getValueAtIndex(runtime, index + 3).asNumber(),
-         frames.getValueAtIndex(runtime, index + 4).asNumber(),
-         frames.getValueAtIndex(runtime, index + 5).asNumber()},
-        frames.getValueAtIndex(runtime, index + 6).asNumber(),
-        frames.getValueAtIndex(runtime, index + 7).asNumber()};
-    if (!std::isfinite(offset) || offset < 0 || offset > 1 ||
-        offset <= previousOffset || !finitePresentation(frame)) return 0;
-    previousOffset = offset;
-    keyframes.push_back({offset, frame});
-  }
-  if (keyframes.front().offset != 0 || keyframes.back().offset != 1) return 0;
-  return smoothclip::animateKeyframes(
-      static_cast<uint64_t>(driverId),
-      {hasInteractiveStart, startPresentation},
-      presentation,
-      durationMs,
-      std::move(keyframes),
-      reduceMotion,
-      smoothclip::AnimationValidationMode::LegacyV1);
-}
-
-int32_t SmoothClipTurboModule::animateKeyframesV2(
-    jsi::Runtime &runtime,
-    double driverId,
-    bool hasInteractiveStart,
-    double startX,
-    double startY,
-    double startWidth,
-    double startHeight,
-    double startTopLeftRadius,
-    double startTopRightRadius,
-    double startBottomRightRadius,
-    double startBottomLeftRadius,
-    int32_t startCurveCode,
-    double startContentTranslateX,
-    double startContentTranslateY,
-    double startContentScale,
-    double x,
-    double y,
-    double width,
-    double height,
-    double topLeftRadius,
-    double topRightRadius,
-    double bottomRightRadius,
-    double bottomLeftRadius,
-    int32_t curveCode,
-    double contentTranslateX,
-    double contentTranslateY,
-    double contentScale,
-    double durationMs,
-    jsi::Array frames,
-    int32_t reduceMotion) {
-  const smoothclip::Presentation startPresentation = presentationV2(
-      startX, startY, startWidth, startHeight,
-      startTopLeftRadius, startTopRightRadius,
-      startBottomRightRadius, startBottomLeftRadius, startCurveCode,
-      startContentTranslateX, startContentTranslateY, startContentScale);
-  const smoothclip::Presentation presentation = presentationV2(
-      x, y, width, height, topLeftRadius, topRightRadius,
-      bottomRightRadius, bottomLeftRadius, curveCode,
-      contentTranslateX, contentTranslateY, contentScale);
+  const bool hasInteractiveStart = start.size(runtime) != 0;
+  smoothclip::Presentation startPresentation{};
+  smoothclip::Presentation presentation{};
   const size_t frameValueCount = frames.size(runtime);
   if (!validDriverId(driverId) ||
-      !finitePresentationV2(startPresentation) ||
-      !finitePresentationV2(presentation) || !std::isfinite(durationMs) ||
-      frameValueCount < 26 || frameValueCount % 13 != 0) {
+      (hasInteractiveStart &&
+       (start.size(runtime) != kPresentationStride ||
+        !presentationAt(runtime, start, 0, startPresentation))) ||
+      target.size(runtime) != kPresentationStride ||
+      !presentationAt(runtime, target, 0, presentation) ||
+      !std::isfinite(durationMs) ||
+      frameValueCount < kKeyframeStride * 2 ||
+      frameValueCount % kKeyframeStride != 0) {
     return 0;
   }
 
   std::vector<smoothclip::Keyframe> keyframes;
-  keyframes.reserve(frameValueCount / 13);
+  keyframes.reserve(frameValueCount / kKeyframeStride);
   double previousOffset = -1;
-  for (size_t index = 0; index < frameValueCount; index += 13) {
-    const double offset = frames.getValueAtIndex(runtime, index).asNumber();
-    const double rawFrameCurveCode =
-        frames.getValueAtIndex(runtime, index + 9).asNumber();
-    const int32_t frameCurveCode =
-        static_cast<int32_t>(rawFrameCurveCode);
-    const smoothclip::Presentation frame = presentationV2(
-        frames.getValueAtIndex(runtime, index + 1).asNumber(),
-        frames.getValueAtIndex(runtime, index + 2).asNumber(),
-        frames.getValueAtIndex(runtime, index + 3).asNumber(),
-        frames.getValueAtIndex(runtime, index + 4).asNumber(),
-        frames.getValueAtIndex(runtime, index + 5).asNumber(),
-        frames.getValueAtIndex(runtime, index + 6).asNumber(),
-        frames.getValueAtIndex(runtime, index + 7).asNumber(),
-        frames.getValueAtIndex(runtime, index + 8).asNumber(),
-        frameCurveCode,
-        frames.getValueAtIndex(runtime, index + 10).asNumber(),
-        frames.getValueAtIndex(runtime, index + 11).asNumber(),
-        frames.getValueAtIndex(runtime, index + 12).asNumber());
-    if (!std::isfinite(rawFrameCurveCode) ||
-        rawFrameCurveCode != frameCurveCode ||
-        !std::isfinite(offset) || offset < 0 || offset > 1 ||
-        offset <= previousOffset || !finitePresentationV2(frame)) {
+  for (size_t index = 0; index < frameValueCount; index += kKeyframeStride) {
+    double offset;
+    smoothclip::Presentation frame{};
+    if (!numberAt(runtime, frames, index, offset) ||
+        offset < 0 || offset > 1 || offset <= previousOffset ||
+        !presentationAt(runtime, frames, index + 1, frame)) {
       return 0;
     }
     previousOffset = offset;
@@ -962,140 +705,6 @@ int32_t SmoothClipTurboModule::animateKeyframesV2(
       durationMs,
       std::move(keyframes),
       reduceMotion);
-}
-
-int32_t SmoothClipTurboModule::animateTimingFromV2(
-    jsi::Runtime &runtime,
-    double driverId,
-    double startX,
-    double startY,
-    double startWidth,
-    double startHeight,
-    double startTopLeftRadius,
-    double startTopRightRadius,
-    double startBottomRightRadius,
-    double startBottomLeftRadius,
-    int32_t startCurveCode,
-    double startContentTranslateX,
-    double startContentTranslateY,
-    double startContentScale,
-    double x,
-    double y,
-    double width,
-    double height,
-    double topLeftRadius,
-    double topRightRadius,
-    double bottomRightRadius,
-    double bottomLeftRadius,
-    int32_t curveCode,
-    double contentTranslateX,
-    double contentTranslateY,
-    double contentScale,
-    double durationMs,
-    double controlPoint1X,
-    double controlPoint1Y,
-    double controlPoint2X,
-    double controlPoint2Y,
-    int32_t reduceMotion) {
-  return animateTimingV2(
-      runtime, driverId, true,
-      startX, startY, startWidth, startHeight,
-      startTopLeftRadius, startTopRightRadius,
-      startBottomRightRadius, startBottomLeftRadius, startCurveCode,
-      startContentTranslateX, startContentTranslateY, startContentScale,
-      x, y, width, height,
-      topLeftRadius, topRightRadius, bottomRightRadius, bottomLeftRadius,
-      curveCode, contentTranslateX, contentTranslateY, contentScale,
-      durationMs, controlPoint1X, controlPoint1Y,
-      controlPoint2X, controlPoint2Y, reduceMotion);
-}
-
-int32_t SmoothClipTurboModule::animateSpringFromV2(
-    jsi::Runtime &runtime,
-    double driverId,
-    double startX,
-    double startY,
-    double startWidth,
-    double startHeight,
-    double startTopLeftRadius,
-    double startTopRightRadius,
-    double startBottomRightRadius,
-    double startBottomLeftRadius,
-    int32_t startCurveCode,
-    double startContentTranslateX,
-    double startContentTranslateY,
-    double startContentScale,
-    double x,
-    double y,
-    double width,
-    double height,
-    double topLeftRadius,
-    double topRightRadius,
-    double bottomRightRadius,
-    double bottomLeftRadius,
-    int32_t curveCode,
-    double contentTranslateX,
-    double contentTranslateY,
-    double contentScale,
-    double mass,
-    double stiffness,
-    double damping,
-    double initialVelocity,
-    bool inheritVelocity,
-    int32_t reduceMotion) {
-  return animateSpringV2(
-      runtime, driverId, true,
-      startX, startY, startWidth, startHeight,
-      startTopLeftRadius, startTopRightRadius,
-      startBottomRightRadius, startBottomLeftRadius, startCurveCode,
-      startContentTranslateX, startContentTranslateY, startContentScale,
-      x, y, width, height,
-      topLeftRadius, topRightRadius, bottomRightRadius, bottomLeftRadius,
-      curveCode, contentTranslateX, contentTranslateY, contentScale,
-      mass, stiffness, damping, initialVelocity, inheritVelocity,
-      reduceMotion);
-}
-
-int32_t SmoothClipTurboModule::animateKeyframesFromV2(
-    jsi::Runtime &runtime,
-    double driverId,
-    double startX,
-    double startY,
-    double startWidth,
-    double startHeight,
-    double startTopLeftRadius,
-    double startTopRightRadius,
-    double startBottomRightRadius,
-    double startBottomLeftRadius,
-    int32_t startCurveCode,
-    double startContentTranslateX,
-    double startContentTranslateY,
-    double startContentScale,
-    double x,
-    double y,
-    double width,
-    double height,
-    double topLeftRadius,
-    double topRightRadius,
-    double bottomRightRadius,
-    double bottomLeftRadius,
-    int32_t curveCode,
-    double contentTranslateX,
-    double contentTranslateY,
-    double contentScale,
-    double durationMs,
-    jsi::Array frames,
-    int32_t reduceMotion) {
-  return animateKeyframesV2(
-      runtime, driverId, true,
-      startX, startY, startWidth, startHeight,
-      startTopLeftRadius, startTopRightRadius,
-      startBottomRightRadius, startBottomLeftRadius, startCurveCode,
-      startContentTranslateX, startContentTranslateY, startContentScale,
-      x, y, width, height,
-      topLeftRadius, topRightRadius, bottomRightRadius, bottomLeftRadius,
-      curveCode, contentTranslateX, contentTranslateY, contentScale,
-      durationMs, std::move(frames), reduceMotion);
 }
 
 int32_t SmoothClipTurboModule::rejectAnimation(
@@ -1112,29 +721,14 @@ jsi::Array SmoothClipTurboModule::cancelAnimation(
     int32_t behavior) {
   if (!validDriverId(driverId)) {
     return presentationArray(
-        runtime, {{0, 0, 0, 0, 0}, 0, 0}, true, false);
-  }
-  const smoothclip::CancelResult result = smoothclip::cancelAnimation(
-      static_cast<uint64_t>(driverId), animationId, behavior == 1);
-  return presentationArray(
-      runtime, result.presentation, true, result.handled);
-}
-
-jsi::Array SmoothClipTurboModule::cancelAnimationV2(
-    jsi::Runtime &runtime,
-    double driverId,
-    int32_t animationId,
-    int32_t behavior) {
-  if (!validDriverId(driverId)) {
-    return presentationArrayV2(
         runtime,
-        presentationV2(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1),
+        makePresentation(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1),
         true,
         false);
   }
   const smoothclip::CancelResult result = smoothclip::cancelAnimation(
       static_cast<uint64_t>(driverId), animationId, behavior == 1);
-  return presentationArrayV2(
+  return presentationArray(
       runtime, result.presentation, true, result.handled);
 }
 

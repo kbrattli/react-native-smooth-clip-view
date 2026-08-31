@@ -1,6 +1,15 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
+
+jest.mock('react-native-smooth-clip-view', () => {
+  const geometry = jest.requireActual<typeof import('../../../src/geometry')>(
+    '../../../src/geometry'
+  );
+  return { normalizeClipPresentation: geometry.normalizeClipPresentation };
+});
+
 import {
   calculateOverlayClipGeometry,
+  normalizeOverlayPresentation,
   resolveDragClipRadius,
   resolveDragContentScale,
 } from '../overlayClipGeometry';
@@ -118,6 +127,50 @@ describe('overlay clip geometry', () => {
     expect(clip.x).toBeCloseTo(40);
     expect(contentTranslateX).toBeCloseTo(40);
   });
+
+  for (const [edge, translateX] of [
+    ['left', -100],
+    ['right', 100],
+  ] as const) {
+    it(`keeps an off-screen ${edge} release intact inside the wider host`, () => {
+      const requested = geometryAt({
+        progress: 1,
+        translateX,
+        translateY: 300,
+      });
+      const normalized = normalizeOverlayPresentation(
+        requested,
+        SCREEN_WIDTH,
+        SCREEN_HEIGHT
+      );
+
+      expect(normalized).not.toBeNull();
+      expect(normalized!.clip.x).toBeGreaterThanOrEqual(0);
+      expect(normalized!.clip.y).toBeGreaterThanOrEqual(0);
+      expect(normalized!.clip.x + normalized!.clip.width).toBeLessThanOrEqual(
+        SCREEN_WIDTH * 3
+      );
+      expect(normalized!.clip.y + normalized!.clip.height).toBeLessThanOrEqual(
+        SCREEN_HEIGHT
+      );
+      expect(normalized!.clip.x).toBeCloseTo(requested.clip.x + SCREEN_WIDTH);
+      expect(normalized!.clip.width).toBeCloseTo(requested.clip.width);
+      expect(normalized!.clip.radius).toBeCloseTo(requested.clip.radius);
+      if (edge === 'left') {
+        expect(normalized!.clip.x).toBeLessThan(SCREEN_WIDTH);
+      } else {
+        expect(normalized!.clip.x + normalized!.clip.width).toBeGreaterThan(
+          SCREEN_WIDTH * 2
+        );
+      }
+      expect(normalized!.contentTranslateX).toBe(requested.contentTranslateX);
+      expect(normalized!.contentTranslateY).toBe(requested.contentTranslateY);
+      expect(normalized!.contentScale).toBe(requested.contentScale);
+      expect(normalized!.contentVisibleHeight).toBe(
+        requested.contentVisibleHeight
+      );
+    });
+  }
 
   it('ignores upward drag', () => {
     expect(geometryAt({ progress: 1, translateY: -200 })).toEqual(

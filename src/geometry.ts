@@ -1,4 +1,27 @@
+/* eslint-disable no-bitwise -- React Native colors are converted to RRGGBBAA */
+import type { ColorValue } from 'react-native';
+import { processColor } from 'react-native-reanimated';
+
 export type ClipCurve = 'circular' | 'continuous';
+
+/** One numeric outset shadow following React Native's `boxShadow` field names. */
+export type ClipBoxShadow = Readonly<{
+  color?: ColorValue;
+  offsetX: number;
+  offsetY: number;
+  /** CSS box-shadow blur radius. iOS converts this to CALayer radius / 2. */
+  blurRadius?: number;
+  spreadDistance?: number;
+}>;
+
+export type CanonicalClipBoxShadow = Readonly<{
+  /** React Native numeric RRGGBBAA color; canonicalization is idempotent. */
+  color: ColorValue;
+  offsetX: number;
+  offsetY: number;
+  blurRadius: number;
+  spreadDistance: number;
+}>;
 
 export type ClipGeometry = Readonly<{
   x: number;
@@ -19,7 +42,7 @@ export type CanonicalClipGeometry = Readonly<{
   y: number;
   width: number;
   height: number;
-  /** Normalized legacy all-corners value retained for V1 compatibility. */
+  /** Normalized all-corners value; zero when the corner radii differ. */
   radius: number;
   topLeftRadius: number;
   topRightRadius: number;
@@ -39,6 +62,7 @@ export type SmoothClipPresentation = Readonly<{
   contentTranslateY: number;
   /** Defaults to 1 when omitted. */
   contentScale?: number;
+  boxShadow?: ClipBoxShadow;
 }>;
 
 export type CanonicalSmoothClipPresentation = Readonly<{
@@ -46,7 +70,10 @@ export type CanonicalSmoothClipPresentation = Readonly<{
   contentTranslateX: number;
   contentTranslateY: number;
   contentScale: number;
+  boxShadow?: CanonicalClipBoxShadow;
 }>;
+
+const DEFAULT_SHADOW_COLOR = '#000000ff';
 
 function isClipCurve(curve: ClipCurve | undefined): boolean {
   'worklet';
@@ -56,6 +83,62 @@ function isClipCurve(curve: ClipCurve | undefined): boolean {
 function isFiniteOptionalNumber(value: number | undefined): boolean {
   'worklet';
   return value === undefined || Number.isFinite(value);
+}
+
+function canonicalizeClipBoxShadow(
+  shadow: ClipBoxShadow | undefined
+): CanonicalClipBoxShadow | null | undefined {
+  'worklet';
+  if (shadow === undefined) return undefined;
+  const { offsetX, offsetY } = shadow;
+  const blurRadius = shadow.blurRadius ?? 0;
+  const spreadDistance = shadow.spreadDistance ?? 0;
+  if (
+    !Number.isFinite(offsetX) ||
+    !Number.isFinite(offsetY) ||
+    !Number.isFinite(blurRadius) ||
+    !Number.isFinite(spreadDistance)
+  ) {
+    return null;
+  }
+  const processedColor =
+    shadow.color === undefined
+      ? processColor(DEFAULT_SHADOW_COLOR)
+      : processColor(shadow.color);
+  // Platform and dynamic colors cannot be represented by the scalar native
+  // animation protocol. Callers can resolve those colors before presenting.
+  if (typeof processedColor !== 'number') return null;
+  const unsignedProcessedColor = processedColor >>> 0;
+  const color =
+    ((unsignedProcessedColor << 8) | (unsignedProcessedColor >>> 24)) >>> 0;
+  return {
+    color: color as unknown as ColorValue,
+    offsetX,
+    offsetY,
+    blurRadius: Math.max(0, blurRadius),
+    spreadDistance,
+  };
+}
+
+function clipBoxShadowEquals(
+  first: ClipBoxShadow | undefined,
+  second: ClipBoxShadow | undefined
+): boolean {
+  'worklet';
+  if (first === undefined || second === undefined) return first === second;
+  const canonicalFirst = canonicalizeClipBoxShadow(first);
+  const canonicalSecond = canonicalizeClipBoxShadow(second);
+  return (
+    canonicalFirst !== null &&
+    canonicalFirst !== undefined &&
+    canonicalSecond !== null &&
+    canonicalSecond !== undefined &&
+    canonicalFirst.color === canonicalSecond.color &&
+    canonicalFirst.offsetX === canonicalSecond.offsetX &&
+    canonicalFirst.offsetY === canonicalSecond.offsetY &&
+    canonicalFirst.blurRadius === canonicalSecond.blurRadius &&
+    canonicalFirst.spreadDistance === canonicalSecond.spreadDistance
+  );
 }
 
 export function isFiniteClipGeometry(geometry: ClipGeometry): boolean {
@@ -129,12 +212,14 @@ export function isFiniteClipPresentation(
 ): boolean {
   'worklet';
   const contentScale = resolvedContentScale(presentation);
+  const shadow = canonicalizeClipBoxShadow(presentation.boxShadow);
   return (
     isFiniteClipGeometry(presentation.clip) &&
     Number.isFinite(presentation.contentTranslateX) &&
     Number.isFinite(presentation.contentTranslateY) &&
     Number.isFinite(contentScale) &&
-    contentScale > 0
+    contentScale > 0 &&
+    shadow !== null
   );
 }
 
@@ -148,7 +233,8 @@ export function clipPresentationEquals(
     clipGeometryEquals(first.clip, second.clip) &&
     first.contentTranslateX === second.contentTranslateX &&
     first.contentTranslateY === second.contentTranslateY &&
-    resolvedContentScale(first) === resolvedContentScale(second)
+    resolvedContentScale(first) === resolvedContentScale(second) &&
+    clipBoxShadowEquals(first.boxShadow, second.boxShadow)
   );
 }
 
@@ -232,12 +318,15 @@ export function canonicalizeClipPresentation(
 
   const clip = canonicalizeClipGeometry(presentation.clip);
   if (clip === null) return null;
+  const boxShadow = canonicalizeClipBoxShadow(presentation.boxShadow);
+  if (boxShadow === null) return null;
 
   return {
     clip,
     contentTranslateX: presentation.contentTranslateX,
     contentTranslateY: presentation.contentTranslateY,
     contentScale: resolvedContentScale(presentation),
+    ...(boxShadow === undefined ? {} : { boxShadow }),
   };
 }
 
@@ -247,10 +336,12 @@ export function createClipPresentation(
   clip: ClipGeometry,
   contentTranslateX = 0,
   contentTranslateY = 0,
-  contentScale = 1
+  contentScale = 1,
+  boxShadow?: ClipBoxShadow
 ): CanonicalSmoothClipPresentation {
   'worklet';
   const canonicalClip = canonicalizeClipGeometry(clip);
+  const canonicalShadow = canonicalizeClipBoxShadow(boxShadow);
   return {
     // Keep invalid input observably invalid so downstream validation remains
     // atomic instead of accidentally sanitizing a required scalar.
@@ -269,6 +360,13 @@ export function createClipPresentation(
     contentTranslateX,
     contentTranslateY,
     contentScale,
+    ...(canonicalShadow === undefined
+      ? {}
+      : {
+          // Match the geometry constructor's invalid-input behavior: retain the
+          // bad source value so the driver's atomic validation rejects it.
+          boxShadow: (canonicalShadow ?? boxShadow) as CanonicalClipBoxShadow,
+        }),
   };
 }
 
@@ -316,11 +414,14 @@ export function normalizeClipPresentation(
 
   const clip = normalizeClipGeometry(presentation.clip, bounds);
   if (clip === null) return null;
+  const boxShadow = canonicalizeClipBoxShadow(presentation.boxShadow);
+  if (boxShadow === null) return null;
 
   return {
     clip,
     contentTranslateX: presentation.contentTranslateX,
     contentTranslateY: presentation.contentTranslateY,
     contentScale: resolvedContentScale(presentation),
+    ...(boxShadow === undefined ? {} : { boxShadow }),
   };
 }

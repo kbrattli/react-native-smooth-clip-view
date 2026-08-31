@@ -61,10 +61,11 @@ struct ActiveAnimation {
   KeyframeCurve keyframes;
   double durationS = 0;
   double startedAtS = 0;
-  // Integrated spring state (the eleven continuous V2 channels; curve is
-  // categorical and remains the start presentation's curve while running).
+  // Integrated spring state. Shadow channels are skipped when neither endpoint
+  // has a visible shadow.
   Channels springPosition{};
   Channels springVelocity{};
+  std::size_t springChannelCount = kBaseChannelCount;
   double lastFrameS = 0;
   bool finished = true;
   // False while the animation is latched, and held out of animatingDrivers()
@@ -83,8 +84,8 @@ struct ActiveAnimation {
 };
 
 // Per-view fanout state. Density and host metrics are pushed from Kotlin at
-// register time and on size/density changes; density 0 (not pushed yet) falls
-// back to DIP delivery through setClipPresentationDip.
+// register time and on size/density changes; density 0 falls back to DIP
+// delivery until physical host metrics arrive.
 struct ViewEntry {
   global_ref<JSmoothClipView> view;
   double density = 0;
@@ -259,6 +260,13 @@ void scheduleFrame() {
 // keyframe curve now live in cpp/SmoothClipAnimationCurve.h so a test binary can
 // reach them without linking fbjni; ios/tests pins their behavior.
 
+std::array<double, 11> velocityChannels(const Presentation &presentation) {
+  const Channels channels = toChannels(presentation);
+  std::array<double, 11> result{};
+  std::copy_n(channels.begin(), result.size(), result.begin());
+  return result;
+}
+
 // Springs settle below these per-channel thresholds (DIP and DIP/s).
 constexpr double kSpringSettleDisplacement = 0.05;
 constexpr double kSpringSettleVelocity = 1.0;
@@ -284,7 +292,7 @@ bool advanceSpring(ActiveAnimation &animation, double now) {
   while (dt > 0) {
     const double step = std::min(dt, kMaxStepS);
     dt -= step;
-    for (std::size_t index = 0; index < kChannelCount; index += 1) {
+    for (std::size_t index = 0; index < animation.springChannelCount; index += 1) {
       const double displacement =
           animation.springPosition[index] - target[index];
       const double acceleration =
@@ -296,7 +304,7 @@ bool advanceSpring(ActiveAnimation &animation, double now) {
     }
   }
   bool settled = true;
-  for (std::size_t index = 0; index < kChannelCount; index += 1) {
+  for (std::size_t index = 0; index < animation.springChannelCount; index += 1) {
     if (!std::isfinite(animation.springPosition[index]) ||
         !std::isfinite(animation.springVelocity[index])) {
       // A divergent configuration must never freeze the clip: end at target.
@@ -311,8 +319,10 @@ bool advanceSpring(ActiveAnimation &animation, double now) {
       settled = false;
     }
   }
-  animation.current =
-      fromChannels(animation.springPosition, animation.start.clip.curve);
+  animation.current = fromChannels(
+      animation.springPosition,
+      animation.start.clip.curve,
+      animation.start.shadow.enabled || animation.target.shadow.enabled);
   return settled || now - animation.startedAtS >= kSpringMaxDurationS;
 }
 
@@ -374,67 +384,31 @@ Presentation visiblePresentation(
   return state.animation.has_value() ? state.animation->current : state.latest;
 }
 
-bool needsV2Delivery(const Presentation &presentation) {
-  const double topLeft = SmoothClipResolvedRadius(
-      presentation.clip.topLeftRadius, presentation.clip.radius);
-  const double topRight = SmoothClipResolvedRadius(
-      presentation.clip.topRightRadius, presentation.clip.radius);
-  const double bottomRight = SmoothClipResolvedRadius(
-      presentation.clip.bottomRightRadius, presentation.clip.radius);
-  const double bottomLeft = SmoothClipResolvedRadius(
-      presentation.clip.bottomLeftRadius, presentation.clip.radius);
-  return presentation.clip.curve != ClipCurve::Circular ||
-      presentation.contentScale != 1.0 ||
-      topLeft != presentation.clip.radius ||
-      topRight != presentation.clip.radius ||
-      bottomRight != presentation.clip.radius ||
-      bottomLeft != presentation.clip.radius;
-}
-
 // Terminal per-frame delivery: scale DIP -> px and normalize against the
 // pushed host metrics in C++, so the JNI call carries final pixel floats and
 // the Kotlin side reduces to field stores + invalidateOutline().
 void deliverToView(const ViewEntry &entry, const Presentation &presentation) {
-  const bool deliverV2 = needsV2Delivery(presentation);
   if (entry.density <= 0) {
-    if (deliverV2) {
-      entry.view->applyClipV2(presentation);
-    } else {
-      entry.view->applyClip(presentation);
-    }
+    entry.view->applyClip(presentation);
     return;
   }
   const double density = entry.density;
   NormalizedClip clip;
-  if (deliverV2) {
-    if (!SmoothClipNormalizeV2(
-            presentation.clip.x * density,
-            presentation.clip.y * density,
-            presentation.clip.width * density,
-            presentation.clip.height * density,
-            presentation.clip.radius * density,
-            presentation.clip.topLeftRadius * density,
-            presentation.clip.topRightRadius * density,
-            presentation.clip.bottomRightRadius * density,
-            presentation.clip.bottomLeftRadius * density,
-            presentation.clip.curve,
-            entry.hostWidthPx,
-            entry.hostHeightPx,
-            clip)) {
-      return;
-    }
-  } else {
-    if (!SmoothClipNormalize(
-            presentation.clip.x * density,
-            presentation.clip.y * density,
-            presentation.clip.width * density,
-            presentation.clip.height * density,
-            presentation.clip.radius * density,
-            entry.hostWidthPx,
-            entry.hostHeightPx,
-            clip)) {
-      return;
-    }
+  if (!SmoothClipNormalize(
+          presentation.clip.x * density,
+          presentation.clip.y * density,
+          presentation.clip.width * density,
+          presentation.clip.height * density,
+          presentation.clip.radius * density,
+          presentation.clip.topLeftRadius * density,
+          presentation.clip.topRightRadius * density,
+          presentation.clip.bottomRightRadius * density,
+          presentation.clip.bottomLeftRadius * density,
+          presentation.clip.curve,
+          entry.hostWidthPx,
+          entry.hostHeightPx,
+          clip)) {
+    return;
   }
   const double translateX = presentation.contentTranslateX * density;
   const double translateY = presentation.contentTranslateY * density;
@@ -444,17 +418,32 @@ void deliverToView(const ViewEntry &entry, const Presentation &presentation) {
       presentation.contentScale <= 0) {
     return;
   }
-  if (deliverV2) {
-    entry.view->applyClipV2Px(
-        clip, translateX, translateY, presentation.contentScale);
-  } else {
-    entry.view->applyClipPx(clip, translateX, translateY);
-  }
+  Shadow shadowPx = presentation.shadow;
+  shadowPx.offsetX *= density;
+  shadowPx.offsetY *= density;
+  shadowPx.blurRadius *= density;
+  shadowPx.spreadDistance *= density;
+  entry.view->applyClipPx(
+      clip,
+      translateX,
+      translateY,
+      presentation.contentScale,
+      shadowPx);
 }
 
 void applyToViews(DriverState &state, const Presentation &presentation) {
   for (const auto &entry : state.views) {
     deliverToView(entry, presentation);
+  }
+}
+
+void applyAnimationFrameToViews(
+    DriverState &state,
+    const Presentation &presentation) {
+  for (const auto &entry : state.views) {
+    if (entry.participation == ViewParticipation::Active) {
+      deliverToView(entry, presentation);
+    }
   }
 }
 
@@ -570,8 +559,8 @@ bool timingPlanPreservesLinearHostNormalization(
       interpolate(start, target, minimumProgress);
   const Presentation maximum =
       interpolate(start, target, maximumProgress);
-  return isFiniteProtocolV2Presentation(minimum) &&
-      isFiniteProtocolV2Presentation(maximum) &&
+  return isFinitePresentation(minimum) &&
+      isFinitePresentation(maximum) &&
       presentationFitsEveryKnownHostWithoutNormalization(state, minimum) &&
       presentationFitsEveryKnownHostWithoutNormalization(state, maximum);
 }
@@ -620,7 +609,8 @@ void applyGroupCurrent(const ActiveGroup &group) {
   for (const GroupMemberAnimation &member : group.members) {
     const auto iterator = registry().find(member.driverId);
     if (iterator != registry().end()) {
-      applyToViews(iterator->second, member.animation.current);
+      applyAnimationFrameToViews(
+          iterator->second, member.animation.current);
     }
   }
 }
@@ -770,7 +760,7 @@ int32_t startAnimation(
   // animation arrives pre-anchored and advance() must not min() it against
   // the dispatching frame, which for a CALLBACK_INPUT start is EARLIER than
   // the call and would re-open the intra-frame lead the hint closes. Without
-  // a hint (NaN: latch-less legacy callers, tests, iOS ignoring the field)
+  // a hint (NaN: latch-less callers, tests, iOS ignoring the field)
   // this reduces exactly to the old nowSeconds() + min() anchor path.
   const double wallNow = nowSeconds();
   const StartStamp stamp = resolveStartStamp(startedAtHintS, wallNow);
@@ -930,7 +920,7 @@ void advance(uint64_t driverId, DriverState &state, double now) {
   }
   // The completion branch below fans out the exact target; applying the
   // integrated value too would double every JNI crossing on the final frame.
-  if (!done) applyToViews(state, animation.current);
+  if (!done) applyAnimationFrameToViews(state, animation.current);
 
   if (done) {
     const int32_t animationId = animation.id;
@@ -1171,7 +1161,7 @@ bool setPresentationBatch(const std::vector<BatchEntry> &entries) {
     }
     const auto iterator = registry().find(entry.driverId);
     if (iterator == registry().end() || iterator->second.destroyed ||
-        !isFiniteProtocolV2Presentation(entry.presentation)) {
+        !isFinitePresentation(entry.presentation)) {
       return false;
     }
     if (iterator != registry().end() && iterator->second.groupId != 0 &&
@@ -1199,7 +1189,8 @@ bool setPresentationBatch(const std::vector<BatchEntry> &entries) {
     state.latest = entry.presentation;
     state.hasLatest = true;
     state.ownership = Ownership::Interactive;
-    recordVelocitySample(state.samples, toChannels(entry.presentation), now);
+    recordVelocitySample(
+        state.samples, velocityChannels(entry.presentation), now);
   }
   for (const BatchEntry &entry : entries) {
     applyToViews(registry().at(entry.driverId), entry.presentation);
@@ -1225,11 +1216,11 @@ int32_t startGroupCommon(
     return 0;
   }
   if (kind == AnimationKind::Timing &&
-      !isValidProtocolV2Timing(timing)) {
+      !isValidTiming(timing)) {
     return 0;
   }
   if (kind == AnimationKind::Spring &&
-      !isValidProtocolV2Spring(spring)) {
+      !isValidSpring(spring)) {
     return 0;
   }
   if (kind == AnimationKind::Keyframes &&
@@ -1264,18 +1255,18 @@ int32_t startGroupCommon(
     const Presentation resolvedStart = entry.hasFrom
         ? entry.from
         : visiblePresentation(entry.driverId, iterator->second);
-    if (!isFiniteProtocolV2Presentation(resolvedStart) ||
-        !isFiniteProtocolV2Presentation(entry.target) ||
+    if (!isFinitePresentation(resolvedStart) ||
+        !isFinitePresentation(entry.target) ||
         resolvedStart.clip.curve != entry.target.clip.curve) {
       return 0;
     }
     if (kind == AnimationKind::Spring &&
-        !protocolV2SpringScaleIsProvablyPositive(
+        !springScaleIsProvablyPositive(
             resolvedStart, entry.target, spring)) {
       return 0;
     }
     if (kind == AnimationKind::Keyframes) {
-      if (!isValidProtocolV2Keyframes(
+      if (!isValidKeyframes(
               entry.keyframes,
               resolvedStart,
               entry.target,
@@ -1347,14 +1338,22 @@ int32_t startGroupCommon(
       member.animation.keyframes.reset(std::move(entry.keyframes));
     } else if (kind == AnimationKind::Spring) {
       const double velocity = spring.inheritVelocity
-          ? inheritedVelocity(state.samples, toChannels(entry.target), wallNow)
+          ? inheritedVelocity(
+                state.samples, velocityChannels(entry.target), wallNow)
           : spring.initialVelocity;
       member.animation.spring.initialVelocity = velocity;
       member.animation.spring.inheritVelocity = false;
       const Channels startChannels = toChannels(resolvedStart);
       const Channels targetChannels = toChannels(entry.target);
-      for (std::size_t index = 0; index < kChannelCount; index += 1) {
-        member.animation.springPosition[index] = startChannels[index];
+      member.animation.springChannelCount =
+          (resolvedStart.shadow.enabled && resolvedStart.shadow.alpha > 0) ||
+              (entry.target.shadow.enabled && entry.target.shadow.alpha > 0)
+          ? kChannelCount
+          : kBaseChannelCount;
+      member.animation.springPosition = startChannels;
+      for (std::size_t index = 0;
+           index < member.animation.springChannelCount;
+           index += 1) {
         member.animation.springVelocity[index] =
             velocity * (targetChannels[index] - startChannels[index]);
       }
@@ -1504,12 +1503,31 @@ void setPresentation(
   state.hasLatest = true;
   state.ownership = Ownership::Interactive;
   if (recordVelocity) {
-    recordVelocitySample(state.samples, toChannels(presentation), nowSeconds());
+    recordVelocitySample(
+        state.samples, velocityChannels(presentation), nowSeconds());
   } else if (state.samples.hasLatest) {
     // Untracked movement invalidates the recorded velocity pair.
     clearVelocitySamples(state.samples);
   }
   applyToViews(state, presentation);
+}
+
+void setScalars(
+    uint64_t driverId,
+    Geometry geometry,
+    double contentTranslateX,
+    double contentTranslateY,
+    double contentScale,
+    bool overridePendingAnimation,
+    bool recordVelocity) {
+  Presentation presentation = snapshotCurrentAndroid(driverId);
+  if (!isFinitePresentation(presentation)) return;
+  presentation.clip = geometry;
+  presentation.contentTranslateX = contentTranslateX;
+  presentation.contentTranslateY = contentTranslateY;
+  presentation.contentScale = contentScale;
+  setPresentation(
+      driverId, presentation, true, overridePendingAnimation, recordVelocity);
 }
 
 Presentation beginInteraction(uint64_t driverId) {
@@ -1542,30 +1560,17 @@ int32_t animateTiming(
     uint64_t driverId,
     AnimationStart start,
     Presentation presentation,
-    TimingAnimation animation,
-    AnimationValidationMode validationMode) {
-  const bool strictV2 =
-      validationMode == AnimationValidationMode::ProtocolV2;
-  const bool validAnimation = strictV2
-      ? isValidProtocolV2Timing(animation)
-      : std::isfinite(animation.durationMs) &&
-          std::isfinite(animation.controlPoint1X) &&
-          std::isfinite(animation.controlPoint1Y) &&
-          std::isfinite(animation.controlPoint2X) &&
-          std::isfinite(animation.controlPoint2Y) &&
-          isValidReduceMotionCode(animation.reduceMotion);
-  if (!strictV2 && validAnimation) {
-    animation.durationMs = std::max(0.0, animation.durationMs);
-  }
+    TimingAnimation animation) {
+  const bool validAnimation = isValidTiming(animation);
   if (!isOnMainThread() || driverId == 0 ||
-      !isFiniteProtocolV2Presentation(presentation) || !validAnimation) {
+      !isFinitePresentation(presentation) || !validAnimation) {
     return 0;
   }
   auto iterator = registry().find(driverId);
   Presentation preflightStart;
   if (iterator == registry().end()) {
     if (!start.hasInteractiveStart ||
-        !isFiniteProtocolV2Presentation(start.interactiveStart)) {
+        !isFinitePresentation(start.interactiveStart)) {
       return 0;
     }
     preflightStart = start.interactiveStart;
@@ -1575,13 +1580,13 @@ int32_t animateTiming(
         ? start.interactiveStart
         : visiblePresentation(driverId, iterator->second);
   }
-  if (!isFiniteProtocolV2Presentation(preflightStart) ||
+  if (!isFinitePresentation(preflightStart) ||
       preflightStart.clip.curve != presentation.clip.curve) {
     return 0;
   }
   const bool reduce = shouldReduceMotion(animation.reduceMotion) ||
       animation.durationMs <= 0;
-  if (strictV2 && !reduce && iterator != registry().end() &&
+  if (!reduce && iterator != registry().end() &&
       !timingPlanPreservesLinearHostNormalization(
           iterator->second, preflightStart, presentation, animation)) {
     return 0;
@@ -1616,31 +1621,17 @@ int32_t animateSpring(
     uint64_t driverId,
     AnimationStart start,
     Presentation presentation,
-    SpringAnimation animation,
-    AnimationValidationMode validationMode) {
-  const bool strictV2 =
-      validationMode == AnimationValidationMode::ProtocolV2;
-  const bool validAnimation = strictV2
-      ? isValidProtocolV2Spring(animation)
-      : std::isfinite(animation.mass) &&
-          std::isfinite(animation.stiffness) &&
-          std::isfinite(animation.damping) &&
-          std::isfinite(animation.initialVelocity) &&
-          isValidReduceMotionCode(animation.reduceMotion);
-  if (!strictV2 && validAnimation) {
-    animation.mass = std::max(0.0001, animation.mass);
-    animation.stiffness = std::max(0.0001, animation.stiffness);
-    animation.damping = std::max(0.0, animation.damping);
-  }
+    SpringAnimation animation) {
+  const bool validAnimation = isValidSpring(animation);
   if (!isOnMainThread() || driverId == 0 ||
-      !isFiniteProtocolV2Presentation(presentation) || !validAnimation) {
+      !isFinitePresentation(presentation) || !validAnimation) {
     return 0;
   }
   auto iterator = registry().find(driverId);
   Presentation preflightStart;
   if (iterator == registry().end()) {
     if (!start.hasInteractiveStart ||
-        !isFiniteProtocolV2Presentation(start.interactiveStart)) {
+        !isFinitePresentation(start.interactiveStart)) {
       return 0;
     }
     preflightStart = start.interactiveStart;
@@ -1650,10 +1641,9 @@ int32_t animateSpring(
         ? start.interactiveStart
         : visiblePresentation(driverId, iterator->second);
   }
-  if (!isFiniteProtocolV2Presentation(preflightStart) ||
+  if (!isFinitePresentation(preflightStart) ||
       preflightStart.clip.curve != presentation.clip.curve ||
-      (strictV2 && !protocolV2SpringScaleIsProvablyPositive(
-          preflightStart, presentation, animation))) {
+      !springScaleIsProvablyPositive(preflightStart, presentation, animation)) {
     return 0;
   }
   if (iterator == registry().end()) {
@@ -1669,7 +1659,8 @@ int32_t animateSpring(
   // seeded with velocity·displacement to match the iOS CASpringAnimation
   // per-keypath behavior.
   const double velocity = animation.inheritVelocity
-      ? inheritedVelocity(state.samples, toChannels(presentation), nowSeconds())
+      ? inheritedVelocity(
+            state.samples, velocityChannels(presentation), nowSeconds())
       : animation.initialVelocity;
   const Presentation resolvedStart =
       prepareAnimation(driverId, state, start, presentation);
@@ -1689,8 +1680,15 @@ int32_t animateSpring(
   active.durationS = kSpringMaxDurationS;
   const auto startChannels = toChannels(resolvedStart);
   const auto targetChannels = toChannels(presentation);
-  for (std::size_t index = 0; index < kChannelCount; index += 1) {
-    active.springPosition[index] = startChannels[index];
+  active.springChannelCount =
+      (resolvedStart.shadow.enabled && resolvedStart.shadow.alpha > 0) ||
+          (presentation.shadow.enabled && presentation.shadow.alpha > 0)
+      ? kChannelCount
+      : kBaseChannelCount;
+  active.springPosition = startChannels;
+  for (std::size_t index = 0;
+       index < active.springChannelCount;
+       index += 1) {
     active.springVelocity[index] =
         velocity * (targetChannels[index] - startChannels[index]);
   }
@@ -1703,15 +1701,11 @@ int32_t animateKeyframes(
     Presentation presentation,
     double durationMs,
     std::vector<Keyframe> keyframes,
-    int32_t reduceMotion,
-    AnimationValidationMode validationMode) {
-  const bool strictV2 =
-      validationMode == AnimationValidationMode::ProtocolV2;
+    int32_t reduceMotion) {
   const bool finiteDuration = std::isfinite(durationMs);
-  if (!strictV2 && finiteDuration) durationMs = std::max(0.0, durationMs);
   if (!isOnMainThread() || driverId == 0 ||
-      !isFiniteProtocolV2Presentation(presentation) ||
-      !finiteDuration || (strictV2 && durationMs < 0) ||
+      !isFinitePresentation(presentation) ||
+      !finiteDuration || durationMs < 0 ||
       !isValidReduceMotionCode(reduceMotion)) {
     return 0;
   }
@@ -1719,7 +1713,7 @@ int32_t animateKeyframes(
   Presentation preflightStart;
   if (iterator == registry().end()) {
     if (!start.hasInteractiveStart ||
-        !isFiniteProtocolV2Presentation(start.interactiveStart)) {
+        !isFinitePresentation(start.interactiveStart)) {
       return 0;
     }
     preflightStart = start.interactiveStart;
@@ -1729,25 +1723,13 @@ int32_t animateKeyframes(
         ? start.interactiveStart
         : visiblePresentation(driverId, iterator->second);
   }
-  bool validKeyframes = keyframes.size() >= 2 &&
-      keyframes.front().offset == 0 && keyframes.back().offset == 1;
-  double previousOffset = -1;
-  for (const Keyframe &keyframe : keyframes) {
-    validKeyframes = validKeyframes && std::isfinite(keyframe.offset) &&
-        keyframe.offset > previousOffset && keyframe.offset >= 0 &&
-        keyframe.offset <= 1 &&
-        isFiniteProtocolV2Presentation(keyframe.presentation);
-    previousOffset = keyframe.offset;
-  }
-  if (strictV2) {
-    validKeyframes = isValidProtocolV2Keyframes(
-        keyframes, preflightStart, presentation, start.hasInteractiveStart);
-  }
-  if (!isFiniteProtocolV2Presentation(preflightStart) || !validKeyframes) {
+  const bool validKeyframes = isValidKeyframes(
+      keyframes, preflightStart, presentation, start.hasInteractiveStart);
+  if (!isFinitePresentation(preflightStart) || !validKeyframes) {
     return 0;
   }
   const bool reduce = shouldReduceMotion(reduceMotion) || durationMs <= 0;
-  if (strictV2 && !reduce && iterator != registry().end() &&
+  if (!reduce && iterator != registry().end() &&
       !keyframePlanPreservesLinearHostNormalization(
           iterator->second, preflightStart, keyframes)) {
     return 0;
@@ -1768,7 +1750,7 @@ int32_t animateKeyframes(
     emitCompletion(driverId, animationId, true);
     return animationId;
   }
-  if (strictV2 && !start.hasInteractiveStart) {
+  if (!start.hasInteractiveStart) {
     keyframes.front().presentation = resolvedStart;
   }
   ActiveAnimation active;
@@ -1859,23 +1841,6 @@ void JSmoothClipView::applyClip(const Presentation &presentation) const {
   static const auto method =
       javaClassStatic()
           ->getMethod<void(
-              jdouble, jdouble, jdouble, jdouble, jdouble, jdouble, jdouble)>(
-              "setClipPresentationDip");
-  method(
-      self(),
-      presentation.clip.x,
-      presentation.clip.y,
-      presentation.clip.width,
-      presentation.clip.height,
-      presentation.clip.radius,
-      presentation.contentTranslateX,
-      presentation.contentTranslateY);
-}
-
-void JSmoothClipView::applyClipV2(const Presentation &presentation) const {
-  static const auto method =
-      javaClassStatic()
-          ->getMethod<void(
               jdouble,
               jdouble,
               jdouble,
@@ -1887,7 +1852,16 @@ void JSmoothClipView::applyClipV2(const Presentation &presentation) const {
               jint,
               jdouble,
               jdouble,
-              jdouble)>("setClipPresentationV2Dip");
+              jdouble,
+              jboolean,
+              jdouble,
+              jdouble,
+              jdouble,
+              jdouble,
+              jdouble,
+              jdouble,
+              jdouble,
+              jdouble)>("setClipPresentationDip");
   method(
       self(),
       presentation.clip.x,
@@ -1905,34 +1879,24 @@ void JSmoothClipView::applyClipV2(const Presentation &presentation) const {
       static_cast<jint>(presentation.clip.curve),
       presentation.contentTranslateX,
       presentation.contentTranslateY,
-      presentation.contentScale);
+      presentation.contentScale,
+      presentation.shadow.enabled,
+      presentation.shadow.red,
+      presentation.shadow.green,
+      presentation.shadow.blue,
+      presentation.shadow.alpha,
+      presentation.shadow.offsetX,
+      presentation.shadow.offsetY,
+      presentation.shadow.blurRadius,
+      presentation.shadow.spreadDistance);
 }
 
 void JSmoothClipView::applyClipPx(
     const NormalizedClip &clip,
     double contentTranslateXPx,
-    double contentTranslateYPx) const {
-  static const auto method =
-      javaClassStatic()
-          ->getMethod<void(
-              jfloat, jfloat, jfloat, jfloat, jfloat, jfloat, jfloat)>(
-              "setClipPresentationPx");
-  method(
-      self(),
-      static_cast<jfloat>(clip.left),
-      static_cast<jfloat>(clip.top),
-      static_cast<jfloat>(clip.right),
-      static_cast<jfloat>(clip.bottom),
-      static_cast<jfloat>(clip.radius),
-      static_cast<jfloat>(contentTranslateXPx),
-      static_cast<jfloat>(contentTranslateYPx));
-}
-
-void JSmoothClipView::applyClipV2Px(
-    const NormalizedClip &clip,
-    double contentTranslateXPx,
     double contentTranslateYPx,
-    double contentScale) const {
+    double contentScale,
+    const Shadow &shadowPx) const {
   static const auto method =
       javaClassStatic()
           ->getMethod<void(
@@ -1947,7 +1911,16 @@ void JSmoothClipView::applyClipV2Px(
               jint,
               jfloat,
               jfloat,
-              jfloat)>("setClipPresentationV2Px");
+              jfloat,
+              jboolean,
+              jfloat,
+              jfloat,
+              jfloat,
+              jfloat,
+              jfloat,
+              jfloat,
+              jfloat,
+              jfloat)>("setClipPresentationPx");
   method(
       self(),
       static_cast<jfloat>(clip.left),
@@ -1961,7 +1934,16 @@ void JSmoothClipView::applyClipV2Px(
       static_cast<jint>(clip.curve),
       static_cast<jfloat>(contentTranslateXPx),
       static_cast<jfloat>(contentTranslateYPx),
-      static_cast<jfloat>(contentScale));
+      static_cast<jfloat>(contentScale),
+      shadowPx.enabled,
+      static_cast<jfloat>(shadowPx.red),
+      static_cast<jfloat>(shadowPx.green),
+      static_cast<jfloat>(shadowPx.blue),
+      static_cast<jfloat>(shadowPx.alpha),
+      static_cast<jfloat>(shadowPx.offsetX),
+      static_cast<jfloat>(shadowPx.offsetY),
+      static_cast<jfloat>(shadowPx.blurRadius),
+      static_cast<jfloat>(shadowPx.spreadDistance));
 }
 
 void registerViewAndroid(

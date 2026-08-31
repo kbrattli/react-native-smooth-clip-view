@@ -12,8 +12,6 @@ export interface NativeProps extends ViewProps {
   initialClipY: CodegenTypes.Double;
   initialClipWidth: CodegenTypes.Double;
   initialClipHeight: CodegenTypes.Double;
-  initialClipRadius: CodegenTypes.Double;
-  presentationVersion: CodegenTypes.Int32;
   initialClipTopLeftRadius: CodegenTypes.Double;
   initialClipTopRightRadius: CodegenTypes.Double;
   initialClipBottomRightRadius: CodegenTypes.Double;
@@ -22,28 +20,19 @@ export interface NativeProps extends ViewProps {
   initialContentTranslateX: CodegenTypes.Double;
   initialContentTranslateY: CodegenTypes.Double;
   initialContentScale: CodegenTypes.Double;
+  initialClipBoxShadowEnabled: boolean;
+  initialClipBoxShadowRed: CodegenTypes.Double;
+  initialClipBoxShadowGreen: CodegenTypes.Double;
+  initialClipBoxShadowBlue: CodegenTypes.Double;
+  initialClipBoxShadowAlpha: CodegenTypes.Double;
+  initialClipBoxShadowOffsetX: CodegenTypes.Double;
+  initialClipBoxShadowOffsetY: CodegenTypes.Double;
+  initialClipBoxShadowBlurRadius: CodegenTypes.Double;
+  initialClipBoxShadowSpreadDistance: CodegenTypes.Double;
 }
 
 interface NativeCommands {
-  setClipGeometry: (
-    viewRef: React.ElementRef<HostComponent<NativeProps>>,
-    x: CodegenTypes.Double,
-    y: CodegenTypes.Double,
-    width: CodegenTypes.Double,
-    height: CodegenTypes.Double,
-    radius: CodegenTypes.Double
-  ) => void;
   setClipPresentation: (
-    viewRef: React.ElementRef<HostComponent<NativeProps>>,
-    x: CodegenTypes.Double,
-    y: CodegenTypes.Double,
-    width: CodegenTypes.Double,
-    height: CodegenTypes.Double,
-    radius: CodegenTypes.Double,
-    contentTranslateX: CodegenTypes.Double,
-    contentTranslateY: CodegenTypes.Double
-  ) => void;
-  setClipPresentationV2: (
     viewRef: React.ElementRef<HostComponent<NativeProps>>,
     x: CodegenTypes.Double,
     y: CodegenTypes.Double,
@@ -56,16 +45,21 @@ interface NativeCommands {
     curveCode: CodegenTypes.Int32,
     contentTranslateX: CodegenTypes.Double,
     contentTranslateY: CodegenTypes.Double,
-    contentScale: CodegenTypes.Double
+    contentScale: CodegenTypes.Double,
+    shadowEnabled: boolean,
+    shadowRed: CodegenTypes.Double,
+    shadowGreen: CodegenTypes.Double,
+    shadowBlue: CodegenTypes.Double,
+    shadowAlpha: CodegenTypes.Double,
+    shadowOffsetX: CodegenTypes.Double,
+    shadowOffsetY: CodegenTypes.Double,
+    shadowBlurRadius: CodegenTypes.Double,
+    shadowSpreadDistance: CodegenTypes.Double
   ) => void;
 }
 
 export const Commands: NativeCommands = codegenNativeCommands<NativeCommands>({
-  supportedCommands: [
-    'setClipGeometry',
-    'setClipPresentation',
-    'setClipPresentationV2',
-  ],
+  supportedCommands: ['setClipPresentation'],
 });
 
 export default codegenNativeComponent<NativeProps>(

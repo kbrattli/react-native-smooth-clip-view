@@ -28,9 +28,9 @@ export type GalleryPresentationScalars = readonly [
 ];
 
 /**
- * The gallery uses SmoothClip's complete V2 presentation as its sole geometry
+ * The gallery uses SmoothClip's complete presentation as its sole geometry
  * owner. Keeping this conversion beside the geometry prevents a gesture path
- * from accidentally falling back to V1 and dropping the content-scale frame.
+ * from dropping the content-scale frame.
  */
 export function resolveGalleryPresentationScalars(
   presentation: GalleryPresentation
@@ -71,7 +71,7 @@ function clamp(value: number, minimum: number, maximum: number) {
 /**
  * Converts the requested aperture into the exact host-visible aperture while
  * leaving the content transform untouched. Native performs the same clipping
- * for streamed writes, but an autonomous V2 `from` must already be normalized
+ * for streamed writes, but an autonomous `from` must already be normalized
  * so preflight can prove that every animation frame is host-independent.
  */
 export function normalizeGalleryPresentationToHost(

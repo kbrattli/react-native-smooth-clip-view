@@ -1,3 +1,4 @@
+/* eslint-disable no-bitwise -- deterministic stress data uses integer hashing */
 export const STRESS_HOST_COUNT = 10;
 export const STRESS_ROWS_PER_HOST = 12;
 export const STRESS_IMAGE_LAYER_COUNT = 6;
@@ -60,8 +61,10 @@ function createRows(hostIndex: number): readonly StressRowData[] {
       key: `stress-${hostIndex}-row-${rowIndex}`,
       markers: createValues(STRESS_MARKER_COUNT, seed + 23),
       rowIndex,
-      traces: Array.from({ length: STRESS_TRACE_COUNT }, (_, traceIndex) =>
-        createValues(STRESS_MARKER_COUNT, seed + 101 + traceIndex * 1_003)
+      traces: Array.from(
+        { length: STRESS_TRACE_COUNT },
+        (_unused, traceIndex) =>
+          createValues(STRESS_MARKER_COUNT, seed + 101 + traceIndex * 1_003)
       ),
     };
   });

@@ -29,22 +29,20 @@ class SmoothClipModule(context: ReactApplicationContext) :
         SmoothClipBindings.nativeInvalidate()
     }
 
-    override fun getPresentationProtocolVersion(): Double = 2.0
-
     // Static complex paths are supported, but autonomous animation remains a
     // measured capability. Keep it disabled until the physical-device path
     // sampling and frame-time gates are run for this release.
     override fun supportsAutonomousComplexPathAnimation(): Boolean = false
 
-    override fun beginGroupInteractionV2(driverIds: ReadableArray): WritableArray =
+    override fun beginGroupInteraction(driverIds: ReadableArray): WritableArray =
         Arguments.createArray()
 
-    override fun snapshotGroupV2(driverIds: ReadableArray): WritableArray =
+    override fun snapshotGroup(driverIds: ReadableArray): WritableArray =
         Arguments.createArray()
 
-    override fun setClipPresentationBatchV2(entries: ReadableArray): Boolean = false
+    override fun setClipPresentationBatch(entries: ReadableArray): Boolean = false
 
-    override fun animateTimingGroupV2(
+    override fun animateTimingGroup(
         controllerId: Double,
         entries: ReadableArray,
         durationMs: Double,
@@ -56,7 +54,7 @@ class SmoothClipModule(context: ReactApplicationContext) :
         suspensionPolicy: Double,
     ): Double = 0.0
 
-    override fun animateSpringGroupV2(
+    override fun animateSpringGroup(
         controllerId: Double,
         entries: ReadableArray,
         mass: Double,
@@ -68,7 +66,7 @@ class SmoothClipModule(context: ReactApplicationContext) :
         suspensionPolicy: Double,
     ): Double = 0.0
 
-    override fun animateKeyframesGroupV2(
+    override fun animateKeyframesGroup(
         controllerId: Double,
         entries: ReadableArray,
         durationMs: Double,
@@ -76,25 +74,19 @@ class SmoothClipModule(context: ReactApplicationContext) :
         suspensionPolicy: Double,
     ): Double = 0.0
 
-    override fun cancelAnimationGroupV2(
+    override fun cancelAnimationGroup(
         groupId: Double,
         behavior: Double,
     ): WritableArray = Arguments.createArray()
 
     override fun setClipPresentation(
         driverId: Double,
-        x: Double,
-        y: Double,
-        width: Double,
-        height: Double,
-        radius: Double,
-        contentTranslateX: Double,
-        contentTranslateY: Double,
+        presentation: ReadableArray,
         takeOwnership: Boolean,
         overridePendingAnimation: Boolean,
     ) = Unit
 
-    override fun setClipPresentationV2(
+    override fun setClipPresentationScalars(
         driverId: Double,
         x: Double,
         y: Double,
@@ -108,71 +100,20 @@ class SmoothClipModule(context: ReactApplicationContext) :
         contentTranslateX: Double,
         contentTranslateY: Double,
         contentScale: Double,
-        takeOwnership: Boolean,
         overridePendingAnimation: Boolean,
+        recordVelocity: Boolean,
     ) = Unit
 
     override fun beginInteraction(driverId: Double): WritableArray =
         Arguments.createArray()
 
-    override fun beginInteractionV2(driverId: Double): WritableArray =
-        Arguments.createArray()
-
-    override fun snapshotCurrentV2(driverId: Double): WritableArray =
+    override fun snapshotCurrent(driverId: Double): WritableArray =
         Arguments.createArray()
 
     override fun animateTiming(
         driverId: Double,
-        hasInteractiveStart: Boolean,
-        startX: Double,
-        startY: Double,
-        startWidth: Double,
-        startHeight: Double,
-        startRadius: Double,
-        startContentTranslateX: Double,
-        startContentTranslateY: Double,
-        x: Double,
-        y: Double,
-        width: Double,
-        height: Double,
-        radius: Double,
-        contentTranslateX: Double,
-        contentTranslateY: Double,
-        durationMs: Double,
-        controlPoint1X: Double,
-        controlPoint1Y: Double,
-        controlPoint2X: Double,
-        controlPoint2Y: Double,
-        reduceMotion: Double,
-    ): Double = 0.0
-
-    override fun animateTimingV2(
-        driverId: Double,
-        hasInteractiveStart: Boolean,
-        startX: Double,
-        startY: Double,
-        startWidth: Double,
-        startHeight: Double,
-        startTopLeftRadius: Double,
-        startTopRightRadius: Double,
-        startBottomRightRadius: Double,
-        startBottomLeftRadius: Double,
-        startCurveCode: Double,
-        startContentTranslateX: Double,
-        startContentTranslateY: Double,
-        startContentScale: Double,
-        x: Double,
-        y: Double,
-        width: Double,
-        height: Double,
-        topLeftRadius: Double,
-        topRightRadius: Double,
-        bottomRightRadius: Double,
-        bottomLeftRadius: Double,
-        curveCode: Double,
-        contentTranslateX: Double,
-        contentTranslateY: Double,
-        contentScale: Double,
+        start: ReadableArray,
+        target: ReadableArray,
         durationMs: Double,
         controlPoint1X: Double,
         controlPoint1Y: Double,
@@ -183,56 +124,8 @@ class SmoothClipModule(context: ReactApplicationContext) :
 
     override fun animateSpring(
         driverId: Double,
-        hasInteractiveStart: Boolean,
-        startX: Double,
-        startY: Double,
-        startWidth: Double,
-        startHeight: Double,
-        startRadius: Double,
-        startContentTranslateX: Double,
-        startContentTranslateY: Double,
-        x: Double,
-        y: Double,
-        width: Double,
-        height: Double,
-        radius: Double,
-        contentTranslateX: Double,
-        contentTranslateY: Double,
-        mass: Double,
-        stiffness: Double,
-        damping: Double,
-        initialVelocity: Double,
-        inheritVelocity: Boolean,
-        reduceMotion: Double,
-    ): Double = 0.0
-
-    override fun animateSpringV2(
-        driverId: Double,
-        hasInteractiveStart: Boolean,
-        startX: Double,
-        startY: Double,
-        startWidth: Double,
-        startHeight: Double,
-        startTopLeftRadius: Double,
-        startTopRightRadius: Double,
-        startBottomRightRadius: Double,
-        startBottomLeftRadius: Double,
-        startCurveCode: Double,
-        startContentTranslateX: Double,
-        startContentTranslateY: Double,
-        startContentScale: Double,
-        x: Double,
-        y: Double,
-        width: Double,
-        height: Double,
-        topLeftRadius: Double,
-        topRightRadius: Double,
-        bottomRightRadius: Double,
-        bottomLeftRadius: Double,
-        curveCode: Double,
-        contentTranslateX: Double,
-        contentTranslateY: Double,
-        contentScale: Double,
+        start: ReadableArray,
+        target: ReadableArray,
         mass: Double,
         stiffness: Double,
         damping: Double,
@@ -243,152 +136,8 @@ class SmoothClipModule(context: ReactApplicationContext) :
 
     override fun animateKeyframes(
         driverId: Double,
-        hasInteractiveStart: Boolean,
-        startX: Double,
-        startY: Double,
-        startWidth: Double,
-        startHeight: Double,
-        startRadius: Double,
-        startContentTranslateX: Double,
-        startContentTranslateY: Double,
-        x: Double,
-        y: Double,
-        width: Double,
-        height: Double,
-        radius: Double,
-        contentTranslateX: Double,
-        contentTranslateY: Double,
-        durationMs: Double,
-        frames: ReadableArray,
-        reduceMotion: Double,
-    ): Double = 0.0
-
-    override fun animateKeyframesV2(
-        driverId: Double,
-        hasInteractiveStart: Boolean,
-        startX: Double,
-        startY: Double,
-        startWidth: Double,
-        startHeight: Double,
-        startTopLeftRadius: Double,
-        startTopRightRadius: Double,
-        startBottomRightRadius: Double,
-        startBottomLeftRadius: Double,
-        startCurveCode: Double,
-        startContentTranslateX: Double,
-        startContentTranslateY: Double,
-        startContentScale: Double,
-        x: Double,
-        y: Double,
-        width: Double,
-        height: Double,
-        topLeftRadius: Double,
-        topRightRadius: Double,
-        bottomRightRadius: Double,
-        bottomLeftRadius: Double,
-        curveCode: Double,
-        contentTranslateX: Double,
-        contentTranslateY: Double,
-        contentScale: Double,
-        durationMs: Double,
-        frames: ReadableArray,
-        reduceMotion: Double,
-    ): Double = 0.0
-
-    override fun animateTimingFromV2(
-        driverId: Double,
-        startX: Double,
-        startY: Double,
-        startWidth: Double,
-        startHeight: Double,
-        startTopLeftRadius: Double,
-        startTopRightRadius: Double,
-        startBottomRightRadius: Double,
-        startBottomLeftRadius: Double,
-        startCurveCode: Double,
-        startContentTranslateX: Double,
-        startContentTranslateY: Double,
-        startContentScale: Double,
-        x: Double,
-        y: Double,
-        width: Double,
-        height: Double,
-        topLeftRadius: Double,
-        topRightRadius: Double,
-        bottomRightRadius: Double,
-        bottomLeftRadius: Double,
-        curveCode: Double,
-        contentTranslateX: Double,
-        contentTranslateY: Double,
-        contentScale: Double,
-        durationMs: Double,
-        controlPoint1X: Double,
-        controlPoint1Y: Double,
-        controlPoint2X: Double,
-        controlPoint2Y: Double,
-        reduceMotion: Double,
-    ): Double = 0.0
-
-    override fun animateSpringFromV2(
-        driverId: Double,
-        startX: Double,
-        startY: Double,
-        startWidth: Double,
-        startHeight: Double,
-        startTopLeftRadius: Double,
-        startTopRightRadius: Double,
-        startBottomRightRadius: Double,
-        startBottomLeftRadius: Double,
-        startCurveCode: Double,
-        startContentTranslateX: Double,
-        startContentTranslateY: Double,
-        startContentScale: Double,
-        x: Double,
-        y: Double,
-        width: Double,
-        height: Double,
-        topLeftRadius: Double,
-        topRightRadius: Double,
-        bottomRightRadius: Double,
-        bottomLeftRadius: Double,
-        curveCode: Double,
-        contentTranslateX: Double,
-        contentTranslateY: Double,
-        contentScale: Double,
-        mass: Double,
-        stiffness: Double,
-        damping: Double,
-        initialVelocity: Double,
-        inheritVelocity: Boolean,
-        reduceMotion: Double,
-    ): Double = 0.0
-
-    override fun animateKeyframesFromV2(
-        driverId: Double,
-        startX: Double,
-        startY: Double,
-        startWidth: Double,
-        startHeight: Double,
-        startTopLeftRadius: Double,
-        startTopRightRadius: Double,
-        startBottomRightRadius: Double,
-        startBottomLeftRadius: Double,
-        startCurveCode: Double,
-        startContentTranslateX: Double,
-        startContentTranslateY: Double,
-        startContentScale: Double,
-        x: Double,
-        y: Double,
-        width: Double,
-        height: Double,
-        topLeftRadius: Double,
-        topRightRadius: Double,
-        bottomRightRadius: Double,
-        bottomLeftRadius: Double,
-        curveCode: Double,
-        contentTranslateX: Double,
-        contentTranslateY: Double,
-        contentScale: Double,
+        start: ReadableArray,
+        target: ReadableArray,
         durationMs: Double,
         frames: ReadableArray,
         reduceMotion: Double,
@@ -397,12 +146,6 @@ class SmoothClipModule(context: ReactApplicationContext) :
     override fun rejectAnimation(driverId: Double): Double = 0.0
 
     override fun cancelAnimation(
-        driverId: Double,
-        animationId: Double,
-        behavior: Double,
-    ): WritableArray = Arguments.createArray()
-
-    override fun cancelAnimationV2(
         driverId: Double,
         animationId: Double,
         behavior: Double,

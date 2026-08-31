@@ -16,7 +16,9 @@
 #import <react/renderer/components/SmoothClipViewSpec/Props.h>
 #import <react/renderer/components/SmoothClipViewSpec/RCTComponentViewHelpers.h>
 
+#include <algorithm>
 #include <cfloat>
+#include <cmath>
 
 using namespace facebook::react;
 
@@ -80,7 +82,7 @@ static SmoothClipCornerCurve SmoothClipPresentationCurve(
       : SmoothClipCornerCurveCircular;
 }
 
-static bool SmoothClipBuildPresentationV2(
+static bool SmoothClipBuildPresentation(
     double x,
     double y,
     double width,
@@ -93,13 +95,30 @@ static bool SmoothClipBuildPresentationV2(
     double contentTranslateX,
     double contentTranslateY,
     double contentScale,
+    BOOL shadowEnabled,
+    double shadowRed,
+    double shadowGreen,
+    double shadowBlue,
+    double shadowAlpha,
+    double shadowOffsetX,
+    double shadowOffsetY,
+    double shadowBlurRadius,
+    double shadowSpreadDistance,
     smoothclip::Presentation *result) {
   if (result == nullptr || !isfinite(x) || !isfinite(y) ||
       !isfinite(width) || !isfinite(height) ||
       !isfinite(topLeftRadius) || !isfinite(topRightRadius) ||
       !isfinite(bottomRightRadius) || !isfinite(bottomLeftRadius) ||
       !isfinite(contentTranslateX) || !isfinite(contentTranslateY) ||
-      !isfinite(contentScale) || contentScale <= 0 ||
+      !isfinite(contentScale) || !isfinite(shadowRed) ||
+      !isfinite(shadowGreen) || !isfinite(shadowBlue) ||
+      !isfinite(shadowAlpha) ||
+      !isfinite(shadowOffsetX) || !isfinite(shadowOffsetY) ||
+      !isfinite(shadowBlurRadius) || !isfinite(shadowSpreadDistance) ||
+      contentScale <= 0 || shadowRed < 0 || shadowRed > 1 ||
+      shadowGreen < 0 || shadowGreen > 1 ||
+      shadowBlue < 0 || shadowBlue > 1 ||
+      shadowAlpha < 0 || shadowAlpha > 1 || shadowBlurRadius < 0 ||
       (curveCode != static_cast<NSInteger>(smoothclip::ClipCurve::Circular) &&
        curveCode != static_cast<NSInteger>(smoothclip::ClipCurve::Continuous))) {
     return false;
@@ -115,9 +134,114 @@ static bool SmoothClipBuildPresentationV2(
   geometry.bottomRightRadius = bottomRightRadius;
   geometry.bottomLeftRadius = bottomLeftRadius;
   geometry.curve = static_cast<smoothclip::ClipCurve>(curveCode);
+  const smoothclip::Shadow shadow{
+      shadowEnabled,
+      shadowRed,
+      shadowGreen,
+      shadowBlue,
+      shadowAlpha,
+      shadowOffsetX,
+      shadowOffsetY,
+      shadowBlurRadius,
+      shadowSpreadDistance};
   *result = {
-      geometry, contentTranslateX, contentTranslateY, contentScale};
+      geometry, contentTranslateX, contentTranslateY, contentScale, shadow};
   return true;
+}
+
+static bool SmoothBoxShadowEqual(
+    const smoothclip::Shadow &first,
+    const smoothclip::Shadow &second) {
+  return first.enabled == second.enabled &&
+      first.red == second.red && first.green == second.green &&
+      first.blue == second.blue && first.alpha == second.alpha &&
+      first.offsetX == second.offsetX && first.offsetY == second.offsetY &&
+      first.blurRadius == second.blurRadius &&
+      first.spreadDistance == second.spreadDistance;
+}
+
+static bool SmoothBoxShadowVisible(
+    SmoothNormalizedClipGeometry geometry,
+    const smoothclip::Shadow &shadow) {
+  return shadow.enabled && shadow.alpha > 0 && !CGRectIsEmpty(geometry.rect);
+}
+
+static bool SmoothBoxShadowColorEqual(
+    const smoothclip::Shadow &first,
+    const smoothclip::Shadow &second) {
+  return first.red == second.red && first.green == second.green &&
+      first.blue == second.blue && first.alpha == second.alpha;
+}
+
+static bool SmoothBoxShadowPathInputEqual(
+    SmoothNormalizedClipGeometry firstGeometry,
+    const smoothclip::Shadow &firstShadow,
+    SmoothNormalizedClipGeometry secondGeometry,
+    const smoothclip::Shadow &secondShadow) {
+  return CGRectEqualToRect(firstGeometry.rect, secondGeometry.rect) &&
+      SmoothClipCornerRadiiEqual(
+          firstGeometry.radii, secondGeometry.radii) &&
+      firstGeometry.curve == secondGeometry.curve &&
+      firstShadow.spreadDistance == secondShadow.spreadDistance;
+}
+
+static bool SmoothClipAllObjectsEqual(NSArray *values) {
+  if (values.count < 2) return true;
+  id first = values.firstObject;
+  for (NSUInteger index = 1; index < values.count; index++) {
+    if (![first isEqual:values[index]]) return false;
+  }
+  return true;
+}
+
+static bool SmoothClipAllPathsEqual(NSArray *values) {
+  if (values.count < 2) return true;
+  CGPathRef first = (__bridge CGPathRef)values.firstObject;
+  for (NSUInteger index = 1; index < values.count; index++) {
+    if (!CGPathEqualToPath(first, (__bridge CGPathRef)values[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool SmoothClipAllColorsEqual(NSArray *values) {
+  if (values.count < 2) return true;
+  CGColorRef first = (__bridge CGColorRef)values.firstObject;
+  for (NSUInteger index = 1; index < values.count; index++) {
+    if (!CGColorEqualToColor(first, (__bridge CGColorRef)values[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static CGFloat SmoothClipAdjustedShadowRadius(
+    CGFloat radius,
+    CGFloat spread) {
+  const CGFloat magnitude = ABS(spread);
+  CGFloat multiplier = 1;
+  if (magnitude > 0 && radius < magnitude) {
+    multiplier = 1 + pow(radius / magnitude - 1, 3);
+  }
+  return MAX(0, radius + spread * multiplier);
+}
+
+static CGPathRef SmoothClipCreateShadowPath(
+    SmoothNormalizedClipGeometry geometry,
+    const smoothclip::Shadow &shadow) {
+  const CGFloat spread = shadow.spreadDistance;
+  CGRect rect = CGRectInset(geometry.rect, -spread, -spread);
+  if (CGRectGetWidth(rect) <= 0 || CGRectGetHeight(rect) <= 0) {
+    rect = CGRectZero;
+  }
+  const SmoothClipCornerRadii radii = {
+      SmoothClipAdjustedShadowRadius(geometry.radii.topLeft, spread),
+      SmoothClipAdjustedShadowRadius(geometry.radii.topRight, spread),
+      SmoothClipAdjustedShadowRadius(geometry.radii.bottomRight, spread),
+      SmoothClipAdjustedShadowRadius(geometry.radii.bottomLeft, spread),
+  };
+  return SmoothClipCreateRoundedRectPath(rect, radii, geometry.curve);
 }
 
 static NSString *SmoothClipCALayerCornerCurve(
@@ -192,6 +316,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
 }
 
 @implementation SmoothClipView {
+  CALayer *_shadowLayer;
   SmoothClipContainerView *_clipContainer;
   SmoothClipContainerView *_contentContainer;
   CAShapeLayer *_unequalCornerMask;
@@ -209,6 +334,8 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   CGPoint _normalizedContentTranslation;
   CGFloat _requestedContentScale;
   CGFloat _normalizedContentScale;
+  smoothclip::Shadow _requestedShadow;
+  smoothclip::Shadow _normalizedShadow;
   uint64_t _driverId;
   BOOL _hasLayout;
   BOOL _commandIsAuthoritative;
@@ -277,6 +404,9 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     [_clipContainer addSubview:_contentContainer];
     [self addSubview:_clipContainer];
 
+    _shadowLayer = nil;
+    // Created lazily so the common clipping-only path owns no shadow layer.
+
     _unequalCornerMask = [CAShapeLayer layer];
     _unequalCornerMask.actions = @{
       @"path": [NSNull null],
@@ -300,6 +430,8 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     _normalizedContentTranslation = CGPointZero;
     _requestedContentScale = 1;
     _normalizedContentScale = 1;
+    _requestedShadow = {};
+    _normalizedShadow = {};
     _driverId = 0;
     _hasLayout = NO;
     _commandIsAuthoritative = NO;
@@ -364,6 +496,51 @@ static std::array<double, 11> SmoothClipVelocityChannels(
       presentation.contentTranslateX,
       presentation.contentTranslateY);
   _requestedContentScale = presentation.contentScale;
+  _requestedShadow = presentation.shadow;
+}
+
+- (CGColorRef)colorForShadow:(const smoothclip::Shadow &)shadow {
+  return [UIColor colorWithRed:smoothclip::clamp01(shadow.red)
+                         green:smoothclip::clamp01(shadow.green)
+                          blue:smoothclip::clamp01(shadow.blue)
+                         alpha:smoothclip::clamp01(shadow.alpha)].CGColor;
+}
+
+- (CALayer *)ensureShadowLayer {
+  if (_shadowLayer != nil) return _shadowLayer;
+  _shadowLayer = [CALayer layer];
+  _shadowLayer.masksToBounds = NO;
+  _shadowLayer.actions = @{
+    @"shadowPath": [NSNull null],
+    @"shadowColor": [NSNull null],
+    @"shadowOpacity": [NSNull null],
+    @"shadowRadius": [NSNull null],
+    @"shadowOffset": [NSNull null],
+    @"bounds": [NSNull null],
+    @"position": [NSNull null],
+  };
+  [self.layer insertSublayer:_shadowLayer below:_clipContainer.layer];
+  return _shadowLayer;
+}
+
+- (void)writeShadow:(const smoothclip::Shadow &)shadow
+            geometry:(SmoothNormalizedClipGeometry)geometry {
+  _normalizedShadow = shadow;
+  if (!shadow.enabled || CGRectIsEmpty(geometry.rect) || shadow.alpha <= 0) {
+    if (_shadowLayer != nil) _shadowLayer.shadowOpacity = 0;
+    return;
+  }
+  CALayer *shadowLayer = [self ensureShadowLayer];
+  shadowLayer.bounds = self.bounds;
+  shadowLayer.position = CGPointMake(
+      CGRectGetMidX(self.bounds), CGRectGetMidY(self.bounds));
+  CGPathRef path = SmoothClipCreateShadowPath(geometry, shadow);
+  shadowLayer.shadowPath = path;
+  CGPathRelease(path);
+  shadowLayer.shadowColor = [self colorForShadow:shadow];
+  shadowLayer.shadowOpacity = 1;
+  shadowLayer.shadowRadius = MAX(0, shadow.blurRadius) / 2.0;
+  shadowLayer.shadowOffset = CGSizeMake(shadow.offsetX, shadow.offsetY);
 }
 
 - (BOOL)normalizedRequestedGeometry:(SmoothNormalizedClipGeometry *)geometry {
@@ -379,7 +556,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   }
 #endif
   const CGSize hostSize = self.bounds.size;
-  const BOOL valid = SmoothClipNormalizeGeometryV2(
+  const BOOL valid = SmoothClipNormalizeGeometry(
       CGRectGetMinX(_requestedClip),
       CGRectGetMinY(_requestedClip),
       CGRectGetWidth(_requestedClip),
@@ -518,6 +695,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
       CGPointEqualToPoint(
           _normalizedContentTranslation, _requestedContentTranslation) &&
       _normalizedContentScale == _requestedContentScale &&
+      SmoothBoxShadowEqual(_normalizedShadow, _requestedShadow) &&
       !visibilityChanged) {
     return;
   }
@@ -525,6 +703,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
          hasExplicitRadii:_requestedHasExplicitRadii];
   [self writeContentTranslation:_requestedContentTranslation
                            scale:_requestedContentScale];
+  [self writeShadow:_requestedShadow geometry:geometry];
   [self syncVisibilityForRect:geometry.rect];
 }
 
@@ -602,7 +781,34 @@ static std::array<double, 11> SmoothClipVelocityChannels(
       ? smoothclip::ClipCurve::Continuous
       : smoothclip::ClipCurve::Circular;
   const CGFloat contentScale = hypot(transform.a, transform.b);
-  return {geometry, transform.tx, transform.ty, contentScale};
+  smoothclip::Shadow shadow = _normalizedShadow;
+  CALayer *shadowLayer = _activeAnimationId != 0 && _shadowLayer != nil
+      ? (CALayer *)_shadowLayer.presentationLayer
+      : _shadowLayer;
+  if (shadowLayer == nil) return {
+      geometry, transform.tx, transform.ty, contentScale, shadow};
+  shadow.enabled = _normalizedShadow.enabled || shadowLayer.shadowOpacity > 0;
+  shadow.blurRadius = shadowLayer.shadowRadius * 2.0;
+  shadow.offsetX = shadowLayer.shadowOffset.width;
+  shadow.offsetY = shadowLayer.shadowOffset.height;
+  CGColorRef color = shadowLayer.shadowColor;
+  if (color != nil) {
+    UIColor *uiColor = [UIColor colorWithCGColor:color];
+    CGFloat red = 0, green = 0, blue = 0, alpha = 0;
+    if ([uiColor getRed:&red green:&green blue:&blue alpha:&alpha]) {
+      shadow.red = red;
+      shadow.green = green;
+      shadow.blue = blue;
+      shadow.alpha = alpha;
+    }
+  }
+  CGPathRef shadowPath = shadowLayer.shadowPath;
+  if (shadowPath != nil && !CGRectIsEmpty(visibleRect)) {
+    const CGRect shadowBounds = CGPathGetBoundingBox(shadowPath);
+    shadow.spreadDistance =
+        CGRectGetMinX(visibleRect) - CGRectGetMinX(shadowBounds);
+  }
+  return {geometry, transform.tx, transform.ty, contentScale, shadow};
 }
 
 - (BOOL)smoothClipIsJoinable {
@@ -687,6 +893,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   [_clipContainer.layer removeAnimationForKey:@"smoothClip.geometry"];
   [_contentContainer.layer removeAnimationForKey:@"smoothClip.content"];
   [_unequalCornerMask removeAnimationForKey:@"smoothClip.mask"];
+  [_shadowLayer removeAnimationForKey:@"smoothClip.shadow"];
   [self applyStaticCornerRepresentation:[self normalizedGeometryValue]];
   _ignoreAnimationCallback = NO;
   _activeAnimationId = 0;
@@ -738,11 +945,13 @@ static std::array<double, 11> SmoothClipVelocityChannels(
             (SmoothNormalizedClipGeometry)fromGeometry
                    fromContentTranslation:(CGPoint)fromContentTranslation
                          fromContentScale:(CGFloat)fromContentScale
+                              fromShadow:(smoothclip::Shadow)fromShadow
                                toGeometry:
             (SmoothNormalizedClipGeometry)toGeometry
                      hasExplicitToRadii:(BOOL)hasExplicitToRadii
                      toContentTranslation:(CGPoint)toContentTranslation
                            toContentScale:(CGFloat)toContentScale
+                                toShadow:(smoothclip::Shadow)toShadow
                                  duration:(CFTimeInterval)duration
                             sharedBeginTime:(CFTimeInterval)sharedBeginTime {
   const int32_t animationId = _activeAnimationId;
@@ -774,6 +983,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   [self writeLayerGeometry:toGeometry
          hasExplicitRadii:hasExplicitToRadii];
   [self writeContentTranslation:toContentTranslation scale:toContentScale];
+  [self writeShadow:toShadow geometry:toGeometry];
   if (usesMask) {
     // Keep one mask representation for the full interval, including an
     // unequal→uniform transition. Switching layer.mask mid-animation would
@@ -791,9 +1001,40 @@ static std::array<double, 11> SmoothClipVelocityChannels(
       ? SmoothClipCreateRoundedRectPath(
             toGeometry.rect, toGeometry.radii, toGeometry.curve)
       : nil;
+  const BOOL fromShadowVisible =
+      SmoothBoxShadowVisible(fromGeometry, fromShadow);
+  const BOOL toShadowVisible =
+      SmoothBoxShadowVisible(toGeometry, toShadow);
+  const BOOL hasVisibleShadow = fromShadowVisible || toShadowVisible;
+  const BOOL animatesShadowPath = hasVisibleShadow &&
+      !SmoothBoxShadowPathInputEqual(
+          fromGeometry, fromShadow, toGeometry, toShadow);
+  const BOOL animatesShadowColor = hasVisibleShadow &&
+      !SmoothBoxShadowColorEqual(fromShadow, toShadow);
+  const BOOL animatesShadowOpacity =
+      fromShadowVisible != toShadowVisible;
+  const BOOL animatesShadowRadius = hasVisibleShadow &&
+      fromShadow.blurRadius != toShadow.blurRadius;
+  const BOOL animatesShadowOffset = hasVisibleShadow &&
+      (fromShadow.offsetX != toShadow.offsetX ||
+       fromShadow.offsetY != toShadow.offsetY);
+  const BOOL animatesShadow = animatesShadowPath || animatesShadowColor ||
+      animatesShadowOpacity || animatesShadowRadius || animatesShadowOffset;
+  if (animatesShadow) [self ensureShadowLayer];
+  CGPathRef fromShadowPath = animatesShadowPath
+      ? SmoothClipCreateShadowPath(fromGeometry, fromShadow)
+      : nil;
+  CGPathRef toShadowPath = animatesShadowPath
+      ? SmoothClipCreateShadowPath(toGeometry, toShadow)
+      : nil;
+  const float fromShadowOpacity = fromShadowVisible ? 1 : 0;
+  const float toShadowOpacity = toShadowVisible ? 1 : 0;
 
   CAAnimationGroup *group = [CAAnimationGroup animation];
   CAAnimationGroup *contentGroup = [CAAnimationGroup animation];
+  CAAnimationGroup *shadowGroup = animatesShadow
+      ? [CAAnimationGroup animation]
+      : nil;
   CAAnimation *maskAnimation = nil;
   if (_activeAnimationKind == 1) {
     CAMediaTimingFunction *timing = [CAMediaTimingFunction
@@ -844,6 +1085,38 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     }
     contentGroup.animations = contentAnimations;
     contentGroup.duration = duration;
+    if (animatesShadow) {
+      NSMutableArray<CAAnimation *> *shadowAnimations = [NSMutableArray array];
+      if (animatesShadowPath) [shadowAnimations addObject:
+          [self basicAnimationForKeyPath:@"shadowPath"
+                           fromValue:(__bridge id)fromShadowPath
+                             toValue:(__bridge id)toShadowPath
+                      timingFunction:timing]];
+      if (animatesShadowColor) [shadowAnimations addObject:
+          [self basicAnimationForKeyPath:@"shadowColor"
+                           fromValue:(__bridge id)[self colorForShadow:fromShadow]
+                             toValue:(__bridge id)[self colorForShadow:toShadow]
+                      timingFunction:timing]];
+      if (animatesShadowOpacity) [shadowAnimations addObject:
+          [self basicAnimationForKeyPath:@"shadowOpacity"
+                           fromValue:@(fromShadowOpacity)
+                             toValue:@(toShadowOpacity)
+                      timingFunction:timing]];
+      if (animatesShadowRadius) [shadowAnimations addObject:
+          [self basicAnimationForKeyPath:@"shadowRadius"
+                           fromValue:@(MAX(0, fromShadow.blurRadius) / 2.0)
+                             toValue:@(MAX(0, toShadow.blurRadius) / 2.0)
+                      timingFunction:timing]];
+      if (animatesShadowOffset) [shadowAnimations addObject:
+          [self basicAnimationForKeyPath:@"shadowOffset"
+                           fromValue:[NSValue valueWithCGSize:CGSizeMake(
+                               fromShadow.offsetX, fromShadow.offsetY)]
+                             toValue:[NSValue valueWithCGSize:CGSizeMake(
+                               toShadow.offsetX, toShadow.offsetY)]
+                      timingFunction:timing]];
+      shadowGroup.animations = shadowAnimations;
+      shadowGroup.duration = duration;
+    }
   } else {
     // `_springAnimation.initialVelocity` is the interactive motion projected
     // onto the current-to-target trajectory, normalized by that distance
@@ -928,6 +1201,43 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     }
     contentGroup.animations = contentAnimations;
     contentGroup.duration = springDuration;
+    if (animatesShadow) {
+      NSMutableArray<CAAnimation *> *shadowAnimations = [NSMutableArray array];
+      if (animatesShadowPath) [shadowAnimations addObject:
+          [self springAnimationForKeyPath:@"shadowPath"
+                            fromValue:(__bridge id)fromShadowPath
+                              toValue:(__bridge id)toShadowPath
+                             velocity:velocity
+                             duration:springDuration]];
+      if (animatesShadowColor) [shadowAnimations addObject:
+          [self springAnimationForKeyPath:@"shadowColor"
+                            fromValue:(__bridge id)[self colorForShadow:fromShadow]
+                              toValue:(__bridge id)[self colorForShadow:toShadow]
+                             velocity:velocity
+                             duration:springDuration]];
+      if (animatesShadowOpacity) [shadowAnimations addObject:
+          [self springAnimationForKeyPath:@"shadowOpacity"
+                            fromValue:@(fromShadowOpacity)
+                              toValue:@(toShadowOpacity)
+                             velocity:velocity
+                             duration:springDuration]];
+      if (animatesShadowRadius) [shadowAnimations addObject:
+          [self springAnimationForKeyPath:@"shadowRadius"
+                            fromValue:@(MAX(0, fromShadow.blurRadius) / 2.0)
+                              toValue:@(MAX(0, toShadow.blurRadius) / 2.0)
+                             velocity:velocity
+                             duration:springDuration]];
+      if (animatesShadowOffset) [shadowAnimations addObject:
+          [self springAnimationForKeyPath:@"shadowOffset"
+                            fromValue:[NSValue valueWithCGSize:CGSizeMake(
+                                fromShadow.offsetX, fromShadow.offsetY)]
+                              toValue:[NSValue valueWithCGSize:CGSizeMake(
+                                toShadow.offsetX, toShadow.offsetY)]
+                             velocity:velocity
+                             duration:springDuration]];
+      shadowGroup.animations = shadowAnimations;
+      shadowGroup.duration = springDuration;
+    }
   }
 
   if (maskAnimation != nil) {
@@ -942,6 +1252,11 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     contentGroup.beginTime = [_contentContainer.layer
         convertTime:sharedBeginTime
         fromLayer:nil];
+    if (animatesShadow) {
+      shadowGroup.beginTime = [_shadowLayer
+          convertTime:sharedBeginTime
+          fromLayer:nil];
+    }
     if (maskAnimation != nil) {
       maskAnimation.beginTime = [_unequalCornerMask
           convertTime:sharedBeginTime
@@ -961,11 +1276,16 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   [layer addAnimation:group forKey:@"smoothClip.geometry"];
   [_contentContainer.layer addAnimation:contentGroup
                                  forKey:@"smoothClip.content"];
+  if (animatesShadow) {
+    [_shadowLayer addAnimation:shadowGroup forKey:@"smoothClip.shadow"];
+  }
   if (maskAnimation != nil) {
     [_unequalCornerMask addAnimation:maskAnimation forKey:@"smoothClip.mask"];
   }
   if (fromMaskPath != nil) CGPathRelease(fromMaskPath);
   if (toMaskPath != nil) CGPathRelease(toMaskPath);
+  if (fromShadowPath != nil) CGPathRelease(fromShadowPath);
+  if (toShadowPath != nil) CGPathRelease(toShadowPath);
   _animationInstallGeneration += 1;
 }
 
@@ -998,10 +1318,12 @@ static std::array<double, 11> SmoothClipVelocityChannels(
                                          current.contentTranslateX,
                                          current.contentTranslateY)
                     fromContentScale:current.contentScale
+                         fromShadow:current.shadow
                           toGeometry:target
                 hasExplicitToRadii:_requestedHasExplicitRadii
                 toContentTranslation:_requestedContentTranslation
                       toContentScale:_requestedContentScale
+                           toShadow:_requestedShadow
                             duration:duration
                      sharedBeginTime:sharedBeginTime];
   return YES;
@@ -1101,6 +1423,12 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   _activeAnimationId = animationId;
 
   const NSUInteger frameCount = keyframes.size();
+  const BOOL hasVisibleShadowFrame = std::any_of(
+      keyframes.begin(), keyframes.end(),
+      [](const smoothclip::Keyframe &frame) {
+        return frame.presentation.shadow.enabled &&
+            frame.presentation.shadow.alpha > 0;
+      });
   const CGSize hostSize = self.bounds.size;
   NSMutableArray<NSNumber *> *times =
       [NSMutableArray arrayWithCapacity:frameCount];
@@ -1116,6 +1444,16 @@ static std::array<double, 11> SmoothClipVelocityChannels(
       [NSMutableArray arrayWithCapacity:frameCount];
   NSMutableArray *scaleValues =
       [NSMutableArray arrayWithCapacity:frameCount];
+  NSMutableArray *shadowPathValues = hasVisibleShadowFrame
+      ? [NSMutableArray arrayWithCapacity:frameCount] : nil;
+  NSMutableArray *shadowColorValues = hasVisibleShadowFrame
+      ? [NSMutableArray arrayWithCapacity:frameCount] : nil;
+  NSMutableArray *shadowOpacityValues = hasVisibleShadowFrame
+      ? [NSMutableArray arrayWithCapacity:frameCount] : nil;
+  NSMutableArray *shadowRadiusValues = hasVisibleShadowFrame
+      ? [NSMutableArray arrayWithCapacity:frameCount] : nil;
+  NSMutableArray *shadowOffsetValues = hasVisibleShadowFrame
+      ? [NSMutableArray arrayWithCapacity:frameCount] : nil;
   BOOL usesMask = NO;
   BOOL animatesScale = NO;
   SmoothClipCornerCurve firstCurve = SmoothClipCornerCurveCircular;
@@ -1128,7 +1466,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     const SmoothClipCornerCurve frameCurve =
         SmoothClipPresentationCurve(frame.presentation.clip);
     SmoothNormalizedClipGeometry normalized;
-    if (!SmoothClipNormalizeGeometryV2(
+    if (!SmoothClipNormalizeGeometry(
             frame.presentation.clip.x,
             frame.presentation.clip.y,
             frame.presentation.clip.width,
@@ -1157,6 +1495,25 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     [translateXValues addObject:@(frame.presentation.contentTranslateX)];
     [translateYValues addObject:@(frame.presentation.contentTranslateY)];
     [scaleValues addObject:@(frame.presentation.contentScale)];
+    if (hasVisibleShadowFrame) {
+      CGPathRef shadowPath = SmoothClipCreateShadowPath(
+          normalized, frame.presentation.shadow);
+      [shadowPathValues addObject:(__bridge id)shadowPath];
+      CGPathRelease(shadowPath);
+      [shadowColorValues addObject:
+          (__bridge id)[self colorForShadow:frame.presentation.shadow]];
+      [shadowOpacityValues addObject:@(
+          frame.presentation.shadow.enabled &&
+                  !CGRectIsEmpty(normalized.rect) &&
+                  frame.presentation.shadow.alpha > 0
+              ? 1
+              : 0)];
+      [shadowRadiusValues addObject:@(
+          MAX(0, frame.presentation.shadow.blurRadius) / 2.0)];
+      [shadowOffsetValues addObject:[NSValue valueWithCGSize:CGSizeMake(
+          frame.presentation.shadow.offsetX,
+          frame.presentation.shadow.offsetY)]];
+    }
   }
 
   if (usesMask) {
@@ -1168,12 +1525,27 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     }
   }
 
+  const BOOL animatesShadowPath = hasVisibleShadowFrame &&
+      !SmoothClipAllPathsEqual(shadowPathValues);
+  const BOOL animatesShadowColor = hasVisibleShadowFrame &&
+      !SmoothClipAllColorsEqual(shadowColorValues);
+  const BOOL animatesShadowOpacity = hasVisibleShadowFrame &&
+      !SmoothClipAllObjectsEqual(shadowOpacityValues);
+  const BOOL animatesShadowRadius = hasVisibleShadowFrame &&
+      !SmoothClipAllObjectsEqual(shadowRadiusValues);
+  const BOOL animatesShadowOffset = hasVisibleShadowFrame &&
+      !SmoothClipAllObjectsEqual(shadowOffsetValues);
+  const BOOL animatesShadow = animatesShadowPath || animatesShadowColor ||
+      animatesShadowOpacity || animatesShadowRadius || animatesShadowOffset;
+  if (animatesShadow) [self ensureShadowLayer];
+
   SmoothNormalizedClipGeometry target;
   if (![self normalizedRequestedGeometry:&target]) return NO;
   [self writeLayerGeometry:target
          hasExplicitRadii:_requestedHasExplicitRadii];
   [self writeContentTranslation:_requestedContentTranslation
                            scale:_requestedContentScale];
+  [self writeShadow:_requestedShadow geometry:target];
   if (usesMask) {
     [self configureUnequalCornerMaskForGeometry:target];
     _clipContainer.layer.cornerRadius = 0;
@@ -1215,6 +1587,34 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   }
   contentGroup.animations = contentAnimations;
   contentGroup.duration = group.duration;
+  CAAnimationGroup *shadowGroup = animatesShadow
+      ? [CAAnimationGroup animation]
+      : nil;
+  if (animatesShadow) {
+    NSMutableArray<CAAnimation *> *shadowAnimations = [NSMutableArray array];
+    if (animatesShadowPath) [shadowAnimations addObject:
+        [self keyframeAnimationForKeyPath:@"shadowPath"
+                               values:shadowPathValues
+                             keyTimes:times]];
+    if (animatesShadowColor) [shadowAnimations addObject:
+        [self keyframeAnimationForKeyPath:@"shadowColor"
+                               values:shadowColorValues
+                             keyTimes:times]];
+    if (animatesShadowOpacity) [shadowAnimations addObject:
+        [self keyframeAnimationForKeyPath:@"shadowOpacity"
+                               values:shadowOpacityValues
+                             keyTimes:times]];
+    if (animatesShadowRadius) [shadowAnimations addObject:
+        [self keyframeAnimationForKeyPath:@"shadowRadius"
+                               values:shadowRadiusValues
+                             keyTimes:times]];
+    if (animatesShadowOffset) [shadowAnimations addObject:
+        [self keyframeAnimationForKeyPath:@"shadowOffset"
+                               values:shadowOffsetValues
+                             keyTimes:times]];
+    shadowGroup.animations = shadowAnimations;
+    shadowGroup.duration = group.duration;
+  }
 
   CAKeyframeAnimation *maskAnimation = usesMask
       ? [self keyframeAnimationForKeyPath:@"path"
@@ -1230,6 +1630,11 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     contentGroup.beginTime = [_contentContainer.layer
         convertTime:sharedBeginTime
         fromLayer:nil];
+    if (animatesShadow) {
+      shadowGroup.beginTime = [_shadowLayer
+          convertTime:sharedBeginTime
+          fromLayer:nil];
+    }
     if (maskAnimation != nil) {
       maskAnimation.beginTime = [_unequalCornerMask
           convertTime:sharedBeginTime
@@ -1249,6 +1654,9 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   [_clipContainer.layer addAnimation:group forKey:@"smoothClip.geometry"];
   [_contentContainer.layer addAnimation:contentGroup
                                  forKey:@"smoothClip.content"];
+  if (animatesShadow) {
+    [_shadowLayer addAnimation:shadowGroup forKey:@"smoothClip.shadow"];
+  }
   if (maskAnimation != nil) {
     [_unequalCornerMask addAnimation:maskAnimation forKey:@"smoothClip.mask"];
   }
@@ -1277,6 +1685,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   _activeAnimationKind = 0;
   _animationDelegate = nil;
   [_unequalCornerMask removeAnimationForKey:@"smoothClip.mask"];
+  [_shadowLayer removeAnimationForKey:@"smoothClip.shadow"];
   [self applyStaticCornerRepresentation:[self normalizedGeometryValue]];
   [self syncVisibilityForRect:_normalizedClip];
   smoothclip::viewAnimationDidStop(
@@ -1294,39 +1703,31 @@ static std::array<double, 11> SmoothClipVelocityChannels(
       ? static_cast<uint64_t>(newProps.driverId)
       : 0;
   smoothclip::Presentation initial{};
-  if (newProps.presentationVersion == 2) {
-    if (!SmoothClipBuildPresentationV2(
-            newProps.initialClipX,
-            newProps.initialClipY,
-            newProps.initialClipWidth,
-            newProps.initialClipHeight,
-            newProps.initialClipTopLeftRadius,
-            newProps.initialClipTopRightRadius,
-            newProps.initialClipBottomRightRadius,
-            newProps.initialClipBottomLeftRadius,
-            newProps.initialClipCurve,
-            newProps.initialContentTranslateX,
-            newProps.initialContentTranslateY,
-            newProps.initialContentScale,
-            &initial)) {
-      // The initial V2 presentation is one atomic value. Do not unregister an
-      // old driver or apply a subset of valid channels when any field rejects.
-      return;
-    }
-  } else if (newProps.presentationVersion == 0 ||
-             newProps.presentationVersion == 1) {
-    // Version zero is what old JS produces when the versioned prop does not
-    // exist. Preserve that old-JS/new-native path byte-for-byte as V1.
-    initial = {
-        {newProps.initialClipX,
-         newProps.initialClipY,
-         newProps.initialClipWidth,
-         newProps.initialClipHeight,
-         newProps.initialClipRadius},
-        newProps.initialContentTranslateX,
-        newProps.initialContentTranslateY};
-  } else {
-    // A future protocol must not be silently interpreted as V1.
+  if (!SmoothClipBuildPresentation(
+          newProps.initialClipX,
+          newProps.initialClipY,
+          newProps.initialClipWidth,
+          newProps.initialClipHeight,
+          newProps.initialClipTopLeftRadius,
+          newProps.initialClipTopRightRadius,
+          newProps.initialClipBottomRightRadius,
+          newProps.initialClipBottomLeftRadius,
+          newProps.initialClipCurve,
+          newProps.initialContentTranslateX,
+          newProps.initialContentTranslateY,
+          newProps.initialContentScale,
+          newProps.initialClipBoxShadowEnabled,
+          newProps.initialClipBoxShadowRed,
+          newProps.initialClipBoxShadowGreen,
+          newProps.initialClipBoxShadowBlue,
+          newProps.initialClipBoxShadowAlpha,
+          newProps.initialClipBoxShadowOffsetX,
+          newProps.initialClipBoxShadowOffsetY,
+          newProps.initialClipBoxShadowBlurRadius,
+          newProps.initialClipBoxShadowSpreadDistance,
+          &initial)) {
+    // The initial presentation is atomic. Never apply a valid subset when one
+    // field rejects.
     return;
   }
 
@@ -1428,7 +1829,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
       _timingAnimation = {remaining * 1000.0, 0, 0, 1, 1, 2};
     }
     SmoothNormalizedClipGeometry current;
-    SmoothClipNormalizeGeometryV2(
+    SmoothClipNormalizeGeometry(
         CGRectGetMinX(visibleRect),
         CGRectGetMinY(visibleRect),
         CGRectGetWidth(visibleRect),
@@ -1445,10 +1846,12 @@ static std::array<double, 11> SmoothClipVelocityChannels(
       [self installAnimationFromGeometry:current
                   fromContentTranslation:visibleContentTranslation
                         fromContentScale:visibleContentScale
+                             fromShadow:visible.shadow
                               toGeometry:target
                     hasExplicitToRadii:_requestedHasExplicitRadii
                     toContentTranslation:_requestedContentTranslation
                               toContentScale:_requestedContentScale
+                                  toShadow:_requestedShadow
                                 duration:remaining
                          sharedBeginTime:0];
     }
@@ -1491,31 +1894,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   RCTSmoothClipViewHandleCommand(self, commandName, args);
 }
 
-- (void)setClipGeometry:(double)x
-                       y:(double)y
-                   width:(double)width
-                  height:(double)height
-                  radius:(double)radius {
-  _commandIsAuthoritative = YES;
-  [self smoothClipApplyPresentation:
-      {{x, y, width, height, radius}, 0, 0}];
-}
-
 - (void)setClipPresentation:(double)x
-                           y:(double)y
-                       width:(double)width
-                      height:(double)height
-                      radius:(double)radius
-           contentTranslateX:(double)contentTranslateX
-           contentTranslateY:(double)contentTranslateY {
-  _commandIsAuthoritative = YES;
-  [self smoothClipApplyPresentation:
-      {{x, y, width, height, radius},
-       contentTranslateX,
-       contentTranslateY}];
-}
-
-- (void)setClipPresentationV2:(double)x
                             y:(double)y
                         width:(double)width
                        height:(double)height
@@ -1526,9 +1905,18 @@ static std::array<double, 11> SmoothClipVelocityChannels(
                     curveCode:(NSInteger)curveCode
             contentTranslateX:(double)contentTranslateX
             contentTranslateY:(double)contentTranslateY
-                 contentScale:(double)contentScale {
+                 contentScale:(double)contentScale
+                shadowEnabled:(BOOL)shadowEnabled
+                     shadowRed:(double)shadowRed
+                   shadowGreen:(double)shadowGreen
+                    shadowBlue:(double)shadowBlue
+                   shadowAlpha:(double)shadowAlpha
+                 shadowOffsetX:(double)shadowOffsetX
+                 shadowOffsetY:(double)shadowOffsetY
+              shadowBlurRadius:(double)shadowBlurRadius
+              shadowSpreadDistance:(double)shadowSpreadDistance {
   smoothclip::Presentation presentation{};
-  if (!SmoothClipBuildPresentationV2(
+  if (!SmoothClipBuildPresentation(
           x,
           y,
           width,
@@ -1541,6 +1929,15 @@ static std::array<double, 11> SmoothClipVelocityChannels(
           contentTranslateX,
           contentTranslateY,
           contentScale,
+          shadowEnabled,
+          shadowRed,
+          shadowGreen,
+          shadowBlue,
+          shadowAlpha,
+          shadowOffsetX,
+          shadowOffsetY,
+          shadowBlurRadius,
+          shadowSpreadDistance,
           &presentation)) {
     return;
   }
@@ -1571,6 +1968,8 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   _normalizedContentTranslation = CGPointZero;
   _requestedContentScale = 1;
   _normalizedContentScale = 1;
+  _requestedShadow = {};
+  _normalizedShadow = {};
   _hasLayout = NO;
   _commandIsAuthoritative = NO;
 
@@ -1582,6 +1981,10 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   layer.mask = nil;
   _unequalCornerMask.path = nil;
   _contentContainer.layer.affineTransform = CGAffineTransformIdentity;
+  _shadowLayer.shadowPath = nil;
+  _shadowLayer.shadowOpacity = 0;
+  _shadowLayer.shadowRadius = 0;
+  _shadowLayer.shadowOffset = CGSizeZero;
   [self setClipContainerHidden:YES];
 }
 

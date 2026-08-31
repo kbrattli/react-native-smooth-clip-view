@@ -11,23 +11,18 @@
 
 namespace smoothclip {
 
-// fbjni wrapper around com.smoothclipview.SmoothClipView. Only the primitive
-// clip setter is invoked from native, so the Kotlin view stays a thin outline
-// clipper while all driver state lives in the shared C++ registry.
+// fbjni wrapper around com.smoothclipview.SmoothClipView. Kotlin remains a thin
+// outline clipper while all driver state lives in the shared C++ registry.
 struct JSmoothClipView : facebook::jni::JavaClass<JSmoothClipView> {
   static constexpr auto kJavaDescriptor = "Lcom/smoothclipview/SmoothClipView;";
 
   void applyClip(const Presentation &presentation) const;
-  void applyClipV2(const Presentation &presentation) const;
   void applyClipPx(
       const NormalizedClip &clip,
       double contentTranslateXPx,
-      double contentTranslateYPx) const;
-  void applyClipV2Px(
-      const NormalizedClip &clip,
-      double contentTranslateXPx,
       double contentTranslateYPx,
-      double contentScale) const;
+      double contentScale,
+      const Shadow &shadowPx) const;
 };
 
 // Called from Kotlin (SmoothClipViewManager) on the UI thread when a Fabric
@@ -63,7 +58,7 @@ void setViewLifecycleVisibilityAndroid(
 // seconds; never lets a failure unwind back into doFrame.
 void onFrameAndroid(double frameTimeS);
 
-// Non-destructive V2 snapshot for the public snapshotCurrentV2 binding.
+// Non-destructive snapshot for the public snapshotCurrent binding.
 // beginInteraction remains the explicit ownership-taking/cancelling operation.
 Presentation snapshotCurrentAndroid(uint64_t driverId);
 

@@ -6,9 +6,9 @@
 namespace smoothclip {
 
 // The two most recent interactive samples used by `initialVelocity: 'inherit'`.
-// Channels are the eleven continuous V2 presentation scalars. Scale is stored
+// Channels are the eleven geometry/content presentation scalars. Scale is stored
 // so histories remain coherent but excluded from velocity projection; each of
-// the four radius channels contributes one quarter of the legacy radius weight.
+// the four radius channels contributes one quarter of the uniform-radius weight.
 // iOS records normalized (host-clamped) geometry, Android raw DIP — the
 // projection only needs both samples and the target in the same space.
 // Shared by ios/SmoothClipView.mm and android/.../SmoothClipRegistry.cpp; a

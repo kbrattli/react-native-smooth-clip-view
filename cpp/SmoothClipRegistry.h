@@ -18,9 +18,7 @@ struct Geometry {
   double width;
   double height;
   double radius;
-  // NaN means "use radius". Keeping the overrides at the end preserves every
-  // existing five-value aggregate initializer used by the V1 implementation
-  // and its native tests.
+  // NaN means "use radius", allowing concise uniform-radius presentations.
   double topLeftRadius = std::numeric_limits<double>::quiet_NaN();
   double topRightRadius = std::numeric_limits<double>::quiet_NaN();
   double bottomRightRadius = std::numeric_limits<double>::quiet_NaN();
@@ -28,11 +26,24 @@ struct Geometry {
   ClipCurve curve = ClipCurve::Circular;
 };
 
+struct Shadow {
+  bool enabled = false;
+  double red = 0;
+  double green = 0;
+  double blue = 0;
+  double alpha = 1;
+  double offsetX = 0;
+  double offsetY = 0;
+  double blurRadius = 0;
+  double spreadDistance = 0;
+};
+
 struct Presentation {
   Geometry clip;
   double contentTranslateX;
   double contentTranslateY;
   double contentScale = 1.0;
+  Shadow shadow{};
 };
 
 struct Keyframe {
@@ -105,15 +116,6 @@ enum class GroupCancelBehavior : int32_t {
   Finish = 1,
 };
 
-// The seven-scalar V1 bridge predates protocol-V2 host-normalization
-// preflight and strict spring/duration rejection. Keep that wire contract
-// selectable without widening any V1 entry point; V2 and grouped calls retain
-// the conservative validation required for portable native ownership.
-enum class AnimationValidationMode : int32_t {
-  LegacyV1 = 1,
-  ProtocolV2 = 2,
-};
-
 using CompletionCallback =
     std::function<void(uint64_t, int32_t, bool)>;
 using GroupCompletionCallback =
@@ -137,6 +139,14 @@ void setPresentation(
     uint64_t driverId,
     Presentation presentation,
     bool takeOwnership,
+    bool overridePendingAnimation = false,
+    bool recordVelocity = true);
+void setScalars(
+    uint64_t driverId,
+    Geometry geometry,
+    double contentTranslateX,
+    double contentTranslateY,
+    double contentScale,
     bool overridePendingAnimation = false,
     bool recordVelocity = true);
 Presentation beginInteraction(uint64_t driverId);
@@ -172,25 +182,19 @@ int32_t animateTiming(
     uint64_t driverId,
     AnimationStart start,
     Presentation presentation,
-    TimingAnimation animation,
-    AnimationValidationMode validationMode =
-        AnimationValidationMode::ProtocolV2);
+    TimingAnimation animation);
 int32_t animateSpring(
     uint64_t driverId,
     AnimationStart start,
     Presentation presentation,
-    SpringAnimation animation,
-    AnimationValidationMode validationMode =
-        AnimationValidationMode::ProtocolV2);
+    SpringAnimation animation);
 int32_t animateKeyframes(
     uint64_t driverId,
     AnimationStart start,
     Presentation presentation,
     double durationMs,
     std::vector<Keyframe> keyframes,
-    int32_t reduceMotion,
-    AnimationValidationMode validationMode =
-        AnimationValidationMode::ProtocolV2);
+    int32_t reduceMotion);
 int32_t rejectAnimation(uint64_t driverId);
 CancelResult cancelAnimation(
     uint64_t driverId,

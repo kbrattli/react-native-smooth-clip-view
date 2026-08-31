@@ -5,18 +5,16 @@ import { ClipEasings } from 'react-native-smooth-clip-view';
 import { resolveDragContentScale } from './overlayClipGeometry';
 import type { ZoomCity } from './zoomCities';
 
+export {
+  OVERLAY_PHASE_CLOSING,
+  OVERLAY_PHASE_OPEN,
+  OVERLAY_PHASE_OPENING,
+  type OverlayPhase,
+} from './overlayPhases';
+
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 const ANIMATION_DURATION = 400;
-
-export const OVERLAY_PHASE_OPENING = 0 as const;
-export const OVERLAY_PHASE_OPEN = 1 as const;
-export const OVERLAY_PHASE_CLOSING = 2 as const;
-
-export type OverlayPhase =
-  | typeof OVERLAY_PHASE_OPENING
-  | typeof OVERLAY_PHASE_OPEN
-  | typeof OVERLAY_PHASE_CLOSING;
 
 export const TIMING_CONFIG = {
   duration: ANIMATION_DURATION,

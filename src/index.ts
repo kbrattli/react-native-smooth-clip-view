@@ -43,9 +43,11 @@ export {
 } from './geometry';
 export type {
   CanonicalClipGeometry,
+  CanonicalClipBoxShadow,
   CanonicalSmoothClipPresentation,
   ClipBounds,
   ClipCurve,
   ClipGeometry,
+  ClipBoxShadow,
   SmoothClipPresentation,
 } from './geometry';

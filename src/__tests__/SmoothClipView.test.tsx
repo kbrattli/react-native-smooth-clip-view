@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import type { SmoothClipDriver } from '../driverTypes';
 import { createDriverState, setDriverState } from '../driverState';
 import {
@@ -6,20 +6,12 @@ import {
   type CanonicalSmoothClipPresentation,
 } from '../geometry';
 
-let mockPresentationProtocolVersion: 1 | 2 = 2;
-
-jest.mock('../capabilities', () => ({
-  getSmoothClipCapabilities: () => ({
-    presentationProtocolVersion: mockPresentationProtocolVersion,
-  }),
-}));
-
 jest.mock('../SmoothClipViewNativeComponent', () => ({
   __esModule: true,
   default: 'NativeSmoothClipView',
 }));
 
-import { SmoothClipView } from '../SmoothClipView';
+import { sanitizeSmoothClipStyle, SmoothClipView } from '../SmoothClipView';
 
 const renderSmoothClipView = (
   SmoothClipView as unknown as {
@@ -45,13 +37,11 @@ function makeDriver(
 ): SmoothClipDriver {
   const source = { value: presentation } as never;
   const driver: SmoothClipDriver = {
-    kind: 'hybrid',
     presentation: source,
     ui: {
       beginInteraction: () => presentation,
       set: () => undefined,
       setScalars: () => undefined,
-      setPresentationScalars: () => undefined,
       animateTo: () => 1,
       cancel: () => presentation,
     },
@@ -72,10 +62,6 @@ function makeDriver(
 }
 
 describe('SmoothClipView driver boundary', () => {
-  beforeEach(() => {
-    mockPresentationProtocolVersion = 2;
-  });
-
   it('passes the driver id and complete initial geometry synchronously', () => {
     const element = renderSmoothClipView(
       {
@@ -93,8 +79,6 @@ describe('SmoothClipView driver boundary', () => {
       initialClipY: 34,
       initialClipWidth: 280,
       initialClipHeight: 190,
-      initialClipRadius: 20,
-      presentationVersion: 2,
       initialClipTopLeftRadius: 20,
       initialClipTopRightRadius: 20,
       initialClipBottomRightRadius: 20,
@@ -117,34 +101,64 @@ describe('SmoothClipView driver boundary', () => {
     expect((second.props as Record<string, unknown>).driverId).toBe(73);
   });
 
-  it('keeps a V1-compatible initial presentation on old native', () => {
-    mockPresentationProtocolVersion = 1;
-
-    const element = renderSmoothClipView({ driver: makeDriver() }, null);
-
-    expect((element.props as Record<string, unknown>).presentationVersion).toBe(
-      1
+  it('packs the complete initial box shadow into native props', () => {
+    const presentation = createClipPresentation(initialClip, -12, -34, 0.75, {
+      color: '#33669980',
+      offsetX: -2,
+      offsetY: 5,
+      blurRadius: 64,
+      spreadDistance: 7,
+    });
+    const element = renderSmoothClipView(
+      { driver: makeDriver(91, presentation) },
+      null
     );
+
+    expect(element.props).toMatchObject({
+      initialClipBoxShadowEnabled: true,
+      initialClipBoxShadowRed: 0x33 / 255,
+      initialClipBoxShadowGreen: 0x66 / 255,
+      initialClipBoxShadowBlue: 0x99 / 255,
+      initialClipBoxShadowAlpha: 0x80 / 255,
+      initialClipBoxShadowOffsetX: -2,
+      initialClipBoxShadowOffsetY: 5,
+      initialClipBoxShadowBlurRadius: 64,
+      initialClipBoxShadowSpreadDistance: 7,
+    });
   });
 
-  it('rejects widened initial channels on old native instead of discarding them', () => {
-    mockPresentationProtocolVersion = 1;
-    const widened = createClipPresentation(
-      {
-        ...initialClip,
-        topLeftRadius: 28,
-        topRightRadius: 16,
-        bottomRightRadius: 12,
-        bottomLeftRadius: 4,
-        curve: 'continuous',
-      },
-      -12,
-      -34,
-      0.75
-    );
+  it('sanitizes every independent React Native shadow style', () => {
+    const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+    expect(
+      sanitizeSmoothClipStyle({
+        opacity: 0.5,
+        boxShadow: '0 2px 8px #000',
+        shadowColor: '#000',
+        shadowOpacity: 0.2,
+        shadowRadius: 4,
+        elevation: 5,
+        filter: 'drop-shadow(0 2px 4px #000)',
+      })
+    ).toEqual({ opacity: 0.5 });
 
-    expect(() =>
-      renderSmoothClipView({ driver: makeDriver(42, widened) }, null)
-    ).toThrow(/requires native presentation protocol V2/);
+    expect(
+      sanitizeSmoothClipStyle({
+        filter: [
+          { brightness: 0.8 },
+          { dropShadow: { offsetX: 0, offsetY: 2, standardDeviation: 4 } },
+          { contrast: 1.1 },
+        ],
+      })
+    ).toEqual({ filter: [{ brightness: 0.8 }, { contrast: 1.1 }] });
+
+    expect(
+      sanitizeSmoothClipStyle({
+        filter: 'brightness(0.8) drop-shadow(0 2px 4px rgba(0,0,0,.3))',
+      })
+    ).toEqual({ filter: 'brightness(0.8)' });
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('SmoothClipPresentation.boxShadow')
+    );
+    error.mockRestore();
   });
 });

@@ -122,7 +122,7 @@ describe('gallery geometry', () => {
     });
   });
 
-  it('streams scale with the complete V2 presentation instead of dropping it through V1', () => {
+  it('streams scale with the complete presentation', () => {
     const presentation = resolveGalleryPresentation(
       { x: 130, y: 80, width: 130, height: 130 },
       resolveAspectFitFrame(390, 844, 1180, 1572),
@@ -146,7 +146,7 @@ describe('gallery geometry', () => {
     ]);
   });
 
-  it('uses the exact normalized visible drag frame for an atomic V2 release', () => {
+  it('uses the exact normalized visible drag frame for an atomic release', () => {
     const destination = { x: 0, y: 0, width: 390, height: 844 };
     const draggedFrame = resolveDraggedGalleryFrame(
       destination,

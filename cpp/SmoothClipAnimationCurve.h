@@ -289,9 +289,10 @@ inline double springContinuationVelocity(
 
 // --- Presentation channels ------------------------------------------------
 
-// Eleven continuous V2 channels. The curve is categorical and is deliberately
-// carried outside the scalar array.
-constexpr std::size_t kChannelCount = 11;
+// The first eleven channels are geometry/content; the final eight are shadow.
+// Curve and shadow presence are categorical and stay outside the scalar array.
+constexpr std::size_t kBaseChannelCount = 11;
+constexpr std::size_t kChannelCount = 19;
 using Channels = std::array<double, kChannelCount>;
 
 inline double resolvedRadius(double overrideValue, double shorthand) {
@@ -326,34 +327,48 @@ inline Channels toChannels(const Presentation &presentation) {
           bottomLeft,
           presentation.contentTranslateX,
           presentation.contentTranslateY,
-          presentation.contentScale};
+          presentation.contentScale,
+          presentation.shadow.red,
+          presentation.shadow.green,
+          presentation.shadow.blue,
+          presentation.shadow.alpha,
+          presentation.shadow.offsetX,
+          presentation.shadow.offsetY,
+          presentation.shadow.blurRadius,
+          presentation.shadow.spreadDistance};
 }
 
-// --- Protocol-V2 animation validation ------------------------------------
+// --- Animation validation ---------------------------------------------------
 //
 // Keep the invariants at the native ownership boundary as well as in JS. OTA
 // callers and direct host-function users can bypass the TypeScript preflight;
 // rejecting here prevents an invalid request from dissolving an existing
 // animation group before the registry notices it cannot install the new plan.
 
-inline bool isProtocolV2Curve(ClipCurve curve) {
+inline bool isSupportedCurve(ClipCurve curve) {
   return curve == ClipCurve::Circular || curve == ClipCurve::Continuous;
 }
 
-inline bool isFiniteProtocolV2Presentation(
+inline bool isFinitePresentation(
     const Presentation &presentation) {
   const Channels channels = toChannels(presentation);
   return std::all_of(
              channels.begin(), channels.end(),
              [](double value) { return std::isfinite(value); }) &&
-      isProtocolV2Curve(presentation.clip.curve) &&
-      presentation.contentScale > 0;
+      isSupportedCurve(presentation.clip.curve) &&
+      presentation.contentScale > 0 &&
+      presentation.shadow.red >= 0 && presentation.shadow.red <= 1 &&
+      presentation.shadow.green >= 0 && presentation.shadow.green <= 1 &&
+      presentation.shadow.blue >= 0 && presentation.shadow.blue <= 1 &&
+      presentation.shadow.alpha >= 0 && presentation.shadow.alpha <= 1 &&
+      presentation.shadow.blurRadius >= 0;
 }
 
-inline bool protocolV2PresentationsEqual(
+inline bool presentationsEqual(
     const Presentation &first,
     const Presentation &second) {
   return first.clip.curve == second.clip.curve &&
+      first.shadow.enabled == second.shadow.enabled &&
       toChannels(first) == toChannels(second);
 }
 
@@ -361,7 +376,7 @@ inline bool isValidReduceMotionCode(int32_t value) {
   return value >= 0 && value <= 2;
 }
 
-inline bool isValidProtocolV2Timing(const TimingAnimation &animation) {
+inline bool isValidTiming(const TimingAnimation &animation) {
   return std::isfinite(animation.durationMs) && animation.durationMs >= 0 &&
       std::isfinite(animation.controlPoint1X) &&
       std::isfinite(animation.controlPoint1Y) &&
@@ -372,7 +387,7 @@ inline bool isValidProtocolV2Timing(const TimingAnimation &animation) {
       isValidReduceMotionCode(animation.reduceMotion);
 }
 
-inline bool isValidProtocolV2Spring(const SpringAnimation &animation) {
+inline bool isValidSpring(const SpringAnimation &animation) {
   return std::isfinite(animation.mass) && animation.mass > 0 &&
       std::isfinite(animation.stiffness) && animation.stiffness > 0 &&
       std::isfinite(animation.damping) && animation.damping >= 0 &&
@@ -380,7 +395,7 @@ inline bool isValidProtocolV2Spring(const SpringAnimation &animation) {
       isValidReduceMotionCode(animation.reduceMotion);
 }
 
-inline bool protocolV2SpringScaleIsProvablyPositive(
+inline bool springScaleIsProvablyPositive(
     const Presentation &start,
     const Presentation &target,
     const SpringAnimation &animation) {
@@ -394,17 +409,17 @@ inline bool protocolV2SpringScaleIsProvablyPositive(
       4 * animation.mass * animation.stiffness;
 }
 
-inline bool isValidProtocolV2Keyframes(
+inline bool isValidKeyframes(
     const std::vector<Keyframe> &keyframes,
     const Presentation &resolvedStart,
     const Presentation &target,
     bool requireExplicitStart) {
   if (keyframes.size() < 2 || keyframes.front().offset != 0 ||
       keyframes.back().offset != 1 ||
-      !protocolV2PresentationsEqual(keyframes.back().presentation, target)) {
+      !presentationsEqual(keyframes.back().presentation, target)) {
     return false;
   }
-  if (requireExplicitStart && !protocolV2PresentationsEqual(
+  if (requireExplicitStart && !presentationsEqual(
                                   keyframes.front().presentation,
                                   resolvedStart)) {
     return false;
@@ -413,7 +428,7 @@ inline bool isValidProtocolV2Keyframes(
   for (const Keyframe &keyframe : keyframes) {
     if (!std::isfinite(keyframe.offset) || keyframe.offset <= previousOffset ||
         keyframe.offset < 0 || keyframe.offset > 1 ||
-        !isFiniteProtocolV2Presentation(keyframe.presentation) ||
+        !isFinitePresentation(keyframe.presentation) ||
         keyframe.presentation.clip.curve != target.clip.curve) {
       return false;
     }
@@ -424,7 +439,8 @@ inline bool isValidProtocolV2Keyframes(
 
 inline Presentation fromChannels(
     const Channels &channels,
-    ClipCurve curve = ClipCurve::Circular) {
+    ClipCurve curve = ClipCurve::Circular,
+    bool shadowEnabled = false) {
   Geometry geometry{
       channels[0], channels[1], channels[2], channels[3], 0.0};
   geometry.topLeftRadius = channels[4];
@@ -436,7 +452,18 @@ inline Presentation fromChannels(
       ? channels[4]
       : 0.0;
   geometry.curve = curve;
-  return Presentation{geometry, channels[8], channels[9], channels[10]};
+  Shadow shadow{
+      shadowEnabled,
+      std::clamp(channels[11], 0.0, 1.0),
+      std::clamp(channels[12], 0.0, 1.0),
+      std::clamp(channels[13], 0.0, 1.0),
+      std::clamp(channels[14], 0.0, 1.0),
+      channels[15],
+      channels[16],
+      std::max(0.0, channels[17]),
+      channels[18]};
+  return Presentation{
+      geometry, channels[8], channels[9], channels[10], shadow};
 }
 
 inline Presentation interpolate(
@@ -449,10 +476,24 @@ inline Presentation interpolate(
   Channels blended{};
   const Channels fromChannelsValue = toChannels(from);
   const Channels toChannelsValue = toChannels(to);
-  for (std::size_t index = 0; index < kChannelCount; index += 1) {
+  const bool rendersShadow =
+      (from.shadow.enabled && from.shadow.alpha > 0) ||
+      (to.shadow.enabled && to.shadow.alpha > 0);
+  const std::size_t channelCount =
+      rendersShadow ? kChannelCount : kBaseChannelCount;
+  for (std::size_t index = 0; index < channelCount; index += 1) {
     blended[index] = mix(fromChannelsValue[index], toChannelsValue[index]);
   }
-  return fromChannels(blended, from.clip.curve);
+  if (!rendersShadow) {
+    std::copy(
+        fromChannelsValue.begin() + kBaseChannelCount,
+        fromChannelsValue.end(),
+        blended.begin() + kBaseChannelCount);
+  }
+  const bool shadowEnabled = progress >= 1
+      ? to.shadow.enabled
+      : (from.shadow.enabled || to.shadow.enabled);
+  return fromChannels(blended, from.clip.curve, shadowEnabled);
 }
 
 // Freezes a timing animation at one already-rendered raw-time phase and
@@ -491,7 +532,7 @@ inline TimingContinuation timingContinuationAtFrame(
 // --- Keyframe curve -------------------------------------------------------
 
 // Keyframes interpolate segment-wise linearly on every platform. This is a
-// public V2 contract: consumers compile unsupported springs/easings into exact
+// public contract: consumers compile unsupported springs/easings into exact
 // scalar samples, and native must not reinterpret those samples as a spline.
 class KeyframeCurve {
  public:

@@ -362,7 +362,7 @@ std::vector<Keyframe> easeOutCubicSamples(size_t count, double travel) {
 }
 
 - (void)testVelocityUsesTheExactAdjacentSegmentSlopes {
-  // V2 keyframes are samples, not spline control points. Native must preserve
+  // Keyframes are samples, not spline control points. Native must preserve
   // the exact straight segment on either side of an interior frame, including
   // a deliberate velocity change at that frame.
   const std::vector<Keyframe> frames = easeOutCubicSamples(9, 700);

@@ -27,6 +27,10 @@ namespace smoothclip {
 namespace {
 
 constexpr double kMaxSafeJavaScriptInteger = 9007199254740991.0;
+constexpr size_t kPresentationStride = 21;
+constexpr size_t kSnapshotStride = kPresentationStride + 1;
+constexpr size_t kKeyframeStride = kPresentationStride + 1;
+constexpr size_t kMotionEntryStride = kPresentationStride * 2 + 2;
 
 bool validDriverId(double value) {
   return std::isfinite(value) && value > 0 &&
@@ -43,7 +47,7 @@ bool validRadiusOverride(double value) {
   return std::isfinite(value) || std::isnan(value);
 }
 
-bool finitePresentation(const Presentation &presentation) {
+bool finiteBasePresentation(const Presentation &presentation) {
   return std::isfinite(presentation.clip.x) &&
       std::isfinite(presentation.clip.y) &&
       std::isfinite(presentation.clip.width) &&
@@ -61,16 +65,41 @@ bool finitePresentation(const Presentation &presentation) {
       presentation.contentScale > 0;
 }
 
-bool finiteV2Presentation(const Presentation &presentation) {
-  return finitePresentation(presentation) &&
+bool finitePresentation(const Presentation &presentation) {
+  return finiteBasePresentation(presentation) &&
       std::isfinite(presentation.clip.topLeftRadius) &&
       std::isfinite(presentation.clip.topRightRadius) &&
       std::isfinite(presentation.clip.bottomRightRadius) &&
-      std::isfinite(presentation.clip.bottomLeftRadius);
+      std::isfinite(presentation.clip.bottomLeftRadius) &&
+      std::isfinite(presentation.shadow.red) &&
+      std::isfinite(presentation.shadow.green) &&
+      std::isfinite(presentation.shadow.blue) &&
+      std::isfinite(presentation.shadow.alpha) &&
+      std::isfinite(presentation.shadow.offsetX) &&
+      std::isfinite(presentation.shadow.offsetY) &&
+      std::isfinite(presentation.shadow.blurRadius) &&
+      std::isfinite(presentation.shadow.spreadDistance) &&
+      presentation.shadow.red >= 0 && presentation.shadow.red <= 1 &&
+      presentation.shadow.green >= 0 && presentation.shadow.green <= 1 &&
+      presentation.shadow.blue >= 0 && presentation.shadow.blue <= 1 &&
+      presentation.shadow.alpha >= 0 && presentation.shadow.alpha <= 1 &&
+      presentation.shadow.blurRadius >= 0;
 }
 
 bool boolArg(const Value *args, size_t count, size_t index) {
   return index < count && args[index].isBool() && args[index].getBool();
+}
+
+bool numberAt(
+    Runtime &runtime,
+    const Array &values,
+    size_t index,
+    double &result) {
+  if (index >= values.size(runtime)) return false;
+  const Value value = values.getValueAtIndex(runtime, index);
+  if (!value.isNumber()) return false;
+  result = value.asNumber();
+  return std::isfinite(result);
 }
 
 // Optional trailing start stamp (Reanimated-rule milliseconds captured in the
@@ -85,126 +114,89 @@ double startStampArg(const Value *args, size_t count, size_t index) {
       : std::numeric_limits<double>::quiet_NaN();
 }
 
-Presentation presentationFromArgs(const Value *args, size_t offset) {
-  return Presentation{
-      {args[offset].asNumber(),
-       args[offset + 1].asNumber(),
-       args[offset + 2].asNumber(),
-       args[offset + 3].asNumber(),
-       args[offset + 4].asNumber()},
-      args[offset + 5].asNumber(),
-      args[offset + 6].asNumber()};
-}
-
-Presentation presentationV2FromArgs(const Value *args, size_t offset) {
-  Geometry geometry{
-      args[offset].asNumber(),
-      args[offset + 1].asNumber(),
-      args[offset + 2].asNumber(),
-      args[offset + 3].asNumber(),
-      0.0};
-  geometry.topLeftRadius = args[offset + 4].asNumber();
-  geometry.topRightRadius = args[offset + 5].asNumber();
-  geometry.bottomRightRadius = args[offset + 6].asNumber();
-  geometry.bottomLeftRadius = args[offset + 7].asNumber();
-  const double curveCode = args[offset + 8].asNumber();
-  geometry.curve = curveCode == static_cast<double>(ClipCurve::Continuous)
-      ? ClipCurve::Continuous
-      : curveCode == static_cast<double>(ClipCurve::Circular)
-      ? ClipCurve::Circular
-      : static_cast<ClipCurve>(-1);
-  if (geometry.topLeftRadius == geometry.topRightRadius &&
-      geometry.topLeftRadius == geometry.bottomRightRadius &&
-      geometry.topLeftRadius == geometry.bottomLeftRadius) {
-    geometry.radius = geometry.topLeftRadius;
-  }
-  return Presentation{
-      geometry,
-      args[offset + 9].asNumber(),
-      args[offset + 10].asNumber(),
-      args[offset + 11].asNumber()};
-}
-
-Presentation presentationV2FromArray(
+bool presentationAt(
     Runtime &runtime,
     const Array &values,
-    size_t offset) {
+    size_t offset,
+    Presentation &result) {
+  const size_t length = values.size(runtime);
+  if (offset > length || length - offset < kPresentationStride) {
+    return false;
+  }
+  double packet[kPresentationStride];
+  for (size_t index = 0; index < kPresentationStride; index += 1) {
+    const Value value = values.getValueAtIndex(runtime, offset + index);
+    if (!value.isNumber()) return false;
+    packet[index] = value.asNumber();
+  }
+  const double curveCode = packet[8];
+  if (!validCurve(curveCode) ||
+      (packet[12] != 0.0 && packet[12] != 1.0)) {
+    return false;
+  }
   Geometry geometry{
-      values.getValueAtIndex(runtime, offset).asNumber(),
-      values.getValueAtIndex(runtime, offset + 1).asNumber(),
-      values.getValueAtIndex(runtime, offset + 2).asNumber(),
-      values.getValueAtIndex(runtime, offset + 3).asNumber(),
+      packet[0], packet[1], packet[2], packet[3],
       0.0};
-  geometry.topLeftRadius =
-      values.getValueAtIndex(runtime, offset + 4).asNumber();
-  geometry.topRightRadius =
-      values.getValueAtIndex(runtime, offset + 5).asNumber();
-  geometry.bottomRightRadius =
-      values.getValueAtIndex(runtime, offset + 6).asNumber();
-  geometry.bottomLeftRadius =
-      values.getValueAtIndex(runtime, offset + 7).asNumber();
-  const double curveCode =
-      values.getValueAtIndex(runtime, offset + 8).asNumber();
+  geometry.topLeftRadius = packet[4];
+  geometry.topRightRadius = packet[5];
+  geometry.bottomRightRadius = packet[6];
+  geometry.bottomLeftRadius = packet[7];
   geometry.curve = curveCode == static_cast<double>(ClipCurve::Continuous)
       ? ClipCurve::Continuous
-      : curveCode == static_cast<double>(ClipCurve::Circular)
-      ? ClipCurve::Circular
-      : static_cast<ClipCurve>(-1);
+      : ClipCurve::Circular;
   if (geometry.topLeftRadius == geometry.topRightRadius &&
       geometry.topLeftRadius == geometry.bottomRightRadius &&
       geometry.topLeftRadius == geometry.bottomLeftRadius) {
     geometry.radius = geometry.topLeftRadius;
   }
-  return Presentation{
+  result = Presentation{
       geometry,
-      values.getValueAtIndex(runtime, offset + 9).asNumber(),
-      values.getValueAtIndex(runtime, offset + 10).asNumber(),
-      values.getValueAtIndex(runtime, offset + 11).asNumber()};
+      packet[9], packet[10], packet[11],
+      Shadow{
+          packet[12] == 1.0,
+          packet[13], packet[14], packet[15], packet[16],
+          packet[17], packet[18], packet[19], packet[20]}};
+  return finitePresentation(result);
+}
+
+void appendPresentation(
+    Runtime &runtime,
+    Array &result,
+    size_t &offset,
+    const Presentation &presentation) {
+  result.setValueAtIndex(runtime, offset++, presentation.clip.x);
+  result.setValueAtIndex(runtime, offset++, presentation.clip.y);
+  result.setValueAtIndex(runtime, offset++, presentation.clip.width);
+  result.setValueAtIndex(runtime, offset++, presentation.clip.height);
+  result.setValueAtIndex(runtime, offset++, SmoothClipResolvedRadius(
+      presentation.clip.topLeftRadius, presentation.clip.radius));
+  result.setValueAtIndex(runtime, offset++, SmoothClipResolvedRadius(
+      presentation.clip.topRightRadius, presentation.clip.radius));
+  result.setValueAtIndex(runtime, offset++, SmoothClipResolvedRadius(
+      presentation.clip.bottomRightRadius, presentation.clip.radius));
+  result.setValueAtIndex(runtime, offset++, SmoothClipResolvedRadius(
+      presentation.clip.bottomLeftRadius, presentation.clip.radius));
+  result.setValueAtIndex(
+      runtime, offset++, static_cast<double>(presentation.clip.curve));
+  result.setValueAtIndex(runtime, offset++, presentation.contentTranslateX);
+  result.setValueAtIndex(runtime, offset++, presentation.contentTranslateY);
+  result.setValueAtIndex(runtime, offset++, presentation.contentScale);
+  result.setValueAtIndex(
+      runtime, offset++, presentation.shadow.enabled ? 1.0 : 0.0);
+  result.setValueAtIndex(runtime, offset++, presentation.shadow.red);
+  result.setValueAtIndex(runtime, offset++, presentation.shadow.green);
+  result.setValueAtIndex(runtime, offset++, presentation.shadow.blue);
+  result.setValueAtIndex(runtime, offset++, presentation.shadow.alpha);
+  result.setValueAtIndex(runtime, offset++, presentation.shadow.offsetX);
+  result.setValueAtIndex(runtime, offset++, presentation.shadow.offsetY);
+  result.setValueAtIndex(runtime, offset++, presentation.shadow.blurRadius);
+  result.setValueAtIndex(runtime, offset++, presentation.shadow.spreadDistance);
 }
 
 Array presentationArray(Runtime &runtime, const Presentation &presentation) {
-  Array result(runtime, 7);
-  result.setValueAtIndex(runtime, 0, presentation.clip.x);
-  result.setValueAtIndex(runtime, 1, presentation.clip.y);
-  result.setValueAtIndex(runtime, 2, presentation.clip.width);
-  result.setValueAtIndex(runtime, 3, presentation.clip.height);
-  result.setValueAtIndex(runtime, 4, presentation.clip.radius);
-  result.setValueAtIndex(runtime, 5, presentation.contentTranslateX);
-  result.setValueAtIndex(runtime, 6, presentation.contentTranslateY);
-  return result;
-}
-
-Array presentationArrayV2(Runtime &runtime, const Presentation &presentation) {
-  Array result(runtime, 12);
-  result.setValueAtIndex(runtime, 0, presentation.clip.x);
-  result.setValueAtIndex(runtime, 1, presentation.clip.y);
-  result.setValueAtIndex(runtime, 2, presentation.clip.width);
-  result.setValueAtIndex(runtime, 3, presentation.clip.height);
-  result.setValueAtIndex(
-      runtime,
-      4,
-      SmoothClipResolvedRadius(
-          presentation.clip.topLeftRadius, presentation.clip.radius));
-  result.setValueAtIndex(
-      runtime,
-      5,
-      SmoothClipResolvedRadius(
-          presentation.clip.topRightRadius, presentation.clip.radius));
-  result.setValueAtIndex(
-      runtime,
-      6,
-      SmoothClipResolvedRadius(
-          presentation.clip.bottomRightRadius, presentation.clip.radius));
-  result.setValueAtIndex(
-      runtime,
-      7,
-      SmoothClipResolvedRadius(
-          presentation.clip.bottomLeftRadius, presentation.clip.radius));
-  result.setValueAtIndex(
-      runtime, 8, static_cast<double>(presentation.clip.curve));
-  result.setValueAtIndex(runtime, 9, presentation.contentTranslateX);
-  result.setValueAtIndex(runtime, 10, presentation.contentTranslateY);
-  result.setValueAtIndex(runtime, 11, presentation.contentScale);
+  Array result(runtime, kPresentationStride);
+  size_t offset = 0;
+  appendPresentation(runtime, result, offset, presentation);
   return result;
 }
 
@@ -212,94 +204,22 @@ Array cancelResultArray(
     Runtime &runtime,
     bool handled,
     const Presentation &presentation) {
-  Array result(runtime, 8);
-  // JS checks `values[0] !== 1`, so the handled flag must be a number.
+  Array result(runtime, kSnapshotStride);
   result.setValueAtIndex(runtime, 0, handled ? 1.0 : 0.0);
-  result.setValueAtIndex(runtime, 1, presentation.clip.x);
-  result.setValueAtIndex(runtime, 2, presentation.clip.y);
-  result.setValueAtIndex(runtime, 3, presentation.clip.width);
-  result.setValueAtIndex(runtime, 4, presentation.clip.height);
-  result.setValueAtIndex(runtime, 5, presentation.clip.radius);
-  result.setValueAtIndex(runtime, 6, presentation.contentTranslateX);
-  result.setValueAtIndex(runtime, 7, presentation.contentTranslateY);
+  size_t offset = 1;
+  appendPresentation(runtime, result, offset, presentation);
   return result;
 }
 
-Array cancelResultArrayV2(
-    Runtime &runtime,
-    bool handled,
-    const Presentation &presentation) {
-  Array result(runtime, 13);
-  result.setValueAtIndex(runtime, 0, handled ? 1.0 : 0.0);
-  result.setValueAtIndex(runtime, 1, presentation.clip.x);
-  result.setValueAtIndex(runtime, 2, presentation.clip.y);
-  result.setValueAtIndex(runtime, 3, presentation.clip.width);
-  result.setValueAtIndex(runtime, 4, presentation.clip.height);
-  result.setValueAtIndex(
-      runtime,
-      5,
-      SmoothClipResolvedRadius(
-          presentation.clip.topLeftRadius, presentation.clip.radius));
-  result.setValueAtIndex(
-      runtime,
-      6,
-      SmoothClipResolvedRadius(
-          presentation.clip.topRightRadius, presentation.clip.radius));
-  result.setValueAtIndex(
-      runtime,
-      7,
-      SmoothClipResolvedRadius(
-          presentation.clip.bottomRightRadius, presentation.clip.radius));
-  result.setValueAtIndex(
-      runtime,
-      8,
-      SmoothClipResolvedRadius(
-          presentation.clip.bottomLeftRadius, presentation.clip.radius));
-  result.setValueAtIndex(
-      runtime, 9, static_cast<double>(presentation.clip.curve));
-  result.setValueAtIndex(runtime, 10, presentation.contentTranslateX);
-  result.setValueAtIndex(runtime, 11, presentation.contentTranslateY);
-  result.setValueAtIndex(runtime, 12, presentation.contentScale);
-  return result;
-}
-
-Array snapshotsArrayV2(
+Array snapshotsArray(
     Runtime &runtime,
     const std::vector<DriverSnapshot> &snapshots) {
-  Array result(runtime, snapshots.size() * 13);
+  Array result(runtime, snapshots.size() * kSnapshotStride);
   size_t offset = 0;
   for (const DriverSnapshot &snapshot : snapshots) {
     result.setValueAtIndex(runtime, offset++, snapshot.ready ? 1.0 : 0.0);
     const Presentation &presentation = snapshot.presentation;
-    result.setValueAtIndex(runtime, offset++, presentation.clip.x);
-    result.setValueAtIndex(runtime, offset++, presentation.clip.y);
-    result.setValueAtIndex(runtime, offset++, presentation.clip.width);
-    result.setValueAtIndex(runtime, offset++, presentation.clip.height);
-    result.setValueAtIndex(
-        runtime,
-        offset++,
-        SmoothClipResolvedRadius(
-            presentation.clip.topLeftRadius, presentation.clip.radius));
-    result.setValueAtIndex(
-        runtime,
-        offset++,
-        SmoothClipResolvedRadius(
-            presentation.clip.topRightRadius, presentation.clip.radius));
-    result.setValueAtIndex(
-        runtime,
-        offset++,
-        SmoothClipResolvedRadius(
-            presentation.clip.bottomRightRadius, presentation.clip.radius));
-    result.setValueAtIndex(
-        runtime,
-        offset++,
-        SmoothClipResolvedRadius(
-            presentation.clip.bottomLeftRadius, presentation.clip.radius));
-    result.setValueAtIndex(
-        runtime, offset++, static_cast<double>(presentation.clip.curve));
-    result.setValueAtIndex(runtime, offset++, presentation.contentTranslateX);
-    result.setValueAtIndex(runtime, offset++, presentation.contentTranslateY);
-    result.setValueAtIndex(runtime, offset++, presentation.contentScale);
+    appendPresentation(runtime, result, offset, presentation);
   }
   return result;
 }
@@ -314,8 +234,8 @@ std::vector<uint64_t> driverIdsFromArray(Runtime &runtime, const Array &values) 
   const size_t length = values.size(runtime);
   driverIds.reserve(length);
   for (size_t index = 0; index < length; index += 1) {
-    const double value = values.getValueAtIndex(runtime, index).asNumber();
-    if (!validDriverId(value) ||
+    double value;
+    if (!numberAt(runtime, values, index, value) || !validDriverId(value) ||
         std::find(driverIds.begin(), driverIds.end(),
                   static_cast<uint64_t>(value)) != driverIds.end()) {
       return {};
@@ -330,24 +250,23 @@ bool parseGroupMotionEntries(
     const Array &values,
     std::vector<GroupMotionEntry> &entries) {
   const size_t length = values.size(runtime);
-  if (length < 26 || length % 26 != 0) return false;
-  entries.reserve(length / 26);
-  for (size_t index = 0; index < length; index += 26) {
-    const double driverId = values.getValueAtIndex(runtime, index).asNumber();
-    const double hasFromValue =
-        values.getValueAtIndex(runtime, index + 1).asNumber();
-    const double fromCurve =
-        values.getValueAtIndex(runtime, index + 10).asNumber();
-    const double targetCurve =
-        values.getValueAtIndex(runtime, index + 22).asNumber();
-    const Presentation from =
-        presentationV2FromArray(runtime, values, index + 2);
-    const Presentation target =
-        presentationV2FromArray(runtime, values, index + 14);
-    if (!validDriverId(driverId) ||
+  if (length < kMotionEntryStride || length % kMotionEntryStride != 0) {
+    return false;
+  }
+  entries.reserve(length / kMotionEntryStride);
+  for (size_t index = 0; index < length; index += kMotionEntryStride) {
+    double driverId;
+    double hasFromValue;
+    Presentation from;
+    Presentation target;
+    if (!numberAt(runtime, values, index, driverId) ||
+        !numberAt(runtime, values, index + 1, hasFromValue) ||
+        !presentationAt(runtime, values, index + 2, from) ||
+        !presentationAt(
+            runtime, values, index + 2 + kPresentationStride, target) ||
+        !validDriverId(driverId) ||
         (hasFromValue != 0.0 && hasFromValue != 1.0) ||
-        !validCurve(fromCurve) || !validCurve(targetCurve) ||
-        !finiteV2Presentation(from) || !finiteV2Presentation(target)) {
+        !finitePresentation(from) || !finitePresentation(target)) {
       entries.clear();
       return false;
     }
@@ -364,48 +283,45 @@ bool parseGroupKeyframeEntries(
   const size_t length = values.size(runtime);
   size_t index = 0;
   while (index < length) {
-    if (length - index < 27) return false;
-    const double driverId = values.getValueAtIndex(runtime, index).asNumber();
-    const double hasFromValue =
-        values.getValueAtIndex(runtime, index + 1).asNumber();
-    const double fromCurve =
-        values.getValueAtIndex(runtime, index + 10).asNumber();
-    const double targetCurve =
-        values.getValueAtIndex(runtime, index + 22).asNumber();
-    const double frameCountValue =
-        values.getValueAtIndex(runtime, index + 26).asNumber();
-    const Presentation from =
-        presentationV2FromArray(runtime, values, index + 2);
-    const Presentation target =
-        presentationV2FromArray(runtime, values, index + 14);
-    if (!validDriverId(driverId) ||
+    constexpr size_t prefix = kMotionEntryStride + 1;
+    if (length - index < prefix) return false;
+    double driverId;
+    double hasFromValue;
+    double frameCountValue;
+    Presentation from;
+    Presentation target;
+    if (!numberAt(runtime, values, index, driverId) ||
+        !numberAt(runtime, values, index + 1, hasFromValue) ||
+        !numberAt(
+            runtime, values, index + kMotionEntryStride, frameCountValue) ||
+        !presentationAt(runtime, values, index + 2, from) ||
+        !presentationAt(
+            runtime, values, index + 2 + kPresentationStride, target) ||
+        !validDriverId(driverId) ||
         (hasFromValue != 0.0 && hasFromValue != 1.0) ||
-        !validCurve(fromCurve) || !validCurve(targetCurve) ||
-        !finiteV2Presentation(from) || !finiteV2Presentation(target) ||
+        !finitePresentation(from) || !finitePresentation(target) ||
         !std::isfinite(frameCountValue) || frameCountValue < 2 ||
         std::floor(frameCountValue) != frameCountValue) {
       return false;
     }
     const size_t frameCount = static_cast<size_t>(frameCountValue);
-    index += 27;
-    if (frameCount > (length - index) / 13) return false;
+    index += prefix;
+    if (frameCount > (length - index) / kKeyframeStride) return false;
     std::vector<Keyframe> keyframes;
     keyframes.reserve(frameCount);
     double previousOffset = -1;
     for (size_t frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
-      const double offset = values.getValueAtIndex(runtime, index).asNumber();
-      const double curve =
-          values.getValueAtIndex(runtime, index + 9).asNumber();
-      const Presentation presentation =
-          presentationV2FromArray(runtime, values, index + 1);
-      if (!std::isfinite(offset) || offset < 0 || offset > 1 ||
-          offset <= previousOffset || !validCurve(curve) ||
-          !finiteV2Presentation(presentation)) {
+      double offset;
+      Presentation presentation;
+      if (!numberAt(runtime, values, index, offset) ||
+          !presentationAt(runtime, values, index + 1, presentation) ||
+          offset < 0 || offset > 1 || offset <= previousOffset ||
+          !finitePresentation(presentation)) {
         return false;
       }
       previousOffset = offset;
       keyframes.push_back({offset, presentation});
-      index += 13;
+      index += kKeyframeStride;
     }
     if (keyframes.front().offset != 0 || keyframes.back().offset != 1) {
       return false;
@@ -526,12 +442,6 @@ void installBindings(
   Object bindings(runtime);
 
   setHostFunction(
-      runtime, bindings, "getPresentationProtocolVersion", 0,
-      [](Runtime &, const Value &, const Value *, size_t) -> Value {
-        return Value(2);
-      });
-
-  setHostFunction(
       runtime, bindings, "supportsAutonomousComplexPathAnimation", 0,
       [](Runtime &, const Value &, const Value *, size_t) -> Value {
         // Static complex clipping is available. Autonomous complex-path
@@ -541,7 +451,7 @@ void installBindings(
       });
 
   setHostFunction(
-      runtime, bindings, "beginGroupInteractionV2", 1,
+      runtime, bindings, "beginGroupInteraction", 1,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
         if (count < 1 || !args[0].isObject() ||
             !args[0].getObject(rt).isArray(rt)) {
@@ -550,11 +460,11 @@ void installBindings(
         Array values = args[0].getObject(rt).getArray(rt);
         const std::vector<uint64_t> driverIds = driverIdsFromArray(rt, values);
         if (driverIds.empty()) return Array(rt, 0);
-        return snapshotsArrayV2(rt, beginGroupInteraction(driverIds));
+        return snapshotsArray(rt, beginGroupInteraction(driverIds));
       });
 
   setHostFunction(
-      runtime, bindings, "snapshotGroupV2", 1,
+      runtime, bindings, "snapshotGroup", 1,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
         if (count < 1 || !args[0].isObject() ||
             !args[0].getObject(rt).isArray(rt)) {
@@ -563,11 +473,11 @@ void installBindings(
         Array values = args[0].getObject(rt).getArray(rt);
         const std::vector<uint64_t> driverIds = driverIdsFromArray(rt, values);
         if (driverIds.empty()) return Array(rt, 0);
-        return snapshotsArrayV2(rt, snapshotGroup(driverIds));
+        return snapshotsArray(rt, snapshotGroup(driverIds));
       });
 
   setHostFunction(
-      runtime, bindings, "setClipPresentationBatchV2", 1,
+      runtime, bindings, "setClipPresentationBatch", 1,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
         if (count < 1 || !args[0].isObject() ||
             !args[0].getObject(rt).isArray(rt)) {
@@ -575,18 +485,17 @@ void installBindings(
         }
         Array values = args[0].getObject(rt).getArray(rt);
         const size_t length = values.size(rt);
-        if (length < 13 || length % 13 != 0) return Value(false);
+        if (length < kSnapshotStride || length % kSnapshotStride != 0) {
+          return Value(false);
+        }
         std::vector<BatchEntry> entries;
-        entries.reserve(length / 13);
-        for (size_t index = 0; index < length; index += 13) {
-          const double driverId =
-              values.getValueAtIndex(rt, index).asNumber();
-          const double curve =
-              values.getValueAtIndex(rt, index + 9).asNumber();
-          const Presentation presentation =
-              presentationV2FromArray(rt, values, index + 1);
-          if (!validDriverId(driverId) || !validCurve(curve) ||
-              !finiteV2Presentation(presentation)) {
+        entries.reserve(length / kSnapshotStride);
+        for (size_t index = 0; index < length; index += kSnapshotStride) {
+          double driverId;
+          Presentation presentation;
+          if (!numberAt(rt, values, index, driverId) ||
+              !presentationAt(rt, values, index + 1, presentation) ||
+              !validDriverId(driverId) || !finitePresentation(presentation)) {
             return Value(false);
           }
           entries.push_back(
@@ -596,7 +505,7 @@ void installBindings(
       });
 
   setHostFunction(
-      runtime, bindings, "animateTimingGroupV2", 10,
+      runtime, bindings, "animateTimingGroup", 10,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
         if (count < 9 || !args[1].isObject() ||
             !args[1].getObject(rt).isArray(rt)) {
@@ -630,7 +539,7 @@ void installBindings(
       });
 
   setHostFunction(
-      runtime, bindings, "animateSpringGroupV2", 10,
+      runtime, bindings, "animateSpringGroup", 10,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
         if (count < 9 || !args[1].isObject() ||
             !args[1].getObject(rt).isArray(rt)) {
@@ -664,7 +573,7 @@ void installBindings(
       });
 
   setHostFunction(
-      runtime, bindings, "animateKeyframesGroupV2", 6,
+      runtime, bindings, "animateKeyframesGroup", 6,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
         if (count < 5 || !args[1].isObject() ||
             !args[1].getObject(rt).isArray(rt)) {
@@ -693,7 +602,7 @@ void installBindings(
       });
 
   setHostFunction(
-      runtime, bindings, "cancelAnimationGroupV2", 2,
+      runtime, bindings, "cancelAnimationGroup", 2,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
         if (count < 2 || !args[0].isNumber() || !args[1].isNumber()) {
           return Array(rt, 0);
@@ -706,7 +615,7 @@ void installBindings(
              behavior != static_cast<double>(GroupCancelBehavior::Finish))) {
           return Array(rt, 0);
         }
-        return snapshotsArrayV2(
+        return snapshotsArray(
             rt,
             cancelAnimationGroup(
                 static_cast<int32_t>(groupId),
@@ -715,40 +624,54 @@ void installBindings(
       });
 
   setHostFunction(
-      runtime, bindings, "setClipPresentation", 11,
+      runtime, bindings, "setClipPresentation", 4,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 9) return Value::undefined();
+        if (count < 4 || !args[0].isNumber() || !args[1].isObject() ||
+            !args[1].getObject(rt).isArray(rt)) {
+          return Value::undefined();
+        }
         const double driverId = args[0].asNumber();
-        const Presentation presentation = presentationFromArgs(args, 1);
-        const bool takeOwnership = boolArg(args, count, 8);
-        const bool overridePendingAnimation = boolArg(args, count, 9);
-        // Optional trailing flag; absent means record (the pre-flag
-        // behavior), so only an explicit false skips the velocity sample.
-        const bool recordVelocity =
-            !(count > 10 && args[10].isBool() && !args[10].getBool());
-        if (validDriverId(driverId) && finitePresentation(presentation)) {
+        const Array values = args[1].getObject(rt).getArray(rt);
+        Presentation presentation;
+        if (values.size(rt) == kPresentationStride &&
+            validDriverId(driverId) &&
+            presentationAt(rt, values, 0, presentation)) {
           setPresentation(
-              static_cast<uint64_t>(driverId), presentation, takeOwnership,
-              overridePendingAnimation, recordVelocity);
+              static_cast<uint64_t>(driverId), presentation,
+              boolArg(args, count, 2), boolArg(args, count, 3), true);
         }
         return Value::undefined();
       });
 
   setHostFunction(
-      runtime, bindings, "setClipPresentationV2", 16,
-      [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 14) return Value::undefined();
+      runtime, bindings, "setClipPresentationScalars", 15,
+      [](Runtime &, const Value &, const Value *args, size_t count) -> Value {
+        if (count < 15) return Value::undefined();
         const double driverId = args[0].asNumber();
-        const Presentation presentation = presentationV2FromArgs(args, 1);
-        const bool takeOwnership = boolArg(args, count, 13);
-        const bool overridePendingAnimation = boolArg(args, count, 14);
-        const bool recordVelocity =
-            !(count > 15 && args[15].isBool() && !args[15].getBool());
+        Geometry geometry{
+            args[1].asNumber(), args[2].asNumber(), args[3].asNumber(),
+            args[4].asNumber(), 0};
+        geometry.topLeftRadius = args[5].asNumber();
+        geometry.topRightRadius = args[6].asNumber();
+        geometry.bottomRightRadius = args[7].asNumber();
+        geometry.bottomLeftRadius = args[8].asNumber();
+        geometry.curve = static_cast<ClipCurve>(
+            static_cast<int32_t>(args[9].asNumber()));
+        if (geometry.topLeftRadius == geometry.topRightRadius &&
+            geometry.topLeftRadius == geometry.bottomRightRadius &&
+            geometry.topLeftRadius == geometry.bottomLeftRadius) {
+          geometry.radius = geometry.topLeftRadius;
+        }
+        const Presentation parsed{
+            geometry, args[10].asNumber(), args[11].asNumber(),
+            args[12].asNumber()};
         if (validDriverId(driverId) && validCurve(args[9].asNumber()) &&
-            finiteV2Presentation(presentation)) {
-          setPresentation(
-              static_cast<uint64_t>(driverId), presentation, takeOwnership,
-              overridePendingAnimation, recordVelocity);
+            finitePresentation(parsed)) {
+          setScalars(
+              static_cast<uint64_t>(driverId), geometry,
+              parsed.contentTranslateX, parsed.contentTranslateY,
+              parsed.contentScale, boolArg(args, count, 13),
+              boolArg(args, count, 14));
         }
         return Value::undefined();
       });
@@ -764,115 +687,75 @@ void installBindings(
       });
 
   setHostFunction(
-      runtime, bindings, "beginInteractionV2", 1,
+      runtime, bindings, "snapshotCurrent", 1,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
         if (count < 1 || !validDriverId(args[0].asNumber())) {
-          return presentationArrayV2(rt, {{0, 0, 0, 0, 0}, 0, 0});
+          return presentationArray(rt, {{0, 0, 0, 0, 0}, 0, 0});
         }
-        return presentationArrayV2(
-            rt, beginInteraction(static_cast<uint64_t>(args[0].asNumber())));
-      });
-
-  setHostFunction(
-      runtime, bindings, "snapshotCurrentV2", 1,
-      [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 1 || !validDriverId(args[0].asNumber())) {
-          return presentationArrayV2(rt, {{0, 0, 0, 0, 0}, 0, 0});
-        }
-        return presentationArrayV2(
+        return presentationArray(
             rt,
             snapshotCurrentAndroid(
                 static_cast<uint64_t>(args[0].asNumber())));
       });
 
   setHostFunction(
-      runtime, bindings, "animateTiming", 23,
+      runtime, bindings, "animateTiming", 10,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 22) return Value(0);
+        if (count < 9 || !args[0].isNumber() || !args[1].isObject() ||
+            !args[1].getObject(rt).isArray(rt) || !args[2].isObject() ||
+            !args[2].getObject(rt).isArray(rt)) {
+          return Value(0);
+        }
         const double driverId = args[0].asNumber();
-        const Presentation start = presentationFromArgs(args, 2);
-        const Presentation target = presentationFromArgs(args, 9);
+        const Array startValues = args[1].getObject(rt).getArray(rt);
+        const Array targetValues = args[2].getObject(rt).getArray(rt);
+        const bool hasInteractiveStart = startValues.size(rt) != 0;
+        Presentation start{};
+        Presentation target;
         const TimingAnimation animation{
-            args[16].asNumber(), args[17].asNumber(), args[18].asNumber(),
-            args[19].asNumber(), args[20].asNumber(),
-            static_cast<int32_t>(args[21].asNumber())};
-        if (!validDriverId(driverId) || !finitePresentation(start) ||
-            !finitePresentation(target) ||
+            args[3].asNumber(), args[4].asNumber(), args[5].asNumber(),
+            args[6].asNumber(), args[7].asNumber(),
+            static_cast<int32_t>(args[8].asNumber())};
+        if (!validDriverId(driverId) ||
+            (hasInteractiveStart &&
+             (startValues.size(rt) != kPresentationStride ||
+              !presentationAt(rt, startValues, 0, start))) ||
+            targetValues.size(rt) != kPresentationStride ||
+            !presentationAt(rt, targetValues, 0, target) ||
             !std::isfinite(animation.durationMs)) {
           return Value(0);
         }
         return Value(animateTiming(
             static_cast<uint64_t>(driverId),
-            {boolArg(args, count, 1), start, startStampArg(args, count, 22)},
-            target,
-            animation,
-            AnimationValidationMode::LegacyV1));
-      });
-
-  setHostFunction(
-      runtime, bindings, "animateTimingV2", 33,
-      [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 32) return Value(0);
-        const double driverId = args[0].asNumber();
-        const Presentation start = presentationV2FromArgs(args, 2);
-        const Presentation target = presentationV2FromArgs(args, 14);
-        const TimingAnimation animation{
-            args[26].asNumber(), args[27].asNumber(), args[28].asNumber(),
-            args[29].asNumber(), args[30].asNumber(),
-            static_cast<int32_t>(args[31].asNumber())};
-        if (!validDriverId(driverId) || !validCurve(args[10].asNumber()) ||
-            !validCurve(args[22].asNumber()) ||
-            !finiteV2Presentation(start) || !finiteV2Presentation(target) ||
-            !std::isfinite(animation.durationMs)) {
-          return Value(0);
-        }
-        return Value(animateTiming(
-            static_cast<uint64_t>(driverId),
-            {boolArg(args, count, 1), start, startStampArg(args, count, 32)},
+            {hasInteractiveStart, start, startStampArg(args, count, 9)},
             target,
             animation));
       });
 
   setHostFunction(
-      runtime, bindings, "animateSpring", 23,
+      runtime, bindings, "animateSpring", 10,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 22) return Value(0);
-        const double driverId = args[0].asNumber();
-        const Presentation start = presentationFromArgs(args, 2);
-        const Presentation target = presentationFromArgs(args, 9);
-        const SpringAnimation animation{
-            args[16].asNumber(), args[17].asNumber(), args[18].asNumber(),
-            args[19].asNumber(), boolArg(args, count, 20),
-            static_cast<int32_t>(args[21].asNumber())};
-        if (!validDriverId(driverId) || !finitePresentation(start) ||
-            !finitePresentation(target) || !std::isfinite(animation.mass) ||
-            !std::isfinite(animation.stiffness) ||
-            !std::isfinite(animation.damping) ||
-            !std::isfinite(animation.initialVelocity)) {
+        if (count < 9 || !args[0].isNumber() || !args[1].isObject() ||
+            !args[1].getObject(rt).isArray(rt) || !args[2].isObject() ||
+            !args[2].getObject(rt).isArray(rt)) {
           return Value(0);
         }
-        return Value(animateSpring(
-            static_cast<uint64_t>(driverId),
-            {boolArg(args, count, 1), start, startStampArg(args, count, 22)},
-            target,
-            animation,
-            AnimationValidationMode::LegacyV1));
-      });
-
-  setHostFunction(
-      runtime, bindings, "animateSpringV2", 33,
-      [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 32) return Value(0);
         const double driverId = args[0].asNumber();
-        const Presentation start = presentationV2FromArgs(args, 2);
-        const Presentation target = presentationV2FromArgs(args, 14);
+        const Array startValues = args[1].getObject(rt).getArray(rt);
+        const Array targetValues = args[2].getObject(rt).getArray(rt);
+        const bool hasInteractiveStart = startValues.size(rt) != 0;
+        Presentation start{};
+        Presentation target;
         const SpringAnimation animation{
-            args[26].asNumber(), args[27].asNumber(), args[28].asNumber(),
-            args[29].asNumber(), boolArg(args, count, 30),
-            static_cast<int32_t>(args[31].asNumber())};
-        if (!validDriverId(driverId) || !validCurve(args[10].asNumber()) ||
-            !validCurve(args[22].asNumber()) ||
-            !finiteV2Presentation(start) || !finiteV2Presentation(target) ||
+            args[3].asNumber(), args[4].asNumber(), args[5].asNumber(),
+            args[6].asNumber(), boolArg(args, count, 7),
+            static_cast<int32_t>(args[8].asNumber())};
+        if (!validDriverId(driverId) ||
+            (hasInteractiveStart &&
+             (startValues.size(rt) != kPresentationStride ||
+              !presentationAt(rt, startValues, 0, start))) ||
+            targetValues.size(rt) != kPresentationStride ||
+            !presentationAt(rt, targetValues, 0, target) ||
             !std::isfinite(animation.mass) ||
             !std::isfinite(animation.stiffness) ||
             !std::isfinite(animation.damping) ||
@@ -882,45 +765,49 @@ void installBindings(
         }
         return Value(animateSpring(
             static_cast<uint64_t>(driverId),
-            {boolArg(args, count, 1), start, startStampArg(args, count, 32)},
+            {hasInteractiveStart, start, startStampArg(args, count, 9)},
             target,
             animation));
       });
 
   setHostFunction(
-      runtime, bindings, "animateKeyframes", 20,
+      runtime, bindings, "animateKeyframes", 7,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 19 || !args[17].isObject() ||
-            !args[17].getObject(rt).isArray(rt)) {
+        if (count < 6 || !args[0].isNumber() || !args[1].isObject() ||
+            !args[1].getObject(rt).isArray(rt) || !args[2].isObject() ||
+            !args[2].getObject(rt).isArray(rt) || !args[4].isObject() ||
+            !args[4].getObject(rt).isArray(rt)) {
           return Value(0);
         }
         const double driverId = args[0].asNumber();
-        const Presentation start = presentationFromArgs(args, 2);
-        const Presentation target = presentationFromArgs(args, 9);
-        const double durationMs = args[16].asNumber();
-        const int32_t reduceMotion = static_cast<int32_t>(args[18].asNumber());
-        Array frames = args[17].getObject(rt).getArray(rt);
+        const Array startValues = args[1].getObject(rt).getArray(rt);
+        const Array targetValues = args[2].getObject(rt).getArray(rt);
+        const bool hasInteractiveStart = startValues.size(rt) != 0;
+        Presentation start{};
+        Presentation target;
+        const double durationMs = args[3].asNumber();
+        const int32_t reduceMotion = static_cast<int32_t>(args[5].asNumber());
+        Array frames = args[4].getObject(rt).getArray(rt);
         const size_t length = frames.size(rt);
-        if (!validDriverId(driverId) || !finitePresentation(start) ||
-            !finitePresentation(target) || !std::isfinite(durationMs) ||
-            length < 16 || length % 8 != 0) {
+        if (!validDriverId(driverId) ||
+            (hasInteractiveStart &&
+             (startValues.size(rt) != kPresentationStride ||
+              !presentationAt(rt, startValues, 0, start))) ||
+            targetValues.size(rt) != kPresentationStride ||
+            !presentationAt(rt, targetValues, 0, target) ||
+            !std::isfinite(durationMs) ||
+            length < kKeyframeStride * 2 || length % kKeyframeStride != 0) {
           return Value(0);
         }
         std::vector<Keyframe> keyframes;
-        keyframes.reserve(length / 8);
+        keyframes.reserve(length / kKeyframeStride);
         double previousOffset = -1;
-        for (size_t index = 0; index < length; index += 8) {
-          const double offset = frames.getValueAtIndex(rt, index).asNumber();
-          const Presentation frame{
-              {frames.getValueAtIndex(rt, index + 1).asNumber(),
-               frames.getValueAtIndex(rt, index + 2).asNumber(),
-               frames.getValueAtIndex(rt, index + 3).asNumber(),
-               frames.getValueAtIndex(rt, index + 4).asNumber(),
-               frames.getValueAtIndex(rt, index + 5).asNumber()},
-              frames.getValueAtIndex(rt, index + 6).asNumber(),
-              frames.getValueAtIndex(rt, index + 7).asNumber()};
-          if (!std::isfinite(offset) || offset < 0 || offset > 1 ||
-              offset <= previousOffset || !finitePresentation(frame)) {
+        for (size_t index = 0; index < length; index += kKeyframeStride) {
+          double offset;
+          Presentation frame;
+          if (!numberAt(rt, frames, index, offset) ||
+              !presentationAt(rt, frames, index + 1, frame) ||
+              offset < 0 || offset > 1 || offset <= previousOffset) {
             return Value(0);
           }
           previousOffset = offset;
@@ -931,158 +818,7 @@ void installBindings(
         }
         return Value(animateKeyframes(
             static_cast<uint64_t>(driverId),
-            {boolArg(args, count, 1), start, startStampArg(args, count, 19)},
-            target,
-            durationMs,
-            std::move(keyframes),
-            reduceMotion,
-            AnimationValidationMode::LegacyV1));
-      });
-
-  setHostFunction(
-      runtime, bindings, "animateKeyframesV2", 30,
-      [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 29 || !args[27].isObject() ||
-            !args[27].getObject(rt).isArray(rt)) {
-          return Value(0);
-        }
-        const double driverId = args[0].asNumber();
-        const Presentation start = presentationV2FromArgs(args, 2);
-        const Presentation target = presentationV2FromArgs(args, 14);
-        const double durationMs = args[26].asNumber();
-        const int32_t reduceMotion = static_cast<int32_t>(args[28].asNumber());
-        Array frames = args[27].getObject(rt).getArray(rt);
-        const size_t length = frames.size(rt);
-        if (!validDriverId(driverId) || !validCurve(args[10].asNumber()) ||
-            !validCurve(args[22].asNumber()) ||
-            !finiteV2Presentation(start) || !finiteV2Presentation(target) ||
-            !std::isfinite(durationMs) || length < 26 || length % 13 != 0) {
-          return Value(0);
-        }
-        std::vector<Keyframe> keyframes;
-        keyframes.reserve(length / 13);
-        double previousOffset = -1;
-        for (size_t index = 0; index < length; index += 13) {
-          const double offset = frames.getValueAtIndex(rt, index).asNumber();
-          const double curveCode =
-              frames.getValueAtIndex(rt, index + 9).asNumber();
-          const Presentation frame =
-              presentationV2FromArray(rt, frames, index + 1);
-          if (!std::isfinite(offset) || offset < 0 || offset > 1 ||
-              offset <= previousOffset || !validCurve(curveCode) ||
-              !finiteV2Presentation(frame)) {
-            return Value(0);
-          }
-          previousOffset = offset;
-          keyframes.push_back({offset, frame});
-        }
-        if (keyframes.front().offset != 0 || keyframes.back().offset != 1) {
-          return Value(0);
-        }
-        return Value(animateKeyframes(
-            static_cast<uint64_t>(driverId),
-            {boolArg(args, count, 1), start, startStampArg(args, count, 29)},
-            target,
-            durationMs,
-            std::move(keyframes),
-            reduceMotion));
-      });
-
-  setHostFunction(
-      runtime, bindings, "animateTimingFromV2", 32,
-      [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 31) return Value(0);
-        const double driverId = args[0].asNumber();
-        const Presentation start = presentationV2FromArgs(args, 1);
-        const Presentation target = presentationV2FromArgs(args, 13);
-        const TimingAnimation animation{
-            args[25].asNumber(), args[26].asNumber(), args[27].asNumber(),
-            args[28].asNumber(), args[29].asNumber(),
-            static_cast<int32_t>(args[30].asNumber())};
-        if (!validDriverId(driverId) || !validCurve(args[9].asNumber()) ||
-            !validCurve(args[21].asNumber()) ||
-            !finiteV2Presentation(start) || !finiteV2Presentation(target) ||
-            !std::isfinite(animation.durationMs)) {
-          return Value(0);
-        }
-        return Value(animateTiming(
-            static_cast<uint64_t>(driverId),
-            {true, start, startStampArg(args, count, 31)},
-            target,
-            animation));
-      });
-
-  setHostFunction(
-      runtime, bindings, "animateSpringFromV2", 32,
-      [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 31) return Value(0);
-        const double driverId = args[0].asNumber();
-        const Presentation start = presentationV2FromArgs(args, 1);
-        const Presentation target = presentationV2FromArgs(args, 13);
-        const SpringAnimation animation{
-            args[25].asNumber(), args[26].asNumber(), args[27].asNumber(),
-            args[28].asNumber(), boolArg(args, count, 29),
-            static_cast<int32_t>(args[30].asNumber())};
-        if (!validDriverId(driverId) || !validCurve(args[9].asNumber()) ||
-            !validCurve(args[21].asNumber()) ||
-            !finiteV2Presentation(start) || !finiteV2Presentation(target) ||
-            !std::isfinite(animation.mass) ||
-            !std::isfinite(animation.stiffness) ||
-            !std::isfinite(animation.damping) ||
-            !std::isfinite(animation.initialVelocity) || animation.mass <= 0 ||
-            animation.stiffness <= 0 || animation.damping < 0) {
-          return Value(0);
-        }
-        return Value(animateSpring(
-            static_cast<uint64_t>(driverId),
-            {true, start, startStampArg(args, count, 31)},
-            target,
-            animation));
-      });
-
-  setHostFunction(
-      runtime, bindings, "animateKeyframesFromV2", 29,
-      [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 28 || !args[26].isObject() ||
-            !args[26].getObject(rt).isArray(rt)) {
-          return Value(0);
-        }
-        const double driverId = args[0].asNumber();
-        const Presentation start = presentationV2FromArgs(args, 1);
-        const Presentation target = presentationV2FromArgs(args, 13);
-        const double durationMs = args[25].asNumber();
-        const int32_t reduceMotion = static_cast<int32_t>(args[27].asNumber());
-        Array frames = args[26].getObject(rt).getArray(rt);
-        const size_t length = frames.size(rt);
-        if (!validDriverId(driverId) || !validCurve(args[9].asNumber()) ||
-            !validCurve(args[21].asNumber()) ||
-            !finiteV2Presentation(start) || !finiteV2Presentation(target) ||
-            !std::isfinite(durationMs) || length < 26 || length % 13 != 0) {
-          return Value(0);
-        }
-        std::vector<Keyframe> keyframes;
-        keyframes.reserve(length / 13);
-        double previousOffset = -1;
-        for (size_t index = 0; index < length; index += 13) {
-          const double offset = frames.getValueAtIndex(rt, index).asNumber();
-          const double frameCurve =
-              frames.getValueAtIndex(rt, index + 9).asNumber();
-          const Presentation frame =
-              presentationV2FromArray(rt, frames, index + 1);
-          if (!std::isfinite(offset) || offset < 0 || offset > 1 ||
-              offset <= previousOffset || !validCurve(frameCurve) ||
-              !finiteV2Presentation(frame)) {
-            return Value(0);
-          }
-          previousOffset = offset;
-          keyframes.push_back({offset, frame});
-        }
-        if (keyframes.front().offset != 0 || keyframes.back().offset != 1) {
-          return Value(0);
-        }
-        return Value(animateKeyframes(
-            static_cast<uint64_t>(driverId),
-            {true, start, startStampArg(args, count, 28)},
+            {hasInteractiveStart, start, startStampArg(args, count, 6)},
             target,
             durationMs,
             std::move(keyframes),
@@ -1101,27 +837,14 @@ void installBindings(
       runtime, bindings, "cancelAnimation", 3,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
         if (count < 3 || !validDriverId(args[0].asNumber())) {
-          return cancelResultArray(rt, false, {{0, 0, 0, 0, 0}, 0, 0});
-        }
-        const CancelResult result = cancelAnimation(
-            static_cast<uint64_t>(args[0].asNumber()),
-            static_cast<int32_t>(args[1].asNumber()),
-            static_cast<int32_t>(args[2].asNumber()) == 1);
-        return cancelResultArray(rt, result.handled, result.presentation);
-      });
-
-  setHostFunction(
-      runtime, bindings, "cancelAnimationV2", 3,
-      [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 3 || !validDriverId(args[0].asNumber())) {
-          return cancelResultArrayV2(
+          return cancelResultArray(
               rt, false, {{0, 0, 0, 0, 0}, 0, 0});
         }
         const CancelResult result = cancelAnimation(
             static_cast<uint64_t>(args[0].asNumber()),
             static_cast<int32_t>(args[1].asNumber()),
             static_cast<int32_t>(args[2].asNumber()) == 1);
-        return cancelResultArrayV2(
+        return cancelResultArray(
             rt, result.handled, result.presentation);
       });
 
@@ -1221,33 +944,6 @@ void nativeRegisterView(
     jdouble y,
     jdouble width,
     jdouble height,
-    jdouble radius,
-    jdouble contentTranslateX,
-    jdouble contentTranslateY,
-    jdouble density,
-    jdouble widthPx,
-    jdouble heightPx,
-    jboolean lifecycleVisible) {
-  if (driverId <= 0 || !std::isfinite(driverId)) return;
-  smoothclip::registerViewAndroid(
-      static_cast<uint64_t>(driverId),
-      view,
-      smoothclip::Presentation{
-          {x, y, width, height, radius}, contentTranslateX, contentTranslateY},
-      density,
-      widthPx,
-      heightPx,
-      lifecycleVisible != 0);
-}
-
-void nativeRegisterViewV2(
-    jni::alias_ref<jni::JObject>,
-    jdouble driverId,
-    jni::alias_ref<smoothclip::JSmoothClipView> view,
-    jdouble x,
-    jdouble y,
-    jdouble width,
-    jdouble height,
     jdouble topLeftRadius,
     jdouble topRightRadius,
     jdouble bottomRightRadius,
@@ -1256,6 +952,15 @@ void nativeRegisterViewV2(
     jdouble contentTranslateX,
     jdouble contentTranslateY,
     jdouble contentScale,
+    jboolean shadowEnabled,
+    jdouble shadowRed,
+    jdouble shadowGreen,
+    jdouble shadowBlue,
+    jdouble shadowAlpha,
+    jdouble shadowOffsetX,
+    jdouble shadowOffsetY,
+    jdouble shadowBlurRadius,
+    jdouble shadowSpreadDistance,
     jdouble density,
     jdouble widthPx,
     jdouble heightPx,
@@ -1266,7 +971,14 @@ void nativeRegisterViewV2(
       !std::isfinite(bottomRightRadius) || !std::isfinite(bottomLeftRadius) ||
       !std::isfinite(contentTranslateX) ||
       !std::isfinite(contentTranslateY) || !std::isfinite(contentScale) ||
-      contentScale <= 0 ||
+      !std::isfinite(shadowRed) || !std::isfinite(shadowGreen) ||
+      !std::isfinite(shadowBlue) || !std::isfinite(shadowAlpha) ||
+      !std::isfinite(shadowOffsetX) ||
+      !std::isfinite(shadowOffsetY) || !std::isfinite(shadowBlurRadius) ||
+      !std::isfinite(shadowSpreadDistance) || contentScale <= 0 ||
+      shadowRed < 0 || shadowRed > 1 || shadowGreen < 0 || shadowGreen > 1 ||
+      shadowBlue < 0 || shadowBlue > 1 || shadowAlpha < 0 || shadowAlpha > 1 ||
+      shadowBlurRadius < 0 ||
       (curveCode != static_cast<jint>(smoothclip::ClipCurve::Circular) &&
        curveCode != static_cast<jint>(smoothclip::ClipCurve::Continuous))) {
     return;
@@ -1281,11 +993,21 @@ void nativeRegisterViewV2(
       topLeftRadius == bottomLeftRadius) {
     geometry.radius = topLeftRadius;
   }
+  smoothclip::Shadow shadow{
+      shadowEnabled != 0,
+      shadowRed,
+      shadowGreen,
+      shadowBlue,
+      shadowAlpha,
+      shadowOffsetX,
+      shadowOffsetY,
+      shadowBlurRadius,
+      shadowSpreadDistance};
   smoothclip::registerViewAndroid(
       static_cast<uint64_t>(driverId),
       view,
       smoothclip::Presentation{
-          geometry, contentTranslateX, contentTranslateY, contentScale},
+          geometry, contentTranslateX, contentTranslateY, contentScale, shadow},
       density,
       widthPx,
       heightPx,
@@ -1339,7 +1061,6 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) {
         {
             makeNativeMethod("getBindingsInstaller", getBindingsInstaller),
             makeNativeMethod("nativeRegisterView", nativeRegisterView),
-            makeNativeMethod("nativeRegisterViewV2", nativeRegisterViewV2),
             makeNativeMethod(
                 "nativeSetViewHostGeometry", nativeSetViewHostGeometry),
             makeNativeMethod("nativeUnregisterView", nativeUnregisterView),

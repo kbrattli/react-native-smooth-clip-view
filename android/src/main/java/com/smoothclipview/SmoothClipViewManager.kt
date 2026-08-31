@@ -20,8 +20,6 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
         var y: Double = 0.0,
         var width: Double = 0.0,
         var height: Double = 0.0,
-        var radius: Double = 0.0,
-        var presentationVersion: Int = 1,
         var topLeftRadius: Double = 0.0,
         var topRightRadius: Double = 0.0,
         var bottomRightRadius: Double = 0.0,
@@ -30,6 +28,15 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
         var contentTranslateX: Double = 0.0,
         var contentTranslateY: Double = 0.0,
         var contentScale: Double = 1.0,
+        var shadowEnabled: Boolean = false,
+        var shadowRed: Double = 0.0,
+        var shadowGreen: Double = 0.0,
+        var shadowBlue: Double = 0.0,
+        var shadowAlpha: Double = 1.0,
+        var shadowOffsetX: Double = 0.0,
+        var shadowOffsetY: Double = 0.0,
+        var shadowBlurRadius: Double = 0.0,
+        var shadowSpreadDistance: Double = 0.0,
         var driverId: Double = 0.0,
         // Whether any prop setter ran in the current update transaction.
         var dirty: Boolean = false,
@@ -97,16 +104,6 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
         pending(view).height = value
     }
 
-    @ReactProp(name = "initialClipRadius")
-    override fun setInitialClipRadius(view: SmoothClipView, value: Double) {
-        pending(view).radius = value
-    }
-
-    @ReactProp(name = "presentationVersion")
-    override fun setPresentationVersion(view: SmoothClipView, value: Int) {
-        pending(view).presentationVersion = value
-    }
-
     @ReactProp(name = "initialClipTopLeftRadius")
     override fun setInitialClipTopLeftRadius(view: SmoothClipView, value: Double) {
         pending(view).topLeftRadius = value
@@ -147,41 +144,36 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
         pending(view).contentScale = value
     }
 
-    override fun setClipGeometry(
-        view: SmoothClipView,
-        x: Double,
-        y: Double,
-        width: Double,
-        height: Double,
-        radius: Double,
-    ) {
-        view.commandIsAuthoritative = true
-        view.setClipGeometryDip(x, y, width, height, radius)
+    @ReactProp(name = "initialClipBoxShadowEnabled")
+    override fun setInitialClipBoxShadowEnabled(view: SmoothClipView, value: Boolean) {
+        pending(view).shadowEnabled = value
     }
+
+    @ReactProp(name = "initialClipBoxShadowRed")
+    override fun setInitialClipBoxShadowRed(view: SmoothClipView, value: Double) { pending(view).shadowRed = value }
+
+    @ReactProp(name = "initialClipBoxShadowGreen")
+    override fun setInitialClipBoxShadowGreen(view: SmoothClipView, value: Double) { pending(view).shadowGreen = value }
+
+    @ReactProp(name = "initialClipBoxShadowBlue")
+    override fun setInitialClipBoxShadowBlue(view: SmoothClipView, value: Double) { pending(view).shadowBlue = value }
+
+    @ReactProp(name = "initialClipBoxShadowAlpha")
+    override fun setInitialClipBoxShadowAlpha(view: SmoothClipView, value: Double) { pending(view).shadowAlpha = value }
+
+    @ReactProp(name = "initialClipBoxShadowOffsetX")
+    override fun setInitialClipBoxShadowOffsetX(view: SmoothClipView, value: Double) { pending(view).shadowOffsetX = value }
+
+    @ReactProp(name = "initialClipBoxShadowOffsetY")
+    override fun setInitialClipBoxShadowOffsetY(view: SmoothClipView, value: Double) { pending(view).shadowOffsetY = value }
+
+    @ReactProp(name = "initialClipBoxShadowBlurRadius")
+    override fun setInitialClipBoxShadowBlurRadius(view: SmoothClipView, value: Double) { pending(view).shadowBlurRadius = value }
+
+    @ReactProp(name = "initialClipBoxShadowSpreadDistance")
+    override fun setInitialClipBoxShadowSpreadDistance(view: SmoothClipView, value: Double) { pending(view).shadowSpreadDistance = value }
 
     override fun setClipPresentation(
-        view: SmoothClipView,
-        x: Double,
-        y: Double,
-        width: Double,
-        height: Double,
-        radius: Double,
-        contentTranslateX: Double,
-        contentTranslateY: Double,
-    ) {
-        view.commandIsAuthoritative = true
-        view.setClipPresentationDip(
-            x,
-            y,
-            width,
-            height,
-            radius,
-            contentTranslateX,
-            contentTranslateY,
-        )
-    }
-
-    override fun setClipPresentationV2(
         view: SmoothClipView,
         x: Double,
         y: Double,
@@ -195,9 +187,18 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
         contentTranslateX: Double,
         contentTranslateY: Double,
         contentScale: Double,
+        shadowEnabled: Boolean,
+        shadowRed: Double,
+        shadowGreen: Double,
+        shadowBlue: Double,
+        shadowAlpha: Double,
+        shadowOffsetX: Double,
+        shadowOffsetY: Double,
+        shadowBlurRadius: Double,
+        shadowSpreadDistance: Double,
     ) {
         view.commandIsAuthoritative = true
-        view.setClipPresentationV2Dip(
+        view.setClipPresentationDip(
             x,
             y,
             width,
@@ -210,6 +211,15 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
             contentTranslateX,
             contentTranslateY,
             contentScale,
+            shadowEnabled,
+            shadowRed,
+            shadowGreen,
+            shadowBlue,
+            shadowAlpha,
+            shadowOffsetX,
+            shadowOffsetY,
+            shadowBlurRadius,
+            shadowSpreadDistance,
         )
     }
 
@@ -228,8 +238,7 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
         }
         view.boundDriverId = initial.driverId
         if (initial.driverId != 0.0) {
-            if (initial.presentationVersion >= 2) {
-                SmoothClipBindings.nativeRegisterViewV2(
+            SmoothClipBindings.nativeRegisterView(
                     initial.driverId,
                     view,
                     initial.x,
@@ -244,33 +253,24 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
                     initial.contentTranslateX,
                     initial.contentTranslateY,
                     initial.contentScale,
+                    initial.shadowEnabled,
+                    initial.shadowRed,
+                    initial.shadowGreen,
+                    initial.shadowBlue,
+                    initial.shadowAlpha,
+                    initial.shadowOffsetX,
+                    initial.shadowOffsetY,
+                    initial.shadowBlurRadius,
+                    initial.shadowSpreadDistance,
                     view.densityScale(),
                     view.width.toDouble(),
                     view.height.toDouble(),
                     view.isHostLifecycleVisible(),
                 )
-            } else {
-                SmoothClipBindings.nativeRegisterView(
-                    initial.driverId,
-                    view,
-                    initial.x,
-                    initial.y,
-                    initial.width,
-                    initial.height,
-                    initial.radius,
-                    initial.contentTranslateX,
-                    initial.contentTranslateY,
-                    view.densityScale(),
-                    view.width.toDouble(),
-                    view.height.toDouble(),
-                    view.isHostLifecycleVisible(),
-                )
-            }
         } else if (!view.commandIsAuthoritative) {
             // Command-driven mode (driverId 0): the initial props are the only
             // source of the first clip, so apply them directly.
-            if (initial.presentationVersion >= 2) {
-                view.setClipPresentationV2Dip(
+            view.setClipPresentationDip(
                     initial.x,
                     initial.y,
                     initial.width,
@@ -283,18 +283,16 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
                     initial.contentTranslateX,
                     initial.contentTranslateY,
                     initial.contentScale,
+                    initial.shadowEnabled,
+                    initial.shadowRed,
+                    initial.shadowGreen,
+                    initial.shadowBlue,
+                    initial.shadowAlpha,
+                    initial.shadowOffsetX,
+                    initial.shadowOffsetY,
+                    initial.shadowBlurRadius,
+                    initial.shadowSpreadDistance,
                 )
-            } else {
-                view.setClipPresentationDip(
-                    initial.x,
-                    initial.y,
-                    initial.width,
-                    initial.height,
-                    initial.radius,
-                    initial.contentTranslateX,
-                    initial.contentTranslateY,
-                )
-            }
         } else {
             view.reapplyClipPresentation()
         }

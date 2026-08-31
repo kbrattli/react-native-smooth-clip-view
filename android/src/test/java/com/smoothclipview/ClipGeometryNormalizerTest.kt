@@ -39,7 +39,7 @@ class ClipGeometryNormalizerTest {
         return accepted to result
     }
 
-    private data class GeometryV2(
+    private data class GeometryValue(
         val left: Float,
         val top: Float,
         val right: Float,
@@ -51,7 +51,7 @@ class ClipGeometryNormalizerTest {
         val curveCode: Int,
     )
 
-    private fun normalizeV2(
+    private fun normalizeValue(
         x: Float,
         y: Float,
         width: Float,
@@ -63,9 +63,9 @@ class ClipGeometryNormalizerTest {
         curveCode: Int = CLIP_CURVE_CIRCULAR,
         hostWidth: Float = 100f,
         hostHeight: Float = 80f,
-    ): Pair<Boolean, GeometryV2?> {
-        var result: GeometryV2? = null
-        val accepted = normalizeClipGeometryV2Px(
+    ): Pair<Boolean, GeometryValue?> {
+        var result: GeometryValue? = null
+        val accepted = normalizeClipGeometryPx(
             x,
             y,
             width,
@@ -78,7 +78,7 @@ class ClipGeometryNormalizerTest {
             hostWidth,
             hostHeight,
         ) { left, top, right, bottom, topLeft, topRight, bottomRight, bottomLeft, curve ->
-            result = GeometryV2(
+            result = GeometryValue(
                 left,
                 top,
                 right,
@@ -94,8 +94,8 @@ class ClipGeometryNormalizerTest {
     }
 
     @Test
-    fun v2UsesOneCssOverlapFactorForAllCorners() {
-        val (accepted, result) = normalizeV2(
+    fun v3UsesOneCssOverlapFactorForAllCorners() {
+        val (accepted, result) = normalizeValue(
             0f,
             0f,
             100f,
@@ -109,7 +109,7 @@ class ClipGeometryNormalizerTest {
 
         assertTrue(accepted)
         assertEquals(
-            GeometryV2(
+            GeometryValue(
                 0f,
                 0f,
                 100f,
@@ -125,11 +125,11 @@ class ClipGeometryNormalizerTest {
     }
 
     @Test
-    fun v2RejectsInvalidCurveAndNonFiniteCornerAtomically() {
-        val (invalidCurveAccepted, invalidCurveResult) = normalizeV2(
+    fun v3RejectsInvalidCurveAndNonFiniteCornerAtomically() {
+        val (invalidCurveAccepted, invalidCurveResult) = normalizeValue(
             0f, 0f, 100f, 80f, 10f, 10f, 10f, 10f, curveCode = 2,
         )
-        val (nanAccepted, nanResult) = normalizeV2(
+        val (nanAccepted, nanResult) = normalizeValue(
             0f, 0f, 100f, 80f, Float.NaN, 10f, 10f, 10f,
         )
 
@@ -174,7 +174,7 @@ class ClipGeometryNormalizerTest {
     @Test
     fun matchesTheSharedNormalizerVectorTable() {
         // Mirrored in ios/tests/SmoothClipSharedGeometryTests.mm so this
-        // Kotlin legacy path and the shared C++ normalizer (used for driver
+        // Kotlin and the shared C++ normalizer (used for driver
         // deliveries in SmoothClipRegistry.cpp) provably agree.
         val vectors = listOf(
             // x, y, w, h, r, hostW, hostH -> left, top, right, bottom, radius

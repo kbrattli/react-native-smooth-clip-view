@@ -7,9 +7,9 @@ import { Platform } from 'react-native';
 import { useSharedValue, type SharedValue } from 'react-native-reanimated';
 import { isRNRuntime, scheduleOnRN, scheduleOnUI } from 'react-native-worklets';
 import NativeSmoothClipModule from './smoothClipNative';
-import { getSmoothClipCapabilities } from './capabilities';
 import type {
   ClipReduceMotion,
+  InternalSmoothClipDriver,
   KeyframedClipAnimation,
   SmoothClipAnimation,
   SmoothClipDriver,
@@ -27,6 +27,7 @@ import {
 } from './driverState';
 import {
   completeNativeAnimation,
+  subscribeDriverCompletion,
   synchronizeNativeCompletion,
 } from './nativeCompletion';
 import {
@@ -43,6 +44,12 @@ import {
   rejectDriverRequests,
   resolveReactRequest,
 } from './reactRequests';
+import {
+  appendPresentationPacket,
+  PRESENTATION_STRIDE,
+  presentationFromPacket,
+  presentationPacket,
+} from './presentationCodec';
 
 const INTERACTIVE = 0;
 const NATIVE = 1;
@@ -53,98 +60,71 @@ const NATIVE = 1;
 // stamp there is a wasted native _getAnimationTimestamp() call per animateTo.
 // Resolved once at module scope; the worklet captures the primitive.
 const NEEDS_START_STAMP = Platform.OS === 'android';
-const PRESENTATION_PROTOCOL_VERSION =
-  getSmoothClipCapabilities().presentationProtocolVersion;
 
-type NativeV2HostFunctions = Readonly<{
-  setClipPresentationV2(
+// Android's JSI implementation accepts one extra frame-clock stamp after the
+// codegen-declared packet API. Keep that extension isolated at this boundary.
+type NativeHostFunctions = Readonly<{
+  setClipPresentation(
     driverId: number,
-    x: number,
-    y: number,
-    width: number,
-    height: number,
-    topLeftRadius: number,
-    topRightRadius: number,
-    bottomRightRadius: number,
-    bottomLeftRadius: number,
-    curveCode: number,
-    contentTranslateX: number,
-    contentTranslateY: number,
-    contentScale: number,
+    presentation: readonly number[],
     takeOwnership: boolean,
-    overridePendingAnimation: boolean,
-    recordVelocity?: boolean
+    overridePendingAnimation: boolean
   ): void;
-  beginInteractionV2(driverId: number): readonly number[];
-  snapshotCurrentV2(driverId: number): readonly number[];
-  animateTimingV2(...args: readonly unknown[]): number;
-  animateSpringV2(...args: readonly unknown[]): number;
-  animateKeyframesV2(...args: readonly unknown[]): number;
-  animateTimingFromV2(...args: readonly unknown[]): number;
-  animateSpringFromV2(...args: readonly unknown[]): number;
-  animateKeyframesFromV2(...args: readonly unknown[]): number;
-  cancelAnimationV2(
+  setClipPresentationScalars(...args: readonly unknown[]): void;
+  beginInteraction(driverId: number): readonly number[];
+  snapshotCurrent(driverId: number): readonly number[];
+  animateTiming(
+    driverId: number,
+    start: readonly number[],
+    target: readonly number[],
+    durationMs: number,
+    controlPoint1X: number,
+    controlPoint1Y: number,
+    controlPoint2X: number,
+    controlPoint2Y: number,
+    reduceMotion: number,
+    startedAtMs?: number
+  ): number;
+  animateSpring(
+    driverId: number,
+    start: readonly number[],
+    target: readonly number[],
+    mass: number,
+    stiffness: number,
+    damping: number,
+    initialVelocity: number,
+    inheritVelocity: boolean,
+    reduceMotion: number,
+    startedAtMs?: number
+  ): number;
+  animateKeyframes(
+    driverId: number,
+    start: readonly number[],
+    target: readonly number[],
+    durationMs: number,
+    frames: readonly number[],
+    reduceMotion: number,
+    startedAtMs?: number
+  ): number;
+  cancelAnimation(
     driverId: number,
     animationId: number,
     behavior: number
   ): readonly number[];
 }>;
 
-const NativeSmoothClipModuleV2 =
-  NativeSmoothClipModule as unknown as Partial<NativeV2HostFunctions>;
+const nativeHost = NativeSmoothClipModule as unknown as NativeHostFunctions;
 
-// Widened like the animate* functions below: one trailing argument beyond the
-// TurboModule spec — whether this write should record an `'inherit'` velocity
-// sample. Android's JSI bindings read it (absent means record, the pre-flag
-// behavior); the iOS TurboModule reads its declared parameters positionally
-// and drops it, so iOS always records.
-type WithRecordVelocity<F> = F extends (...args: infer A) => infer R
-  ? (...args: [...A, recordVelocity?: boolean]) => R
-  : never;
-const setPresentationHostFunction: WithRecordVelocity<
-  typeof NativeSmoothClipModule.setClipPresentation
-> = NativeSmoothClipModule.setClipPresentation;
-const beginInteractionHostFunction = NativeSmoothClipModule.beginInteraction;
-
-// The animate* host functions take one argument beyond the TurboModule spec:
-// the Reanimated-rule start stamp in milliseconds (see animateOnUI). Android's
-// JSI bindings read it as an optional trailing argument; the iOS TurboModule
-// reads its declared parameters positionally and ignores extras, so the
-// codegen spec stays untouched and both platforms take the same call. A
-// narrower function is assignable to the widened type, so no cast is needed.
-type WithStartStamp<F> = F extends (...args: infer A) => infer R
-  ? (...args: [...A, startedAtMs: number]) => R
-  : never;
-const animateTimingHostFunction: WithStartStamp<
-  typeof NativeSmoothClipModule.animateTiming
-> = NativeSmoothClipModule.animateTiming;
-const animateSpringHostFunction: WithStartStamp<
-  typeof NativeSmoothClipModule.animateSpring
-> = NativeSmoothClipModule.animateSpring;
-const animateKeyframesHostFunction: WithStartStamp<
-  typeof NativeSmoothClipModule.animateKeyframes
-> = NativeSmoothClipModule.animateKeyframes;
 const rejectAnimationHostFunction = NativeSmoothClipModule.rejectAnimation;
-const cancelAnimationHostFunction = NativeSmoothClipModule.cancelAnimation;
 const destroyDriverHostFunction = NativeSmoothClipModule.destroyDriver;
-const setPresentationV2HostFunction =
-  NativeSmoothClipModuleV2.setClipPresentationV2;
-const beginInteractionV2HostFunction =
-  NativeSmoothClipModuleV2.beginInteractionV2;
-const snapshotCurrentV2HostFunction =
-  NativeSmoothClipModuleV2.snapshotCurrentV2;
-const animateTimingV2HostFunction = NativeSmoothClipModuleV2.animateTimingV2;
-const animateSpringV2HostFunction = NativeSmoothClipModuleV2.animateSpringV2;
-const animateKeyframesV2HostFunction =
-  NativeSmoothClipModuleV2.animateKeyframesV2;
-const animateTimingFromV2HostFunction =
-  NativeSmoothClipModuleV2.animateTimingFromV2;
-const animateSpringFromV2HostFunction =
-  NativeSmoothClipModuleV2.animateSpringFromV2;
-const animateKeyframesFromV2HostFunction =
-  NativeSmoothClipModuleV2.animateKeyframesFromV2;
-const cancelAnimationV2HostFunction =
-  NativeSmoothClipModuleV2.cancelAnimationV2;
+const setPresentationHostFunction = nativeHost.setClipPresentation;
+const setScalarsHostFunction = nativeHost.setClipPresentationScalars;
+const beginInteractionHostFunction = nativeHost.beginInteraction;
+const snapshotCurrentHostFunction = nativeHost.snapshotCurrent;
+const animateTimingHostFunction = nativeHost.animateTiming;
+const animateSpringHostFunction = nativeHost.animateSpring;
+const animateKeyframesHostFunction = nativeHost.animateKeyframes;
+const cancelAnimationHostFunction = nativeHost.cancelAnimation;
 
 // Workaround for react-native-worklets 0.10.0 (fixed upstream in >=0.10.1,
 // which drops the registry/proxy design; kept while the peer range still
@@ -172,10 +152,7 @@ function reduceMotionCode(value: ClipReduceMotion): number {
   }
 }
 
-function animationIsFinite(
-  animation: SmoothClipAnimation,
-  strictV2: boolean
-): boolean {
+function animationIsFinite(animation: SmoothClipAnimation): boolean {
   'worklet';
   if (
     animation.from !== undefined &&
@@ -189,14 +166,17 @@ function animationIsFinite(
     const [x1, , x2] = animation.controlPoints;
     return (
       Number.isFinite(animation.duration) &&
-      (!strictV2 || animation.duration >= 0) &&
+      animation.duration >= 0 &&
       animation.controlPoints.every(Number.isFinite) &&
       // A cubic-bezier easing is only defined for x within [0,1] (the CSS /
       // CoreAnimation / Reanimated Easing.bezier contract). Out-of-range x
       // makes the Android parameter solve meaningless while CoreAnimation
       // silently clamps — reject like any other invalid input instead of
       // diverging per platform.
-      (!strictV2 || (x1 >= 0 && x1 <= 1 && x2 >= 0 && x2 <= 1))
+      x1 >= 0 &&
+      x1 <= 1 &&
+      x2 >= 0 &&
+      x2 <= 1
     );
   }
   if (animation.type === 'spring') {
@@ -209,7 +189,9 @@ function animationIsFinite(
         : (animation.initialVelocity ?? 0);
     return (
       [mass, stiffness, damping, initialVelocity].every(Number.isFinite) &&
-      (!strictV2 || (mass > 0 && stiffness > 0 && damping >= 0))
+      mass > 0 &&
+      stiffness > 0 &&
+      damping >= 0
     );
   }
   // Keyframe frames validate inside flattenFiniteKeyframes — one traversal
@@ -217,9 +199,7 @@ function animationIsFinite(
   // check is statically always-true for the TS union but load-bearing for JS
   // callers: an unrecognized type must reject here, or it would skip the
   // keyframe gate entirely and hand native a null frames array.
-  return (
-    animation.type === 'keyframes' && (!strictV2 || animation.duration >= 0)
-  );
+  return animation.type === 'keyframes' && animation.duration >= 0;
 }
 
 function presentationFromNative(
@@ -228,59 +208,7 @@ function presentationFromNative(
   offset = 0
 ): CanonicalSmoothClipPresentation {
   'worklet';
-  if (values.length >= offset + 12) {
-    const presentation = canonicalizeClipPresentation({
-      clip: {
-        x: values[offset] as number,
-        y: values[offset + 1] as number,
-        width: values[offset + 2] as number,
-        height: values[offset + 3] as number,
-        radius: 0,
-        topLeftRadius: values[offset + 4] as number,
-        topRightRadius: values[offset + 5] as number,
-        bottomRightRadius: values[offset + 6] as number,
-        bottomLeftRadius: values[offset + 7] as number,
-        curve: values[offset + 8] === 1 ? 'continuous' : 'circular',
-      },
-      contentTranslateX: values[offset + 9] as number,
-      contentTranslateY: values[offset + 10] as number,
-      contentScale: values[offset + 11] as number,
-    });
-    return presentation ?? fallback;
-  }
-  if (values.length < offset + 7) return fallback;
-  const presentation = canonicalizeClipPresentation({
-    clip: {
-      x: values[offset] as number,
-      y: values[offset + 1] as number,
-      width: values[offset + 2] as number,
-      height: values[offset + 3] as number,
-      radius: values[offset + 4] as number,
-    },
-    contentTranslateX: values[offset + 5] as number,
-    contentTranslateY: values[offset + 6] as number,
-  });
-  return presentation ?? fallback;
-}
-
-function curveCode(presentation: CanonicalSmoothClipPresentation): number {
-  'worklet';
-  return presentation.clip.curve === 'continuous' ? 1 : 0;
-}
-
-function isV1Compatible(
-  presentation: CanonicalSmoothClipPresentation
-): boolean {
-  'worklet';
-  const clip = presentation.clip;
-  return (
-    clip.curve === 'circular' &&
-    clip.topLeftRadius === clip.radius &&
-    clip.topRightRadius === clip.radius &&
-    clip.bottomRightRadius === clip.radius &&
-    clip.bottomLeftRadius === clip.radius &&
-    presentation.contentScale === 1
-  );
+  return presentationFromPacket(values, offset) ?? fallback;
 }
 
 function springScaleIsProvablyPositive(
@@ -336,23 +264,8 @@ function flattenFiniteKeyframes(
     }
     previousOffset = offset;
     canonicalFrames.push(presentation);
-    const { clip, contentTranslateX, contentTranslateY, contentScale } =
-      presentation;
-    values.push(
-      offset,
-      clip.x,
-      clip.y,
-      clip.width,
-      clip.height,
-      clip.topLeftRadius,
-      clip.topRightRadius,
-      clip.bottomRightRadius,
-      clip.bottomLeftRadius,
-      curveCode(presentation),
-      contentTranslateX,
-      contentTranslateY,
-      contentScale
-    );
+    values.push(offset);
+    appendPresentationPacket(values, presentation);
   }
   if (
     animation.frames[0]?.offset !== 0 ||
@@ -365,30 +278,6 @@ function flattenFiniteKeyframes(
     return null;
   }
   return { frames: values, canonicalFrames };
-}
-
-function flattenV1Keyframes(
-  frames: readonly CanonicalSmoothClipPresentation[],
-  offsets: readonly number[]
-): number[] {
-  'worklet';
-  const values: number[] = [];
-  for (let index = 0; index < frames.length; index += 1) {
-    const presentation = frames[index];
-    const offset = offsets[index];
-    if (presentation === undefined || offset === undefined) continue;
-    values.push(
-      offset,
-      presentation.clip.x,
-      presentation.clip.y,
-      presentation.clip.width,
-      presentation.clip.height,
-      presentation.clip.radius,
-      presentation.contentTranslateX,
-      presentation.contentTranslateY
-    );
-  }
-  return values;
 }
 
 function uiOnly(): never {
@@ -430,7 +319,7 @@ export function useSmoothClipDriver(
   // here.
   const disposed = useSharedValue(0);
   const callbackRef = useRef(options.onAnimationComplete);
-  const driverRef = useRef<SmoothClipDriver | null>(null);
+  const driverRef = useRef<InternalSmoothClipDriver | null>(null);
   callbackRef.current = options.onAnimationComplete;
 
   if (driverRef.current === null) {
@@ -461,9 +350,7 @@ export function useSmoothClipDriver(
         canonicalizeClipPresentation(presentation.value) ?? initialPresentation;
       if (disposed.value !== 0) return fallback;
       const current = presentationFromNative(
-        PRESENTATION_PROTOCOL_VERSION === 2 && beginInteractionV2HostFunction
-          ? beginInteractionV2HostFunction(driverId)
-          : beginInteractionHostFunction(driverId),
+        beginInteractionHostFunction(driverId),
         fallback
       );
       activeAnimationId.value = 0;
@@ -480,109 +367,19 @@ export function useSmoothClipDriver(
       activeAnimationId.value = 0;
       ownership.value = INTERACTIVE;
       scalarsStale.value = 0;
-      const { clip, contentTranslateX, contentTranslateY, contentScale } =
-        canonical;
       // Always records: only the per-frame setScalars hot path is gated by
       // velocityTracking. set() already pays full validation and a SharedValue
       // seed per call, so the sample recording is noise here.
-      if (
-        PRESENTATION_PROTOCOL_VERSION === 2 &&
-        setPresentationV2HostFunction
-      ) {
-        setPresentationV2HostFunction(
-          driverId,
-          clip.x,
-          clip.y,
-          clip.width,
-          clip.height,
-          clip.topLeftRadius,
-          clip.topRightRadius,
-          clip.bottomRightRadius,
-          clip.bottomLeftRadius,
-          curveCode(canonical),
-          contentTranslateX,
-          contentTranslateY,
-          contentScale,
-          true,
-          false,
-          true
-        );
-      } else if (isV1Compatible(canonical)) {
-        setPresentationHostFunction(
-          driverId,
-          clip.x,
-          clip.y,
-          clip.width,
-          clip.height,
-          clip.radius,
-          contentTranslateX,
-          contentTranslateY,
-          true,
-          false
-        );
-      } else {
-        return;
-      }
+      setPresentationHostFunction(
+        driverId,
+        presentationPacket(canonical),
+        true,
+        false
+      );
       seedPresentation(canonical);
     };
 
     const setScalarsOnUI = (
-      x: number,
-      y: number,
-      width: number,
-      height: number,
-      radius: number,
-      contentTranslateX: number,
-      contentTranslateY: number,
-      overridePendingAnimation = false,
-      forceRecordVelocity = false
-    ): void => {
-      'worklet';
-      // Resolved in the body, not as a default-parameter initializer: the
-      // worklets Babel plugin only captures closure variables referenced
-      // inside the function body, so `= velocityTracking` up in the parameter
-      // list would throw "Property 'velocityTracking' doesn't exist" on the
-      // UI runtime.
-      const recordVelocity = forceRecordVelocity || velocityTracking;
-      // Number.isFinite (not a fused arithmetic gate): it also rejects
-      // non-number types, which arithmetic would coerce past the gate and
-      // into a UI-runtime throw from the binding's asNumber. The gate must
-      // stay on this side of the bridge: the native binding drops non-finite
-      // writes silently, and flipping the ownership SharedValues below for a
-      // write native never applied would let the deliver listener record
-      // values native has not observed — a later identical declarative write
-      // then dedupes against them and is swallowed for good.
-      if (
-        disposed.value !== 0 ||
-        !Number.isFinite(x) ||
-        !Number.isFinite(y) ||
-        !Number.isFinite(width) ||
-        !Number.isFinite(height) ||
-        !Number.isFinite(radius) ||
-        !Number.isFinite(contentTranslateX) ||
-        !Number.isFinite(contentTranslateY)
-      ) {
-        return;
-      }
-      if (activeAnimationId.value !== 0) activeAnimationId.value = 0;
-      if (ownership.value !== INTERACTIVE) ownership.value = INTERACTIVE;
-      if (scalarsStale.value === 0) scalarsStale.value = 1;
-      setPresentationHostFunction(
-        driverId,
-        x,
-        y,
-        width,
-        height,
-        radius,
-        contentTranslateX,
-        contentTranslateY,
-        true,
-        overridePendingAnimation,
-        recordVelocity
-      );
-    };
-
-    const setPresentationScalarsOnUI = (
       x: number,
       y: number,
       width: number,
@@ -599,58 +396,30 @@ export function useSmoothClipDriver(
       forceRecordVelocity = false
     ): void => {
       'worklet';
-      const values = [
-        x,
-        y,
-        width,
-        height,
-        topLeftRadius,
-        topRightRadius,
-        bottomRightRadius,
-        bottomLeftRadius,
-        nextCurveCode,
-        contentTranslateX,
-        contentTranslateY,
-        contentScale,
-      ];
       if (
         disposed.value !== 0 ||
-        !values.every(Number.isFinite) ||
+        !Number.isFinite(x) ||
+        !Number.isFinite(y) ||
+        !Number.isFinite(width) ||
+        !Number.isFinite(height) ||
+        !Number.isFinite(topLeftRadius) ||
+        !Number.isFinite(topRightRadius) ||
+        !Number.isFinite(bottomRightRadius) ||
+        !Number.isFinite(bottomLeftRadius) ||
+        !Number.isFinite(nextCurveCode) ||
+        !Number.isFinite(contentTranslateX) ||
+        !Number.isFinite(contentTranslateY) ||
+        !Number.isFinite(contentScale) ||
         (nextCurveCode !== 0 && nextCurveCode !== 1) ||
         contentScale <= 0
       ) {
         return;
       }
       const recordVelocity = forceRecordVelocity || velocityTracking;
-      if (
-        PRESENTATION_PROTOCOL_VERSION !== 2 ||
-        !setPresentationV2HostFunction
-      ) {
-        if (
-          nextCurveCode === 0 &&
-          contentScale === 1 &&
-          topLeftRadius === topRightRadius &&
-          topLeftRadius === bottomRightRadius &&
-          topLeftRadius === bottomLeftRadius
-        ) {
-          setScalarsOnUI(
-            x,
-            y,
-            width,
-            height,
-            topLeftRadius,
-            contentTranslateX,
-            contentTranslateY,
-            overridePendingAnimation,
-            forceRecordVelocity
-          );
-        }
-        return;
-      }
       if (activeAnimationId.value !== 0) activeAnimationId.value = 0;
       if (ownership.value !== INTERACTIVE) ownership.value = INTERACTIVE;
       if (scalarsStale.value === 0) scalarsStale.value = 1;
-      setPresentationV2HostFunction(
+      setScalarsHostFunction(
         driverId,
         x,
         y,
@@ -664,7 +433,6 @@ export function useSmoothClipDriver(
         contentTranslateX,
         contentTranslateY,
         contentScale,
-        true,
         overridePendingAnimation,
         recordVelocity
       );
@@ -698,39 +466,10 @@ export function useSmoothClipDriver(
         return rejectAnimationHostFunction(driverId);
       }
       const resolvedFrom = canonicalFrom ?? undefined;
-      const v1Compatible =
-        isV1Compatible(canonicalTarget) &&
-        (resolvedFrom === undefined || isV1Compatible(resolvedFrom)) &&
-        (animation.type !== 'keyframes' ||
-          (keyframeResult?.canonicalFrames.every(isV1Compatible) ?? false));
-      // V1-representable plans deliberately stay on the original seven-scalar
-      // bridge even when V2 is installed. Besides preserving bridge shape,
-      // this retains V1's finite-value/clamping and host-normalization rules.
-      const useV2 = !v1Compatible;
-      if (!animationIsFinite(animation, useV2)) {
-        return rejectAnimationHostFunction(driverId);
-      }
-      const hasV2Protocol =
-        PRESENTATION_PROTOCOL_VERSION === 2 &&
-        snapshotCurrentV2HostFunction !== undefined &&
-        animateTimingV2HostFunction !== undefined &&
-        animateSpringV2HostFunction !== undefined &&
-        animateKeyframesV2HostFunction !== undefined;
-      const hasAtomicFromMethod =
-        resolvedFrom === undefined ||
-        (animation.type === 'timing'
-          ? animateTimingFromV2HostFunction !== undefined
-          : animation.type === 'spring'
-            ? animateSpringFromV2HostFunction !== undefined
-            : animateKeyframesFromV2HostFunction !== undefined);
-      // This is intentionally before sampling or any ownership/group/
-      // presentation mutation. New JS against old native must fail closed,
-      // and an explicit V2 start must never degrade to set()+animate().
-      if (useV2 && (!hasV2Protocol || !hasAtomicFromMethod)) {
+      if (!animationIsFinite(animation)) {
         return rejectAnimationHostFunction(driverId);
       }
       if (
-        useV2 &&
         resolvedFrom !== undefined &&
         animation.type === 'keyframes' &&
         !clipPresentationEquals(
@@ -744,13 +483,11 @@ export function useSmoothClipDriver(
         canonicalizeClipPresentation(presentation.value) ?? initialPresentation;
       const sampledStart =
         resolvedFrom ??
-        (useV2
-          ? presentationFromNative(
-              snapshotCurrentV2HostFunction!(driverId),
-              currentPresentation
-            )
-          : currentPresentation);
-      // setPresentationScalars intentionally leaves the public SharedValue
+        presentationFromNative(
+          snapshotCurrentHostFunction(driverId),
+          currentPresentation
+        );
+      // setScalars intentionally leaves the public SharedValue
       // stale to keep the hot path allocation-free. Validate an implicit
       // retarget against the sampled native-visible start, not that stale JS
       // value; otherwise a streamed curve transition cannot settle natively on
@@ -759,7 +496,6 @@ export function useSmoothClipDriver(
         return rejectAnimationHostFunction(driverId);
       }
       if (
-        useV2 &&
         animation.type === 'spring' &&
         !springScaleIsProvablyPositive(sampledStart, canonicalTarget, animation)
       ) {
@@ -772,29 +508,6 @@ export function useSmoothClipDriver(
       // whose JS state is already detached. This is the "unsupported dispatch"
       // arm of the documented 0 contract.
       const from = resolvedFrom;
-      if (from !== undefined && !useV2) {
-        // Fused hot write: exactly setScalars(from…) issued immediately
-        // before the handoff, so native's latest value — the animation
-        // start below — is the caller's explicit presentation. Also
-        // re-grabs from a running animation, which the implicit
-        // interactive-start path would silently skip. Always records a
-        // velocity sample regardless of velocityTracking: this is one write
-        // per animateTo, not the per-frame stream the flag exists to keep
-        // cheap, and an unrecorded seed would invalidate the history a
-        // set()-driven drag just recorded (the tracker's coalesce and
-        // identical-re-record rules were designed for exactly this write).
-        setScalarsOnUI(
-          from.clip.x,
-          from.clip.y,
-          from.clip.width,
-          from.clip.height,
-          from.clip.radius,
-          from.contentTranslateX,
-          from.contentTranslateY,
-          true,
-          true
-        );
-      }
 
       // After a setScalars hot write the SharedValue no longer matches what
       // is on screen; passing it as the start would snap the animation back.
@@ -802,19 +515,13 @@ export function useSmoothClipDriver(
       // latest value instead.
       const scalarsWereStale = scalarsStale.value !== 0;
       const hasInteractiveStart =
-        ownership.value === INTERACTIVE && !scalarsWereStale;
+        resolvedFrom !== undefined ||
+        (ownership.value === INTERACTIVE && !scalarsWereStale);
       const start =
         canonicalizeClipPresentation(presentation.value) ?? initialPresentation;
-      // V1 preserves the old optimistic SharedValue ownership transition.
-      // V2 commits it only after native has atomically accepted the plan.
-      if (!useV2) {
-        ownership.value = NATIVE;
-        presentation.value = canonicalTarget;
-        scalarsStale.value = 0;
-      }
-      const dispatchStart = useV2 && from !== undefined ? from : start;
-      const startClip = dispatchStart.clip;
-      const targetClip = canonicalTarget.clip;
+      // Commit SharedValue ownership only after native atomically accepts the
+      // complete presentation and animation plan.
+      const dispatchStart = from ?? start;
       // Reanimated stamps a parallel animation's t0 on this same runtime as
       // `__frameTimestamp || _getAnimationTimestamp()` (valueSetter.ts).
       // Capturing the identical value here and handing it to the integrator
@@ -840,99 +547,17 @@ export function useSmoothClipDriver(
             : Number.NaN);
       let animationId: number;
 
-      if (animation.type === 'timing' && useV2) {
-        const [x1, y1, x2, y2] = animation.controlPoints;
-        animationId =
-          from !== undefined
-            ? animateTimingFromV2HostFunction!(
-                driverId,
-                startClip.x,
-                startClip.y,
-                startClip.width,
-                startClip.height,
-                startClip.topLeftRadius,
-                startClip.topRightRadius,
-                startClip.bottomRightRadius,
-                startClip.bottomLeftRadius,
-                curveCode(dispatchStart),
-                dispatchStart.contentTranslateX,
-                dispatchStart.contentTranslateY,
-                dispatchStart.contentScale,
-                targetClip.x,
-                targetClip.y,
-                targetClip.width,
-                targetClip.height,
-                targetClip.topLeftRadius,
-                targetClip.topRightRadius,
-                targetClip.bottomRightRadius,
-                targetClip.bottomLeftRadius,
-                curveCode(canonicalTarget),
-                canonicalTarget.contentTranslateX,
-                canonicalTarget.contentTranslateY,
-                canonicalTarget.contentScale,
-                animation.duration,
-                x1,
-                y1,
-                x2,
-                y2,
-                reduceMotion,
-                startedAtMs
-              )
-            : animateTimingV2HostFunction!(
-                driverId,
-                hasInteractiveStart,
-                startClip.x,
-                startClip.y,
-                startClip.width,
-                startClip.height,
-                startClip.topLeftRadius,
-                startClip.topRightRadius,
-                startClip.bottomRightRadius,
-                startClip.bottomLeftRadius,
-                curveCode(dispatchStart),
-                dispatchStart.contentTranslateX,
-                dispatchStart.contentTranslateY,
-                dispatchStart.contentScale,
-                targetClip.x,
-                targetClip.y,
-                targetClip.width,
-                targetClip.height,
-                targetClip.topLeftRadius,
-                targetClip.topRightRadius,
-                targetClip.bottomRightRadius,
-                targetClip.bottomLeftRadius,
-                curveCode(canonicalTarget),
-                canonicalTarget.contentTranslateX,
-                canonicalTarget.contentTranslateY,
-                canonicalTarget.contentScale,
-                animation.duration,
-                x1,
-                y1,
-                x2,
-                y2,
-                reduceMotion,
-                startedAtMs
-              );
-      } else if (animation.type === 'timing') {
+      const startValues = hasInteractiveStart
+        ? presentationPacket(dispatchStart)
+        : [];
+      const targetValues = presentationPacket(canonicalTarget);
+      if (animation.type === 'timing') {
         const [x1, y1, x2, y2] = animation.controlPoints;
         animationId = animateTimingHostFunction(
           driverId,
-          hasInteractiveStart,
-          startClip.x,
-          startClip.y,
-          startClip.width,
-          startClip.height,
-          startClip.radius,
-          start.contentTranslateX,
-          start.contentTranslateY,
-          targetClip.x,
-          targetClip.y,
-          targetClip.width,
-          targetClip.height,
-          targetClip.radius,
-          canonicalTarget.contentTranslateX,
-          canonicalTarget.contentTranslateY,
-          Math.max(0, animation.duration),
+          startValues,
+          targetValues,
+          animation.duration,
           x1,
           y1,
           x2,
@@ -940,7 +565,7 @@ export function useSmoothClipDriver(
           reduceMotion,
           startedAtMs
         );
-      } else if (animation.type === 'spring' && useV2) {
+      } else if (animation.type === 'spring') {
         const inheritVelocity =
           animation.initialVelocity === undefined ||
           animation.initialVelocity === 'inherit';
@@ -950,200 +575,27 @@ export function useSmoothClipDriver(
         const initialVelocity = inheritVelocity
           ? 0
           : (animation.initialVelocity as number);
-        animationId =
-          from !== undefined
-            ? animateSpringFromV2HostFunction!(
-                driverId,
-                startClip.x,
-                startClip.y,
-                startClip.width,
-                startClip.height,
-                startClip.topLeftRadius,
-                startClip.topRightRadius,
-                startClip.bottomRightRadius,
-                startClip.bottomLeftRadius,
-                curveCode(dispatchStart),
-                dispatchStart.contentTranslateX,
-                dispatchStart.contentTranslateY,
-                dispatchStart.contentScale,
-                targetClip.x,
-                targetClip.y,
-                targetClip.width,
-                targetClip.height,
-                targetClip.topLeftRadius,
-                targetClip.topRightRadius,
-                targetClip.bottomRightRadius,
-                targetClip.bottomLeftRadius,
-                curveCode(canonicalTarget),
-                canonicalTarget.contentTranslateX,
-                canonicalTarget.contentTranslateY,
-                canonicalTarget.contentScale,
-                mass,
-                stiffness,
-                damping,
-                initialVelocity,
-                inheritVelocity,
-                reduceMotion,
-                startedAtMs
-              )
-            : animateSpringV2HostFunction!(
-                driverId,
-                hasInteractiveStart,
-                startClip.x,
-                startClip.y,
-                startClip.width,
-                startClip.height,
-                startClip.topLeftRadius,
-                startClip.topRightRadius,
-                startClip.bottomRightRadius,
-                startClip.bottomLeftRadius,
-                curveCode(dispatchStart),
-                dispatchStart.contentTranslateX,
-                dispatchStart.contentTranslateY,
-                dispatchStart.contentScale,
-                targetClip.x,
-                targetClip.y,
-                targetClip.width,
-                targetClip.height,
-                targetClip.topLeftRadius,
-                targetClip.topRightRadius,
-                targetClip.bottomRightRadius,
-                targetClip.bottomLeftRadius,
-                curveCode(canonicalTarget),
-                canonicalTarget.contentTranslateX,
-                canonicalTarget.contentTranslateY,
-                canonicalTarget.contentScale,
-                mass,
-                stiffness,
-                damping,
-                initialVelocity,
-                inheritVelocity,
-                reduceMotion,
-                startedAtMs
-              );
-      } else if (animation.type === 'spring') {
-        const inheritVelocity =
-          animation.initialVelocity === undefined ||
-          animation.initialVelocity === 'inherit';
         animationId = animateSpringHostFunction(
           driverId,
-          hasInteractiveStart,
-          startClip.x,
-          startClip.y,
-          startClip.width,
-          startClip.height,
-          startClip.radius,
-          start.contentTranslateX,
-          start.contentTranslateY,
-          targetClip.x,
-          targetClip.y,
-          targetClip.width,
-          targetClip.height,
-          targetClip.radius,
-          canonicalTarget.contentTranslateX,
-          canonicalTarget.contentTranslateY,
-          Math.max(0.0001, animation.mass ?? 1),
-          Math.max(0.0001, animation.stiffness ?? 100),
-          Math.max(0, animation.damping ?? 10),
-          inheritVelocity ? 0 : (animation.initialVelocity as number),
+          startValues,
+          targetValues,
+          mass,
+          stiffness,
+          damping,
+          initialVelocity,
           inheritVelocity,
           reduceMotion,
           startedAtMs
         );
-      } else if (useV2) {
+      } else {
         const frames = (keyframeResult as NonNullable<typeof keyframeResult>)
           .frames;
-        animationId =
-          from !== undefined
-            ? animateKeyframesFromV2HostFunction!(
-                driverId,
-                startClip.x,
-                startClip.y,
-                startClip.width,
-                startClip.height,
-                startClip.topLeftRadius,
-                startClip.topRightRadius,
-                startClip.bottomRightRadius,
-                startClip.bottomLeftRadius,
-                curveCode(dispatchStart),
-                dispatchStart.contentTranslateX,
-                dispatchStart.contentTranslateY,
-                dispatchStart.contentScale,
-                targetClip.x,
-                targetClip.y,
-                targetClip.width,
-                targetClip.height,
-                targetClip.topLeftRadius,
-                targetClip.topRightRadius,
-                targetClip.bottomRightRadius,
-                targetClip.bottomLeftRadius,
-                curveCode(canonicalTarget),
-                canonicalTarget.contentTranslateX,
-                canonicalTarget.contentTranslateY,
-                canonicalTarget.contentScale,
-                animation.duration,
-                frames,
-                reduceMotion,
-                startedAtMs
-              )
-            : animateKeyframesV2HostFunction!(
-                driverId,
-                hasInteractiveStart,
-                startClip.x,
-                startClip.y,
-                startClip.width,
-                startClip.height,
-                startClip.topLeftRadius,
-                startClip.topRightRadius,
-                startClip.bottomRightRadius,
-                startClip.bottomLeftRadius,
-                curveCode(dispatchStart),
-                dispatchStart.contentTranslateX,
-                dispatchStart.contentTranslateY,
-                dispatchStart.contentScale,
-                targetClip.x,
-                targetClip.y,
-                targetClip.width,
-                targetClip.height,
-                targetClip.topLeftRadius,
-                targetClip.topRightRadius,
-                targetClip.bottomRightRadius,
-                targetClip.bottomLeftRadius,
-                curveCode(canonicalTarget),
-                canonicalTarget.contentTranslateX,
-                canonicalTarget.contentTranslateY,
-                canonicalTarget.contentScale,
-                animation.duration,
-                frames,
-                reduceMotion,
-                startedAtMs
-              );
-      } else {
         animationId = animateKeyframesHostFunction(
           driverId,
-          hasInteractiveStart,
-          startClip.x,
-          startClip.y,
-          startClip.width,
-          startClip.height,
-          startClip.radius,
-          start.contentTranslateX,
-          start.contentTranslateY,
-          targetClip.x,
-          targetClip.y,
-          targetClip.width,
-          targetClip.height,
-          targetClip.radius,
-          canonicalTarget.contentTranslateX,
-          canonicalTarget.contentTranslateY,
-          Math.max(0, animation.duration),
-          // Non-null here: the validation gate above rejected null before any
-          // side effect.
-          flattenV1Keyframes(
-            (keyframeResult as NonNullable<typeof keyframeResult>)
-              .canonicalFrames,
-            animation.frames.map((frame) => frame.offset)
-          ),
+          startValues,
+          targetValues,
+          animation.duration,
+          frames,
           reduceMotion,
           startedAtMs
         );
@@ -1157,19 +609,11 @@ export function useSmoothClipDriver(
         // effect, with a fresh id and one finished:false completion once the
         // native entry exists — in the pre-seed window rejectAnimation has no
         // entry and returns the bare 0 sentinel with no completion instead.
-        if (!useV2) {
-          ownership.value = INTERACTIVE;
-          presentation.value = start;
-          if (scalarsWereStale) scalarsStale.value = 1;
-          activeAnimationId.value = 0;
-        }
         return rejectAnimationHostFunction(driverId);
       }
-      if (useV2) {
-        ownership.value = NATIVE;
-        presentation.value = canonicalTarget;
-        scalarsStale.value = 0;
-      }
+      ownership.value = NATIVE;
+      presentation.value = canonicalTarget;
+      scalarsStale.value = 0;
       activeAnimationId.value = animationId;
       return animationId;
     };
@@ -1185,19 +629,14 @@ export function useSmoothClipDriver(
       const fallback =
         canonicalizeClipPresentation(presentation.value) ?? initialPresentation;
       if (disposed.value !== 0) return fallback;
-      const values =
-        PRESENTATION_PROTOCOL_VERSION === 2 && cancelAnimationV2HostFunction
-          ? cancelAnimationV2HostFunction(
-              driverId,
-              animationId,
-              behavior === 'target' ? 1 : 0
-            )
-          : cancelAnimationHostFunction(
-              driverId,
-              animationId,
-              behavior === 'target' ? 1 : 0
-            );
-      if (values.length < 8 || values[0] !== 1) return fallback;
+      const values = cancelAnimationHostFunction(
+        driverId,
+        animationId,
+        behavior === 'target' ? 1 : 0
+      );
+      if (values.length < PRESENTATION_STRIDE + 1 || values[0] !== 1) {
+        return fallback;
+      }
       const current = presentationFromNative(values, fallback, 1);
       activeAnimationId.value = 0;
       ownership.value = INTERACTIVE;
@@ -1206,7 +645,7 @@ export function useSmoothClipDriver(
       return current;
     };
 
-    const driver: SmoothClipDriver = {
+    const driver: InternalSmoothClipDriver = {
       kind: 'hybrid',
       presentation,
       ui: {
@@ -1225,27 +664,6 @@ export function useSmoothClipDriver(
           y,
           width,
           height,
-          radius,
-          contentTranslateX,
-          contentTranslateY
-        ) {
-          'worklet';
-          if (isRNRuntime()) return uiOnly();
-          setScalarsOnUI(
-            x,
-            y,
-            width,
-            height,
-            radius,
-            contentTranslateX,
-            contentTranslateY
-          );
-        },
-        setPresentationScalars(
-          x,
-          y,
-          width,
-          height,
           topLeftRadius,
           topRightRadius,
           bottomRightRadius,
@@ -1257,7 +675,7 @@ export function useSmoothClipDriver(
         ) {
           'worklet';
           if (isRNRuntime()) return uiOnly();
-          setPresentationScalarsOnUI(
+          setScalarsOnUI(
             x,
             y,
             width,
@@ -1383,9 +801,9 @@ export function useSmoothClipDriver(
     // The authoritative seed below recreates the native entry in that case.
     attachDriverState(state);
 
-    const subscription = NativeSmoothClipModule.onClipAnimationComplete(
+    const unsubscribeCompletion = subscribeDriverCompletion(
+      driverId,
       (result) => {
-        if (result.driverId !== driverId) return;
         synchronizeNativeCompletion(
           activeAnimationId,
           ownership,
@@ -1406,9 +824,7 @@ export function useSmoothClipDriver(
         active: SharedValue<number>,
         stale: SharedValue<number>,
         gone: SharedValue<number>,
-        setter: typeof setPresentationHostFunction,
-        setterV2: typeof setPresentationV2HostFunction,
-        protocolVersion: number
+        setter: typeof setPresentationHostFunction
       ) => {
         'worklet';
         // First, before the listener or the seed: this effect run owns the
@@ -1430,48 +846,11 @@ export function useSmoothClipDriver(
             last = canonical;
             return;
           }
-          if (protocolVersion !== 2 && !isV1Compatible(canonical)) {
-            return;
-          }
           last = canonical;
           if (stale.value !== 0) stale.value = 0;
-          const { clip, contentTranslateX, contentTranslateY, contentScale } =
-            canonical;
           // Declarative deliveries always record velocity samples — only the
           // setScalars hot path is gated by the velocityTracking option.
-          if (protocolVersion === 2 && setterV2) {
-            setterV2(
-              nativeDriverId,
-              clip.x,
-              clip.y,
-              clip.width,
-              clip.height,
-              clip.topLeftRadius,
-              clip.topRightRadius,
-              clip.bottomRightRadius,
-              clip.bottomLeftRadius,
-              curveCode(canonical),
-              contentTranslateX,
-              contentTranslateY,
-              contentScale,
-              false,
-              false,
-              true
-            );
-          } else {
-            setter(
-              nativeDriverId,
-              clip.x,
-              clip.y,
-              clip.width,
-              clip.height,
-              clip.radius,
-              contentTranslateX,
-              contentTranslateY,
-              false,
-              false
-            );
-          }
+          setter(nativeDriverId, presentationPacket(canonical), false, false);
         };
         source.addListener(listenerId, deliver);
         // Authoritative take-ownership seed. Creates the native entry before
@@ -1486,39 +865,7 @@ export function useSmoothClipDriver(
           owner.value = INTERACTIVE;
           stale.value = 0;
           last = current;
-          if (protocolVersion === 2 && setterV2) {
-            setterV2(
-              nativeDriverId,
-              current.clip.x,
-              current.clip.y,
-              current.clip.width,
-              current.clip.height,
-              current.clip.topLeftRadius,
-              current.clip.topRightRadius,
-              current.clip.bottomRightRadius,
-              current.clip.bottomLeftRadius,
-              curveCode(current),
-              current.contentTranslateX,
-              current.contentTranslateY,
-              current.contentScale,
-              true,
-              false,
-              true
-            );
-          } else if (isV1Compatible(current)) {
-            setter(
-              nativeDriverId,
-              current.clip.x,
-              current.clip.y,
-              current.clip.width,
-              current.clip.height,
-              current.clip.radius,
-              current.contentTranslateX,
-              current.contentTranslateY,
-              true,
-              false
-            );
-          }
+          setter(nativeDriverId, presentationPacket(current), true, false);
         }
       },
       presentation,
@@ -1529,13 +876,11 @@ export function useSmoothClipDriver(
       activeAnimationId,
       scalarsStale,
       disposed,
-      setPresentationHostFunction,
-      setPresentationV2HostFunction,
-      PRESENTATION_PROTOCOL_VERSION
+      setPresentationHostFunction
     );
 
     return () => {
-      subscription.remove();
+      unsubscribeCompletion();
       rejectDriverRequests(driverId);
       detachDriverState(state);
       scheduleOnUI(

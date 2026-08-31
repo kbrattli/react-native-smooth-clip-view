@@ -16,24 +16,24 @@ import {
   type NativeSyntheticEvent,
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, {
+import {
   useAnimatedReaction,
-  useAnimatedStyle,
   useDerivedValue,
   useSharedValue,
   withTiming,
-  type DerivedValue,
   type SharedValue,
 } from 'react-native-reanimated';
 import {
   SmoothClipView,
   useSmoothClipDriver,
+  type ClipAnimationResult,
   type ClipGeometry,
   type SmoothClipDriver,
 } from 'react-native-smooth-clip-view';
 import { scheduleOnRN, scheduleOnUI } from 'react-native-worklets';
 import {
   calculateOverlayClipGeometry,
+  normalizeOverlayPresentation,
   type OverlayClipGeometryResult,
 } from '../overlayClipGeometry';
 import {
@@ -58,10 +58,10 @@ import {
   TOP_CLIP_RATIO,
   type OverlayPhase,
 } from '../overlayConstants';
+import { resolveOverlayCompletionAction } from '../overlayLifecycle';
 import type { Rect, ZoomCity } from '../zoomCities';
 import ZoomCityPage from './ZoomCityPage';
 
-type CloseStart = Readonly<{ x: number; y: number }>;
 type DismissGestureState = Readonly<{
   startX: number;
   startY: number;
@@ -264,35 +264,24 @@ OverlayPager.displayName = 'OverlayPager';
 type OverlayClipHostProps = {
   children: ReactNode;
   driver: SmoothClipDriver;
-  overlayGeometry: DerivedValue<OverlayClipGeometryResult>;
 };
 
-// The native presentation carries clip + content TRANSLATION only — it has no
-// scale channel — so the drag's content zoom is the one channel that has to
-// ride an RN transform. Keep it that way: anything else on this style would put
-// the clip and the content on two different clocks.
-function OverlayClipHost({
-  children,
-  driver,
-  overlayGeometry,
-}: OverlayClipHostProps) {
-  const contentStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: overlayGeometry.get().contentScale }],
-  }));
-
+function OverlayClipHost({ children, driver }: OverlayClipHostProps) {
   return (
-    <SmoothClipView
-      driver={driver}
-      style={styles.maximumClipHost}
-      testID="overlay-smooth-clip-host"
-    >
-      <Animated.View
-        style={[styles.maximumClipHost, contentStyle]}
-        testID="overlay-smooth-clip-content"
+    <View style={styles.clipViewport}>
+      <SmoothClipView
+        driver={driver}
+        style={styles.maximumClipHost}
+        testID="overlay-smooth-clip-host"
       >
-        {children}
-      </Animated.View>
-    </SmoothClipView>
+        <View
+          style={styles.maximumClipContent}
+          testID="overlay-smooth-clip-content"
+        >
+          {children}
+        </View>
+      </SmoothClipView>
+    </View>
   );
 }
 
@@ -326,14 +315,21 @@ function applyPresentationScalars(
   presentation: OverlayClipGeometryResult
 ) {
   'worklet';
+  // The middle third of the native host is the visible screen. Offset only the
+  // x scalar here so the per-frame gesture stream remains allocation-free.
   driver.ui.setScalars(
-    presentation.clip.x,
+    presentation.clip.x + SCREEN_WIDTH,
     presentation.clip.y,
     presentation.clip.width,
     presentation.clip.height,
     presentation.clip.radius,
+    presentation.clip.radius,
+    presentation.clip.radius,
+    presentation.clip.radius,
+    presentation.clip.curve === 'continuous' ? 1 : 0,
     presentation.contentTranslateX,
-    presentation.contentTranslateY
+    presentation.contentTranslateY,
+    presentation.contentScale ?? 1
   );
 }
 
@@ -351,56 +347,12 @@ function dampDragTranslation(translationX: number, translationY: number) {
   };
 }
 
-function mixChannel(from: number, to: number, fraction: number) {
-  'worklet';
-  return from + (to - from) * fraction;
-}
-
-// Every clip channel advanced by the same eased fraction. Re-deriving each
-// frame through the drag model with decayed inputs would make the size channels
-// carry a p² term (drag shrink = dragProgress(p) x base(p), both ∝ p) while x/y
-// decayed ∝ p — the window would visibly translate home faster than it resized.
-// Interpolating the OUTPUT presentations treats all channels equally.
-function mixPresentation(
-  from: OverlayClipGeometryResult,
-  to: OverlayClipGeometryResult,
-  fraction: number
-): OverlayClipGeometryResult {
-  'worklet';
-  return {
-    clip: {
-      x: mixChannel(from.clip.x, to.clip.x, fraction),
-      y: mixChannel(from.clip.y, to.clip.y, fraction),
-      width: mixChannel(from.clip.width, to.clip.width, fraction),
-      height: mixChannel(from.clip.height, to.clip.height, fraction),
-      radius: mixChannel(from.clip.radius, to.clip.radius, fraction),
-    },
-    contentTranslateX: mixChannel(
-      from.contentTranslateX,
-      to.contentTranslateX,
-      fraction
-    ),
-    contentTranslateY: mixChannel(
-      from.contentTranslateY,
-      to.contentTranslateY,
-      fraction
-    ),
-    // The RN-side zoom rides the same eased fraction as the natively animated
-    // clip channels, so the content unzooms in step with its window.
-    contentScale: mixChannel(from.contentScale, to.contentScale, fraction),
-    contentVisibleHeight: mixChannel(
-      from.contentVisibleHeight,
-      to.contentVisibleHeight,
-      fraction
-    ),
-  };
-}
-
 // The two endpoints of the close: the on-screen release state (drag model at
 // full progress with the release translation) and the landing card rect.
 function closeEndpoints(
   origin: Rect,
-  start: CloseStart,
+  startX: number,
+  startY: number,
   sourceRadius: number,
   maximumDragRadius: number
 ) {
@@ -424,8 +376,8 @@ function closeEndpoints(
     release: calculateOverlayClipGeometry({
       ...shared,
       progress: 1,
-      translateX: start.x,
-      translateY: start.y,
+      translateX: startX,
+      translateY: startY,
     }),
     landing: calculateOverlayClipGeometry({
       ...shared,
@@ -474,18 +426,12 @@ const Overlay = memo(function OverlayView({
   // Native starts with this exact geometry, preventing a fullscreen flash
   // before the first UI-runtime command arrives.
   const [initialClip] = useState<ClipGeometry>(() => ({
-    x: initialOriginRect.x,
+    x: initialOriginRect.x + SCREEN_WIDTH,
     y: initialOriginRect.y,
     width: initialOriginRect.w,
     height: initialOriginRect.h,
     radius: sourceRadius,
   }));
-  const driver = useSmoothClipDriver({
-    clip: initialClip,
-    contentTranslateX: initialOriginRect.x,
-    contentTranslateY: initialOriginRect.y,
-  });
-
   // The page has no scrollable content, so the child is always "at top". Kept
   // as a shared value so the ported activation gate reads unchanged.
   const childAtTopShared = useSharedValue(true);
@@ -500,6 +446,10 @@ const Overlay = memo(function OverlayView({
     startY: 0,
     activated: false,
   });
+  const translateY = useSharedValue(0);
+  const translateX = useSharedValue(0);
+  const closingAnimationId = useSharedValue(0);
+  const driverRef = useRef<SmoothClipDriver | null>(null);
 
   const completeOpening = useCallback(() => {
     'worklet';
@@ -509,52 +459,108 @@ const Overlay = memo(function OverlayView({
     hiddenIndex.set(openingIndex);
   }, [hiddenIndex, openingIndex, overlayPhase]);
 
+  const onNativeAnimationComplete = useCallback(
+    (result: ClipAnimationResult) => {
+      const currentDriver = driverRef.current;
+      if (currentDriver === null) return;
+
+      scheduleOnUI(() => {
+        'worklet';
+        const action = resolveOverlayCompletionAction(
+          overlayPhase.get(),
+          closingAnimationId.get(),
+          result
+        );
+        if (action === 'complete-opening') {
+          completeOpening();
+          return;
+        }
+        if (action === 'complete-closing') {
+          closingAnimationId.set(0);
+          hiddenIndex.set(-1);
+          // Paint the source card before removing the landed overlay.
+          requestAnimationFrame(() => scheduleOnRN(onClosed));
+          return;
+        }
+        if (action !== 'recover-closing') return;
+
+        closingAnimationId.set(0);
+        const visiblePresentation = currentDriver.ui.beginInteraction();
+        const fullscreen = normalizeOverlayPresentation(
+          fullscreenPresentation(sourceRadius, maximumDragRadius),
+          SCREEN_WIDTH,
+          SCREEN_HEIGHT
+        );
+        if (fullscreen === null) return;
+        overlayPhase.set(OVERLAY_PHASE_OPEN);
+        translateX.set(0);
+        translateY.set(0);
+        const recoveryAnimationId = currentDriver.ui.animateTo(fullscreen, {
+          ...NATIVE_FAST_TIMING,
+          from: visiblePresentation,
+        });
+        if (recoveryAnimationId === 0) currentDriver.ui.set(fullscreen);
+        progress.set(withTiming(1, FAST_TIMING));
+      });
+    },
+    [
+      closingAnimationId,
+      completeOpening,
+      hiddenIndex,
+      maximumDragRadius,
+      onClosed,
+      overlayPhase,
+      progress,
+      sourceRadius,
+      translateX,
+      translateY,
+    ]
+  );
+
+  const driver = useSmoothClipDriver(
+    {
+      clip: initialClip,
+      contentTranslateX: initialOriginRect.x,
+      contentTranslateY: initialOriginRect.y,
+    },
+    { onAnimationComplete: onNativeAnimationComplete }
+  );
+  driverRef.current = driver;
+
   // Start the opening animation after the native clip host mounts.
   useEffect(() => {
-    const openPresentation = calculateOverlayClipGeometry({
-      progress: 1,
-      originX: initialOriginRect.x,
-      originY: initialOriginRect.y,
-      originWidth: initialOriginRect.w,
-      originHeight: initialOriginRect.h,
-      screenWidth: SCREEN_WIDTH,
-      screenHeight: SCREEN_HEIGHT,
-      translateX: 0,
-      translateY: 0,
-      dragThreshold: DRAG_THRESHOLD,
-      minimumWidth: MIN_WIDTH,
-      minimumHeight: MIN_HEIGHT,
-      topClipRatio: TOP_CLIP_RATIO,
-      dragTranslateY: DRAG_TRANSLATE_Y,
-      sourceRadius,
-      maximumDragRadius,
-    });
+    const openPresentation = normalizeOverlayPresentation(
+      calculateOverlayClipGeometry({
+        progress: 1,
+        originX: initialOriginRect.x,
+        originY: initialOriginRect.y,
+        originWidth: initialOriginRect.w,
+        originHeight: initialOriginRect.h,
+        screenWidth: SCREEN_WIDTH,
+        screenHeight: SCREEN_HEIGHT,
+        translateX: 0,
+        translateY: 0,
+        dragThreshold: DRAG_THRESHOLD,
+        minimumWidth: MIN_WIDTH,
+        minimumHeight: MIN_HEIGHT,
+        topClipRatio: TOP_CLIP_RATIO,
+        dragTranslateY: DRAG_TRANSLATE_Y,
+        sourceRadius,
+        maximumDragRadius,
+      }),
+      SCREEN_WIDTH,
+      SCREEN_HEIGHT
+    );
+    if (openPresentation === null) return;
     scheduleOnUI(() => {
       'worklet';
       driver.ui.animateTo(openPresentation, NATIVE_TIMING);
-      progress.set(
-        withTiming(1, TIMING_CONFIG, (finished) => {
-          if (finished) {
-            completeOpening();
-          }
-        })
-      );
+      progress.set(withTiming(1, TIMING_CONFIG));
     });
-  }, [
-    completeOpening,
-    driver,
-    initialOriginRect,
-    maximumDragRadius,
-    progress,
-    sourceRadius,
-  ]);
+  }, [driver, initialOriginRect, maximumDragRadius, progress, sourceRadius]);
 
   // Tracked on the JS side so render never reads a shared value.
   const lastIndexRef = useRef<number>(openingIndex);
-
-  const translateY = useSharedValue(0);
-  const translateX = useSharedValue(0);
-  const closeStart = useSharedValue<CloseStart>({ x: 0, y: 0 });
 
   const commitIndexIfChanged = useCallback(
     (index: number) => {
@@ -573,19 +579,6 @@ const Overlay = memo(function OverlayView({
   const overlayGeometry = useDerivedValue(() => {
     const currentProgress = progress.get();
     const origin = originRect.get();
-
-    if (overlayPhase.get() === OVERLAY_PHASE_CLOSING) {
-      // Mirror the native close timing: output-space mix so every channel
-      // paces identically. progress runs withTiming(0) on the same
-      // ease-out-cubic clock, so 1 − progress IS the native eased fraction.
-      const { release, landing } = closeEndpoints(
-        origin,
-        closeStart.get(),
-        sourceRadius,
-        maximumDragRadius
-      );
-      return mixPresentation(release, landing, 1 - currentProgress);
-    }
 
     return calculateOverlayClipGeometry({
       progress: currentProgress,
@@ -626,43 +619,58 @@ const Overlay = memo(function OverlayView({
     'worklet';
     if (overlayPhase.get() === OVERLAY_PHASE_CLOSING) return;
 
-    overlayPhase.set(OVERLAY_PHASE_CLOSING);
-    closeStart.set({
-      x: translateX.get(),
-      y: Math.max(0, translateY.get()),
-    });
-    // The close is an output-space mix of two fixed endpoints under an
-    // ease-out-cubic clock, and ClipEasings.easeOutCubic is that curve's exact
-    // Bézier — so a plain timing animation IS the keyframe list it replaced,
-    // without the linearization error or the per-frame array marshalling.
-    const { release, landing } = closeEndpoints(
+    const endpoints = closeEndpoints(
       originRect.get(),
-      closeStart.get(),
+      translateX.get(),
+      Math.max(0, translateY.get()),
       sourceRadius,
       maximumDragRadius
     );
-    driver.ui.animateTo(landing, {
+    // Move both endpoints into the wider host. This matches the scalar stream's
+    // held presentation while keeping every timing endpoint host-valid; the
+    // outer viewport, rather than native geometry normalization, crops it.
+    const release = normalizeOverlayPresentation(
+      endpoints.release,
+      SCREEN_WIDTH,
+      SCREEN_HEIGHT
+    );
+    const landing = normalizeOverlayPresentation(
+      endpoints.landing,
+      SCREEN_WIDTH,
+      SCREEN_HEIGHT
+    );
+    if (release === null || landing === null) return;
+
+    overlayPhase.set(OVERLAY_PHASE_CLOSING);
+    const animationId = driver.ui.animateTo(landing, {
       ...NATIVE_CLOSE_TIMING,
       // The final gesture value may never have flushed through the gated
       // reaction — seed the release state so the animation continues from
       // what is on screen.
       from: release,
     });
+    if (animationId === 0) {
+      overlayPhase.set(OVERLAY_PHASE_OPEN);
+      translateX.set(0);
+      translateY.set(0);
+      progress.set(1);
+      const fullscreen = normalizeOverlayPresentation(
+        fullscreenPresentation(sourceRadius, maximumDragRadius),
+        SCREEN_WIDTH,
+        SCREEN_HEIGHT
+      );
+      if (fullscreen !== null) driver.ui.set(fullscreen);
+      return;
+    }
 
-    progress.set(
-      withTiming(0, CLOSE_TIMING_CONFIG, (finished) => {
-        if (finished) {
-          hiddenIndex.set(-1);
-          scheduleOnRN(onClosed);
-        }
-      })
-    );
+    closingAnimationId.set(animationId);
+    // Page and chrome visuals mirror native timing, but native completion alone
+    // owns teardown so a rejected or interrupted close cannot pop the route.
+    progress.set(withTiming(0, CLOSE_TIMING_CONFIG));
   }, [
-    closeStart,
+    closingAnimationId,
     driver,
-    hiddenIndex,
     maximumDragRadius,
-    onClosed,
     originRect,
     overlayPhase,
     progress,
@@ -690,11 +698,8 @@ const Overlay = memo(function OverlayView({
           }
         })
         .onTouchesMove((e, manager) => {
-          // Never activate while closing: a mid-close grab would
-          // beginInteraction (freezing the native close) while the close's
-          // progress timing keeps running, and a gentle release would then
-          // interrupt that timing — its finished:false callback skips the
-          // teardown and the phase stays CLOSING forever.
+          // Never activate while closing: native completion owns teardown, so
+          // a new interaction must not replace the close behind its lifecycle.
           if (overlayPhase.get() === OVERLAY_PHASE_CLOSING) {
             manager.fail();
             return;
@@ -759,32 +764,40 @@ const Overlay = memo(function OverlayView({
             close();
           } else {
             const origin = originRect.get();
-            driver.ui.animateTo(
+            const fullscreen = normalizeOverlayPresentation(
               fullscreenPresentation(sourceRadius, maximumDragRadius),
-              {
-                ...NATIVE_FAST_TIMING,
-                // Start from the release sample — the gated reaction never
-                // flushed it natively.
-                from: calculateOverlayClipGeometry({
-                  progress: progress.get(),
-                  originX: origin.x,
-                  originY: origin.y,
-                  originWidth: origin.w,
-                  originHeight: origin.h,
-                  screenWidth: SCREEN_WIDTH,
-                  screenHeight: SCREEN_HEIGHT,
-                  translateX: release.x,
-                  translateY: release.y,
-                  dragThreshold: DRAG_THRESHOLD,
-                  minimumWidth: MIN_WIDTH,
-                  minimumHeight: MIN_HEIGHT,
-                  topClipRatio: TOP_CLIP_RATIO,
-                  dragTranslateY: DRAG_TRANSLATE_Y,
-                  sourceRadius,
-                  maximumDragRadius,
-                }),
-              }
+              SCREEN_WIDTH,
+              SCREEN_HEIGHT
             );
+            const releasePresentation = normalizeOverlayPresentation(
+              calculateOverlayClipGeometry({
+                progress: progress.get(),
+                originX: origin.x,
+                originY: origin.y,
+                originWidth: origin.w,
+                originHeight: origin.h,
+                screenWidth: SCREEN_WIDTH,
+                screenHeight: SCREEN_HEIGHT,
+                translateX: release.x,
+                translateY: release.y,
+                dragThreshold: DRAG_THRESHOLD,
+                minimumWidth: MIN_WIDTH,
+                minimumHeight: MIN_HEIGHT,
+                topClipRatio: TOP_CLIP_RATIO,
+                dragTranslateY: DRAG_TRANSLATE_Y,
+                sourceRadius,
+                maximumDragRadius,
+              }),
+              SCREEN_WIDTH,
+              SCREEN_HEIGHT
+            );
+            if (fullscreen === null || releasePresentation === null) return;
+            driver.ui.animateTo(fullscreen, {
+              ...NATIVE_FAST_TIMING,
+              // Start from the release sample — the gated reaction never
+              // flushed it natively.
+              from: releasePresentation,
+            });
             translateX.set(withTiming(0, FAST_TIMING));
             translateY.set(withTiming(0, FAST_TIMING));
             progress.set(withTiming(1, FAST_TIMING));
@@ -838,7 +851,7 @@ const Overlay = memo(function OverlayView({
   return (
     <View pointerEvents="box-none" style={styles.zIndexWrapper}>
       <GestureDetector gesture={dismissGesture}>
-        <OverlayClipHost driver={driver} overlayGeometry={overlayGeometry}>
+        <OverlayClipHost driver={driver}>
           <OverlayPager
             dismissGestureState={gestureState}
             items={items}
@@ -976,7 +989,22 @@ const styles = StyleSheet.create({
   },
   maximumClipHost: {
     height: SCREEN_HEIGHT,
+    left: -SCREEN_WIDTH,
+    position: 'absolute',
+    top: 0,
+    width: SCREEN_WIDTH * 3,
+  },
+  clipViewport: {
+    height: SCREEN_HEIGHT,
     left: 0,
+    overflow: 'hidden',
+    position: 'absolute',
+    top: 0,
+    width: SCREEN_WIDTH,
+  },
+  maximumClipContent: {
+    height: SCREEN_HEIGHT,
+    left: SCREEN_WIDTH,
     position: 'absolute',
     top: 0,
     width: SCREEN_WIDTH,

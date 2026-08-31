@@ -1,6 +1,6 @@
 {
   "name": "react-native-smooth-clip-view",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Layout-free animated rounded clipping for React Native Fabric",
   "main": "./lib/module/index.js",
   "module": "./lib/module/index.js",
@@ -165,7 +165,10 @@
     "modulePathIgnorePatterns": [
       "<rootDir>/example/node_modules",
       "<rootDir>/lib/"
-    ]
+    ],
+    "moduleNameMapper": {
+      "^react-native-reanimated$": "<rootDir>/src/__mocks__/react-native-reanimated.ts"
+    }
   },
   "commitlint": {
     "extends": [

@@ -100,22 +100,10 @@ export type SmoothClipUIControls = Readonly<{
    * the listener's duplicate suppression may skip a later equal value.
    * To hand off into an animation from a fresher value than the last hot
    * write, pass the geometry as `animation.from` to `animateTo` — it fuses
-   * this call and the handoff into one.
+   * this call and the handoff into one. Pass 0 for a circular curve or 1 for
+   * a continuous curve; the complete write is rejected for any other code.
    */
   setScalars(
-    x: number,
-    y: number,
-    width: number,
-    height: number,
-    radius: number,
-    contentTranslateX: number,
-    contentTranslateY: number
-  ): void;
-  /**
-   * V2 per-frame hot path. Curve code is 0 for circular and 1 for continuous;
-   * invalid codes reject the complete write.
-   */
-  setPresentationScalars(
     x: number,
     y: number,
     width: number,
@@ -162,10 +150,14 @@ export type SmoothClipDriverHandle = Readonly<{
 }>;
 
 export type SmoothClipDriver = Readonly<{
-  kind: 'hybrid';
   presentation: SharedValue<SmoothClipPresentation>;
   ui: SmoothClipUIControls;
   react: SmoothClipReactControls;
-  /** @internal Do not read or mutate directly. */
-  __smoothClipHandle?: SmoothClipDriverHandle;
 }>;
+
+/** @internal Runtime shape shared only between the driver and group engine. */
+export type InternalSmoothClipDriver = SmoothClipDriver &
+  Readonly<{
+    kind: 'hybrid';
+    __smoothClipHandle: SmoothClipDriverHandle;
+  }>;

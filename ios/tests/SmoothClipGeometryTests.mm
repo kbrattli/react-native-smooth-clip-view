@@ -45,10 +45,10 @@ static void CountPathElements(
   XCTAssertEqual(result.radius, 5);
 }
 
-- (void)testV2NormalizesFourRadiiWithOneCSSOverlapFactor {
+- (void)testNormalizesFourRadiiWithOneCSSOverlapFactor {
   SmoothNormalizedClipGeometry result;
 
-  XCTAssertTrue(SmoothClipNormalizeGeometryV2(
+  XCTAssertTrue(SmoothClipNormalizeGeometry(
       0,
       0,
       100,
@@ -71,7 +71,7 @@ static void CountPathElements(
   XCTAssertEqual(result.curve, SmoothClipCornerCurveContinuous);
 }
 
-- (void)testV2RejectsAnUnknownCurveWithoutWriting {
+- (void)testRejectsAnUnknownCurveWithoutWriting {
   SmoothNormalizedClipGeometry result = {
       .rect = CGRectMake(1, 2, 3, 4),
       .radius = 5,
@@ -79,7 +79,7 @@ static void CountPathElements(
       .curve = SmoothClipCornerCurveContinuous,
   };
 
-  XCTAssertFalse(SmoothClipNormalizeGeometryV2(
+  XCTAssertFalse(SmoothClipNormalizeGeometry(
       0, 0, 100, 100, 10, 20, 30, 40, 99, CGSizeMake(100, 100),
       &result));
   XCTAssertTrue(CGRectEqualToRect(result.rect, CGRectMake(1, 2, 3, 4)));

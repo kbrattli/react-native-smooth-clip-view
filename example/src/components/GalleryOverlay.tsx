@@ -95,7 +95,7 @@ function applyPresentationScalars(
   presentation: GalleryPresentation
 ): GalleryPresentation {
   'worklet';
-  // Stream the same host-visible presentation that an autonomous V2 release
+  // Stream the same host-visible presentation that an autonomous release
   // will receive as its authoritative `from`. Passing the off-host request
   // here and again at release would make strict native preflight reject it.
   const normalized = normalizeGalleryPresentationToHost(
@@ -103,9 +103,7 @@ function applyPresentationScalars(
     SCREEN_WIDTH,
     SCREEN_HEIGHT
   );
-  driver.ui.setPresentationScalars(
-    ...resolveGalleryPresentationScalars(normalized)
-  );
+  driver.ui.setScalars(...resolveGalleryPresentationScalars(normalized));
   return normalized;
 }
 

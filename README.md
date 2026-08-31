@@ -102,9 +102,9 @@ const styles = StyleSheet.create({
 ```
 
 The same driver can be passed to multiple hosts. One native registry update
-fans the presentation out to all mounted hosts. The original seven-scalar V1
-protocol remains unchanged; V2 adds per-corner radii, continuous curves, and
-centered content scale. Interactive updates avoid Yoga and ShadowTree commits.
+fans the complete presentation out to all mounted hosts, including per-corner
+radii, continuous curves, centered content scale, and `boxShadow`. Interactive
+updates avoid Yoga and ShadowTree commits.
 
 For transitions whose endpoint is known, let Core Animation interpolate on the
 render server:
@@ -115,7 +115,15 @@ const expandFromReact = () =>
     createClipPresentation(
       { x: 0, y: 0, width: 320, height: 480, radius: 24 },
       0,
-      0
+      0,
+      1,
+      {
+        color: 'rgba(0, 0, 0, 0.25)',
+        offsetX: 0,
+        offsetY: 2,
+        blurRadius: 64,
+        spreadDistance: 5,
+      }
     ),
     {
       type: 'timing',
@@ -158,7 +166,20 @@ const gesture = Gesture.Pan()
     const clip = geometryForDrag(dragStart.value, event.translationY);
     // Per-frame hot path: writes straight to native without SharedValue
     // bookkeeping. Assigning driver.presentation.value also works.
-    driver.ui.setScalars(clip.x, clip.y, clip.width, clip.height, clip.radius, 0, 0);
+    driver.ui.setScalars(
+      clip.x,
+      clip.y,
+      clip.width,
+      clip.height,
+      clip.radius,
+      clip.radius,
+      clip.radius,
+      clip.radius,
+      clip.curve === 'continuous' ? 1 : 0,
+      0,
+      0,
+      1,
+    );
   })
   .onEnd((event) => {
     // The release event is fresher than the last onUpdate (on Android,
@@ -189,13 +210,37 @@ const gesture = Gesture.Pan()
 | `children` | `ReactNode`        | Content rendered inside the fixed host. |
 
 The host hides itself, drops out of the accessibility tree, and stops accepting
-touches while the clip is empty. The two platforms draw the boundary where they
-actually stop rendering, which differs below one pixel: Android emits an integer
-`Outline`, which collapses to nothing under half a physical pixel, so an extent
-in `(0, 0.5)` px counts as empty there; iOS masks in floats and treats only a
-zero-or-negative extent as empty. A clip animating through that band therefore
-turns non-interactive one frame earlier on Android — matching what each platform
-puts on screen, which is the property worth keeping identical.
+touches while the normalized clip has a zero-or-negative extent. Both platforms
+retain fractional geometry through their native aperture paths.
+
+### `boxShadow`
+
+`SmoothClipPresentation.boxShadow` defines one outset shadow that always follows
+the visible normalized aperture:
+
+```ts
+type ClipBoxShadow = Readonly<{
+  color?: ColorValue;
+  offsetX: number;
+  offsetY: number;
+  blurRadius?: number; // CSS box-shadow blur semantics
+  spreadDistance?: number;
+}>;
+```
+
+Color defaults to opaque black; blur and spread default to zero. Put opacity in
+the color alpha, matching React Native's `boxShadow` model. Blur is clamped to a
+nonnegative value; negative spread remains valid. iOS lazily creates one
+unmasked CALayer whose `shadowPath` is built from the normalized aperture.
+Android draws the same outset path with CSS-compatible offset, blur, spread,
+color, and per-corner geometry instead of hardware elevation. Timing, spring, keyframe, streamed,
+interrupted, and relatched presentations keep the shadow in the same native
+ownership channel as the aperture.
+
+Do not put `boxShadow`, legacy `shadow*`, `elevation`, or `filter.dropShadow` on
+the `SmoothClipView` style. Those properties would create an independent shadow;
+development builds report an error and sanitize them. Multiple shadows, inset,
+CSS string parsing, and `filter.dropShadow` are intentionally unsupported.
 
 ### Driver
 
@@ -206,8 +251,10 @@ puts on screen, which is the property worth keeping identical.
 - `driver.ui` is the synchronous UI-worklet interface. `beginInteraction()`
   freezes a transition at visible presentation state; `set()`, `animateTo()`,
   and `cancel()` change ownership atomically.
-- `driver.ui.setScalars(x, y, width, height, radius, tx, ty)` is the per-frame
-  hot path: it writes geometry straight to native without touching
+- `driver.ui.setScalars(x, y, width, height, topLeft, topRight, bottomRight,
+  bottomLeft, curveCode, tx, ty, scale)` is the one per-frame hot path. It
+  writes the complete geometry and content transform straight to native while
+  preserving the current `boxShadow`, without touching
   `driver.presentation`, skipping SharedValue bookkeeping for high-frequency
   streams such as gestures. `driver.presentation.value` is stale after hot
   writes by design; `beginInteraction()` remains the source of truth for
@@ -215,13 +262,9 @@ puts on screen, which is the property worth keeping identical.
   registry's latest value rather than the stale SharedValue. To start from a
   value fresher than the last hot write (a gesture's release sample), pass it
   as `animation.from` — `animateTo` then performs the hot write and the
-  handoff in one call. Do not interleave `setScalars` with
-  `presentation.value` writes on the same driver.
-- `driver.ui.setPresentationScalars(x, y, width, height, topLeft, topRight,
-  bottomRight, bottomLeft, curveCode, tx, ty, scale)` is the V2 hot path.
-  `curveCode` is `0` for circular and `1` for continuous. V2 values are
-  validated as one transaction; widened values are never silently downgraded
-  onto a V1 native binary.
+  handoff in one call. `curveCode` is `0` for circular and `1` for continuous;
+  values are validated as one transaction. Do not interleave `setScalars`
+  with `presentation.value` writes on the same driver.
 - Spring `initialVelocity` is one normalized scalar along the current-to-target
   trajectory, in units of the remaining distance per second (`1` covers the
   remaining distance in one second). Every geometry channel continues with the

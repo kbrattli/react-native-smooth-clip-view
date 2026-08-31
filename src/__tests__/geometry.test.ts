@@ -242,7 +242,7 @@ describe('normalizeClipGeometry', () => {
 });
 
 describe('SmoothClipPresentation', () => {
-  it('keeps the legacy constructor call and defaults content scale to one', () => {
+  it('keeps the geometry-only constructor call and defaults content scale to one', () => {
     const clip = { x: 1, y: 2, width: 30, height: 40, radius: 5 };
     const presentation = createClipPresentation(clip, -11, 17);
 
@@ -369,5 +369,61 @@ describe('SmoothClipPresentation', () => {
       contentTranslateY: 17,
       contentScale: 1.5,
     });
+  });
+
+  it('canonicalizes boxShadow defaults, clamps bounded values, and is idempotent', () => {
+    const presentation = {
+      clip: { x: 0, y: 0, width: 40, height: 30, radius: 8 },
+      contentTranslateX: 0,
+      contentTranslateY: 0,
+      boxShadow: {
+        color: '#33669980',
+        blurRadius: -5,
+        spreadDistance: -3,
+        offsetX: -4,
+        offsetY: 7,
+      },
+    } as const;
+    const canonical = canonicalizeClipPresentation(presentation);
+
+    expect(canonical?.boxShadow).toEqual({
+      color: 0x33669980,
+      offsetX: -4,
+      offsetY: 7,
+      blurRadius: 0,
+      spreadDistance: -3,
+    });
+    expect(canonicalizeClipPresentation(canonical!)).toEqual(canonical);
+  });
+
+  it('distinguishes absent shadows and rejects non-finite shadow channels atomically', () => {
+    const base = createClipPresentation({
+      x: 0,
+      y: 0,
+      width: 40,
+      height: 30,
+      radius: 8,
+    });
+    expect(base.boxShadow).toBeUndefined();
+    expect(
+      canonicalizeClipPresentation({
+        ...base,
+        boxShadow: { offsetX: 0, offsetY: 0, blurRadius: Number.NaN },
+      })
+    ).toBeNull();
+    expect(
+      clipPresentationEquals(base, {
+        ...base,
+        boxShadow: { offsetX: 0, offsetY: 0 },
+      })
+    ).toBe(false);
+    expect(
+      canonicalizeClipPresentation(
+        createClipPresentation(base.clip, 0, 0, 1, {
+          offsetX: 0,
+          offsetY: Number.POSITIVE_INFINITY,
+        })
+      )
+    ).toBeNull();
   });
 });

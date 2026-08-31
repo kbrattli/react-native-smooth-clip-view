@@ -70,7 +70,7 @@ enum class AnimationKind { Timing, Spring, Keyframes };
 
 struct ActiveAnimation {
   int32_t animationId;
-  // Zero identifies a legacy/single-driver animation. A non-zero value binds
+  // Zero identifies a single-driver animation. A non-zero value binds
   // the driver to an immutable group whose completion is aggregated once.
   int32_t groupId = 0;
   std::unordered_set<ViewKey> participants;
@@ -406,8 +406,8 @@ bool timingPlanPreservesLinearHostNormalization(
       interpolate(start, target, minimumProgress);
   const Presentation maximum =
       interpolate(start, target, maximumProgress);
-  return isFiniteProtocolV2Presentation(minimum) &&
-      isFiniteProtocolV2Presentation(maximum) &&
+  return isFinitePresentation(minimum) &&
+      isFinitePresentation(maximum) &&
       presentationFitsEveryKnownHostWithoutNormalization(state, minimum) &&
       presentationFitsEveryKnownHostWithoutNormalization(state, maximum);
 }
@@ -1272,6 +1272,24 @@ void setPresentation(
 #endif
 }
 
+void setScalars(
+    uint64_t driverId,
+    Geometry geometry,
+    double contentTranslateX,
+    double contentTranslateY,
+    double contentScale,
+    bool overridePendingAnimation,
+    bool recordVelocity) {
+  Presentation presentation = snapshotCurrent(driverId);
+  if (!isFinitePresentation(presentation)) return;
+  presentation.clip = geometry;
+  presentation.contentTranslateX = contentTranslateX;
+  presentation.contentTranslateY = contentTranslateY;
+  presentation.contentScale = contentScale;
+  setPresentation(
+      driverId, presentation, true, overridePendingAnimation, recordVelocity);
+}
+
 Presentation beginInteraction(uint64_t driverId) {
   if (!NSThread.isMainThread) {
     // See setPresentation: blocking off-main risks a deadlock, so the call
@@ -1382,7 +1400,7 @@ bool setPresentationBatch(const std::vector<BatchEntry> &entries) {
     const auto iterator = registry().find(entry.driverId);
     if (entry.driverId == 0 || !unique.insert(entry.driverId).second ||
         iterator == registry().end() || iterator->second.destroyed ||
-        !isFiniteProtocolV2Presentation(entry.presentation)) {
+        !isFinitePresentation(entry.presentation)) {
       return false;
     }
   }
@@ -1430,11 +1448,11 @@ bool preflightGroupEntries(
     std::vector<Presentation> &resolvedStarts) {
   if (entries.empty()) return false;
   if (kind == AnimationKind::Timing &&
-      !isValidProtocolV2Timing(timing)) {
+      !isValidTiming(timing)) {
     return false;
   }
   if (kind == AnimationKind::Spring &&
-      !isValidProtocolV2Spring(spring)) {
+      !isValidSpring(spring)) {
     return false;
   }
   if (kind == AnimationKind::Keyframes &&
@@ -1459,18 +1477,18 @@ bool preflightGroupEntries(
     const Presentation resolvedStart = entry.hasFrom
         ? entry.from
         : canonicalVisiblePresentation(iterator->second);
-    if (!isFiniteProtocolV2Presentation(resolvedStart) ||
-        !isFiniteProtocolV2Presentation(entry.target) ||
+    if (!isFinitePresentation(resolvedStart) ||
+        !isFinitePresentation(entry.target) ||
         resolvedStart.clip.curve != entry.target.clip.curve) {
       return false;
     }
     if (kind == AnimationKind::Spring &&
-        !protocolV2SpringScaleIsProvablyPositive(
+        !springScaleIsProvablyPositive(
             resolvedStart, entry.target, spring)) {
       return false;
     }
     if (kind == AnimationKind::Keyframes) {
-      if (!isValidProtocolV2Keyframes(
+      if (!isValidKeyframes(
               entry.keyframes,
               resolvedStart,
               entry.target,
@@ -1694,27 +1712,14 @@ int32_t animateTiming(
     uint64_t driverId,
     AnimationStart start,
     Presentation presentation,
-    TimingAnimation animation,
-    AnimationValidationMode validationMode) {
+    TimingAnimation animation) {
   if (!NSThread.isMainThread) {
     // See setPresentation: blocking off-main risks a deadlock. 0 is the
     // documented rejection sentinel.
     return 0;
   }
-  const bool strictV2 =
-      validationMode == AnimationValidationMode::ProtocolV2;
-  const bool validAnimation = strictV2
-      ? isValidProtocolV2Timing(animation)
-      : std::isfinite(animation.durationMs) &&
-          std::isfinite(animation.controlPoint1X) &&
-          std::isfinite(animation.controlPoint1Y) &&
-          std::isfinite(animation.controlPoint2X) &&
-          std::isfinite(animation.controlPoint2Y) &&
-          isValidReduceMotionCode(animation.reduceMotion);
-  if (!strictV2 && validAnimation) {
-    animation.durationMs = std::max(0.0, animation.durationMs);
-  }
-  if (driverId == 0 || !isFiniteProtocolV2Presentation(presentation) ||
+  const bool validAnimation = isValidTiming(animation);
+  if (driverId == 0 || !isFinitePresentation(presentation) ||
       !validAnimation) {
     return 0;
   }
@@ -1722,7 +1727,7 @@ int32_t animateTiming(
   Presentation preflightStart;
   if (iterator == registry().end()) {
     if (!start.hasInteractiveStart ||
-        !isFiniteProtocolV2Presentation(start.interactiveStart)) {
+        !isFinitePresentation(start.interactiveStart)) {
       return 0;
     }
     preflightStart = start.interactiveStart;
@@ -1730,13 +1735,13 @@ int32_t animateTiming(
     if (iterator->second.destroyed && !start.hasInteractiveStart) return 0;
     preflightStart = resolvedAnimationStart(iterator->second, start);
   }
-  if (!isFiniteProtocolV2Presentation(preflightStart) ||
+  if (!isFinitePresentation(preflightStart) ||
       preflightStart.clip.curve != presentation.clip.curve) {
     return 0;
   }
   const bool reduced = shouldReduceMotion(animation.reduceMotion) ||
       animation.durationMs <= 0;
-  if (strictV2 && !reduced && iterator != registry().end() &&
+  if (!reduced && iterator != registry().end() &&
       !timingPlanPreservesLinearHostNormalization(
           iterator->second, preflightStart, presentation, animation)) {
     return 0;
@@ -1796,27 +1801,13 @@ int32_t animateSpring(
     uint64_t driverId,
     AnimationStart start,
     Presentation presentation,
-    SpringAnimation animation,
-    AnimationValidationMode validationMode) {
+    SpringAnimation animation) {
   if (!NSThread.isMainThread) {
     // See setPresentation: blocking off-main risks a deadlock.
     return 0;
   }
-  const bool strictV2 =
-      validationMode == AnimationValidationMode::ProtocolV2;
-  const bool validAnimation = strictV2
-      ? isValidProtocolV2Spring(animation)
-      : std::isfinite(animation.mass) &&
-          std::isfinite(animation.stiffness) &&
-          std::isfinite(animation.damping) &&
-          std::isfinite(animation.initialVelocity) &&
-          isValidReduceMotionCode(animation.reduceMotion);
-  if (!strictV2 && validAnimation) {
-    animation.mass = std::max(0.0001, animation.mass);
-    animation.stiffness = std::max(0.0001, animation.stiffness);
-    animation.damping = std::max(0.0, animation.damping);
-  }
-  if (driverId == 0 || !isFiniteProtocolV2Presentation(presentation) ||
+  const bool validAnimation = isValidSpring(animation);
+  if (driverId == 0 || !isFinitePresentation(presentation) ||
       !validAnimation) {
     return 0;
   }
@@ -1824,7 +1815,7 @@ int32_t animateSpring(
   Presentation preflightStart;
   if (iterator == registry().end()) {
     if (!start.hasInteractiveStart ||
-        !isFiniteProtocolV2Presentation(start.interactiveStart)) {
+        !isFinitePresentation(start.interactiveStart)) {
       return 0;
     }
     preflightStart = start.interactiveStart;
@@ -1832,10 +1823,9 @@ int32_t animateSpring(
     if (iterator->second.destroyed && !start.hasInteractiveStart) return 0;
     preflightStart = resolvedAnimationStart(iterator->second, start);
   }
-  if (!isFiniteProtocolV2Presentation(preflightStart) ||
+  if (!isFinitePresentation(preflightStart) ||
       preflightStart.clip.curve != presentation.clip.curve ||
-      (strictV2 && !protocolV2SpringScaleIsProvablyPositive(
-          preflightStart, presentation, animation))) {
+      !springScaleIsProvablyPositive(preflightStart, presentation, animation)) {
     return 0;
   }
   if (iterator == registry().end()) {
@@ -1889,18 +1879,14 @@ int32_t animateKeyframes(
     Presentation presentation,
     double durationMs,
     std::vector<Keyframe> keyframes,
-    int32_t reduceMotion,
-    AnimationValidationMode validationMode) {
+    int32_t reduceMotion) {
   if (!NSThread.isMainThread) {
     // See setPresentation: blocking off-main risks a deadlock.
     return 0;
   }
-  const bool strictV2 =
-      validationMode == AnimationValidationMode::ProtocolV2;
   const bool finiteDuration = std::isfinite(durationMs);
-  if (!strictV2 && finiteDuration) durationMs = std::max(0.0, durationMs);
-  if (driverId == 0 || !isFiniteProtocolV2Presentation(presentation) ||
-      !finiteDuration || (strictV2 && durationMs < 0) ||
+  if (driverId == 0 || !isFinitePresentation(presentation) ||
+      !finiteDuration || durationMs < 0 ||
       !isValidReduceMotionCode(reduceMotion)) {
     return 0;
   }
@@ -1908,7 +1894,7 @@ int32_t animateKeyframes(
   Presentation preflightStart;
   if (iterator == registry().end()) {
     if (!start.hasInteractiveStart ||
-        !isFiniteProtocolV2Presentation(start.interactiveStart)) {
+        !isFinitePresentation(start.interactiveStart)) {
       return 0;
     }
     preflightStart = start.interactiveStart;
@@ -1916,25 +1902,13 @@ int32_t animateKeyframes(
     if (iterator->second.destroyed && !start.hasInteractiveStart) return 0;
     preflightStart = resolvedAnimationStart(iterator->second, start);
   }
-  bool validKeyframes = keyframes.size() >= 2 &&
-      keyframes.front().offset == 0 && keyframes.back().offset == 1;
-  double previousOffset = -1;
-  for (const Keyframe &keyframe : keyframes) {
-    validKeyframes = validKeyframes && std::isfinite(keyframe.offset) &&
-        keyframe.offset > previousOffset && keyframe.offset >= 0 &&
-        keyframe.offset <= 1 &&
-        isFiniteProtocolV2Presentation(keyframe.presentation);
-    previousOffset = keyframe.offset;
-  }
-  if (strictV2) {
-    validKeyframes = isValidProtocolV2Keyframes(
-        keyframes, preflightStart, presentation, start.hasInteractiveStart);
-  }
-  if (!isFiniteProtocolV2Presentation(preflightStart) || !validKeyframes) {
+  const bool validKeyframes = isValidKeyframes(
+      keyframes, preflightStart, presentation, start.hasInteractiveStart);
+  if (!isFinitePresentation(preflightStart) || !validKeyframes) {
     return 0;
   }
   const bool reduced = shouldReduceMotion(reduceMotion) || durationMs <= 0;
-  if (strictV2 && !reduced && iterator != registry().end() &&
+  if (!reduced && iterator != registry().end() &&
       !keyframePlanPreservesLinearHostNormalization(
           iterator->second, preflightStart, keyframes)) {
     return 0;
@@ -1960,7 +1934,7 @@ int32_t animateKeyframes(
   // cannot jump back to a stale compiled sample. With an explicit `from`,
   // protocol validation requires the same value, so this assignment is a
   // harmless canonicalization in both cases.
-  if (strictV2 && !start.hasInteractiveStart) {
+  if (!start.hasInteractiveStart) {
     keyframes.front().presentation = resolvedStart;
   }
 
