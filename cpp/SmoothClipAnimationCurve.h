@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SmoothClipRegistry.h"
+#include "SmoothClipSharedGeometry.h"
 
 #include <algorithm>
 #include <array>
@@ -362,6 +363,22 @@ inline bool isFinitePresentation(
       presentation.shadow.blue >= 0 && presentation.shadow.blue <= 1 &&
       presentation.shadow.alpha >= 0 && presentation.shadow.alpha <= 1 &&
       presentation.shadow.blurRadius >= 0;
+}
+
+/** Canonicalizes registry geometry without consulting any attached host. */
+inline bool canonicalizePresentation(Presentation &presentation) {
+  if (!isFinitePresentation(presentation)) return false;
+  CanonicalClip clip;
+  if (!SmoothClipCanonicalize(presentation.clip, clip)) return false;
+  presentation.clip = SmoothClipGeometry(clip);
+  return true;
+}
+
+inline bool canonicalizeKeyframes(std::vector<Keyframe> &keyframes) {
+  for (Keyframe &keyframe : keyframes) {
+    if (!canonicalizePresentation(keyframe.presentation)) return false;
+  }
+  return true;
 }
 
 inline bool presentationsEqual(

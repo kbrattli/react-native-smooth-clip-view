@@ -1,6 +1,6 @@
-import {
-  normalizeClipPresentation,
-  type ClipGeometry,
+import type {
+  ClipBoxShadow,
+  ClipGeometry,
 } from 'react-native-smooth-clip-view';
 
 export type OverlayClipGeometryInput = Readonly<{
@@ -30,46 +30,10 @@ export type OverlayClipGeometryResult = Readonly<{
   contentTranslateY: number;
   /** Zoom applied to the content by the drag; 1 whenever no drag is held. */
   contentScale: number;
+  boxShadow?: ClipBoxShadow;
   /** Reveal height in content space, before the drag's shrink. */
   contentVisibleHeight: number;
 }>;
-
-/**
- * Moves screen-space overlay geometry into a three-screen-wide native host.
- * The real screen occupies the host's middle third, so a rounded rectangle can
- * travel beyond either screen edge without becoming an off-host animation
- * endpoint. A screen-sized parent performs the final viewport crop.
- */
-export function normalizeOverlayPresentation(
-  presentation: OverlayClipGeometryResult,
-  screenWidth: number,
-  screenHeight: number
-): OverlayClipGeometryResult | null {
-  'worklet';
-  const horizontalInset = screenWidth;
-  const normalized = normalizeClipPresentation(
-    {
-      ...presentation,
-      clip: {
-        ...presentation.clip,
-        x: presentation.clip.x + horizontalInset,
-      },
-    },
-    {
-      width: screenWidth * 3,
-      height: screenHeight,
-    }
-  );
-  if (normalized === null) return null;
-
-  return {
-    ...presentation,
-    clip: normalized.clip,
-    contentTranslateX: normalized.contentTranslateX,
-    contentTranslateY: normalized.contentTranslateY,
-    contentScale: normalized.contentScale,
-  };
-}
 
 // Content zoom-out while dragging to dismiss. Squaring an even ramp eases the
 // shrink OUT — most of the scale is given up in the first part of the drag, so
@@ -81,8 +45,9 @@ const DRAG_SCALE_EXPONENT = 2;
 
 // The reveal's corners open up as the page is dragged away. Radius is a native
 // clip channel, so it animates on the same native clock as the rest of the
-// window with no extra plumbing. Native clamps it to half the shortest visible
-// edge — 40 clears that at every window this overlay produces, including the
+// window with no extra plumbing. Canonicalization scales it against the
+// requested rectangle — 40 clears that at every window this overlay produces,
+// including the
 // 100pt-tall landing card.
 const DRAG_MAX_RADIUS = 40;
 const DRAG_RADIUS_RAMP_END = 0.875;

@@ -1,7 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import {
   interpolateGalleryFrame,
-  normalizeGalleryPresentationToHost,
   resolveAspectFitFrame,
   resolveDraggedGalleryFrame,
   resolveGalleryBackdropOpacity,
@@ -146,7 +145,7 @@ describe('gallery geometry', () => {
     ]);
   });
 
-  it('uses the exact normalized visible drag frame for an atomic release', () => {
+  it('uses the exact raw drag frame for an atomic release', () => {
     const destination = { x: 0, y: 0, width: 390, height: 844 };
     const draggedFrame = resolveDraggedGalleryFrame(
       destination,
@@ -160,14 +159,9 @@ describe('gallery geometry', () => {
       390,
       844
     );
-    const visible = normalizeGalleryPresentationToHost(requested, 390, 844);
-
     expect(requested.clip.y + requested.clip.height).toBeGreaterThan(844);
-    expect(visible.clip.y + visible.clip.height).toBe(844);
-    expect(visible.clip.x + visible.clip.width).toBeLessThanOrEqual(390);
-    expect(visible.contentTranslateX).toBe(requested.contentTranslateX);
-    expect(visible.contentTranslateY).toBe(requested.contentTranslateY);
-    expect(visible.contentScale).toBe(requested.contentScale);
+    expect(requested.clip.y).toBeGreaterThan(0);
+    expect(requested.contentScale).toBeGreaterThan(0);
   });
 
   it('keeps a landscape cover centred behind its square source clip', () => {

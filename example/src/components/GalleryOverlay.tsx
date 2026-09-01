@@ -30,7 +30,6 @@ import {
 } from 'react-native-smooth-clip-view';
 import { scheduleOnRN, scheduleOnUI } from 'react-native-worklets';
 import {
-  normalizeGalleryPresentationToHost,
   resolveAspectFitFrame,
   resolveDraggedGalleryFrame,
   resolveGalleryBackdropOpacity,
@@ -95,16 +94,8 @@ function applyPresentationScalars(
   presentation: GalleryPresentation
 ): GalleryPresentation {
   'worklet';
-  // Stream the same host-visible presentation that an autonomous release
-  // will receive as its authoritative `from`. Passing the off-host request
-  // here and again at release would make strict native preflight reject it.
-  const normalized = normalizeGalleryPresentationToHost(
-    presentation,
-    SCREEN_WIDTH,
-    SCREEN_HEIGHT
-  );
-  driver.ui.setScalars(...resolveGalleryPresentationScalars(normalized));
-  return normalized;
+  driver.ui.setScalars(...resolveGalleryPresentationScalars(presentation));
+  return presentation;
 }
 
 function resolveGesturePresentation(
@@ -398,13 +389,9 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
       width: target.w,
       height: target.h,
     };
-    const targetPresentation = normalizeGalleryPresentationToHost(
-      resolveGalleryPresentation(
-        targetFrame,
-        destinationFrame,
-        SCREEN_WIDTH,
-        SCREEN_HEIGHT
-      ),
+    const targetPresentation = resolveGalleryPresentation(
+      targetFrame,
+      destinationFrame,
       SCREEN_WIDTH,
       SCREEN_HEIGHT
     );
@@ -559,13 +546,13 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
 
           dragTranslateX.set(translateX);
           dragTranslateY.set(translateY);
-          const normalizedPresentation = applyPresentationScalars(
+          const releasePresentation = applyPresentationScalars(
             driver,
             presentation
           );
 
           if (event.translationY > 120 || event.velocityY > 600) {
-            closeStartPresentation.set(normalizedPresentation);
+            closeStartPresentation.set(releasePresentation);
             closeHasExplicitStart.set(true);
             closeRequested.set(true);
           } else {
@@ -578,7 +565,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
             );
             driver.ui.animateTo(restPresentation, {
               ...NATIVE_FAST_TIMING,
-              from: normalizedPresentation,
+              from: releasePresentation,
             });
             openingProgress.set(withTiming(1, FAST_TIMING));
             dragTranslateX.set(withTiming(0, FAST_TIMING));

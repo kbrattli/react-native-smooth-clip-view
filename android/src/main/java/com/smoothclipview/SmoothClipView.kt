@@ -49,7 +49,6 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     private var clipTop = 0f
     private var clipRight = 0f
     private var clipBottom = 0f
-    private var clipRadius = 0f
     private var clipTopLeftRadius = 0f
     private var clipTopRightRadius = 0f
     private var clipBottomRightRadius = 0f
@@ -58,26 +57,9 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     private val clipPath = Path()
     private var boxShadowPath: Path? = null
     private var boxShadowPaint: Paint? = null
-    private var outlineUsesPath = false
-    private var outlineUsesFloatRoundRect = false
-    // Rounded edges actually emitted to the outline provider. Sub-pixel changes
-    // that round to the same integers must not invalidate the outline.
-    private var outlineLeft = 0
-    private var outlineTop = 0
-    private var outlineRight = 0
-    private var outlineBottom = 0
     private var clipIsEmpty = true
-    // Sub-pixel remainder of the clip origin, carried on this view's own
-    // translation and subtracted back out of the content container.
-    private var clipResidualX = 0f
-    private var clipResidualY = 0f
-    // The consumer's `transform` translation, kept apart from the residual so
-    // the two compose instead of clobbering each other.
-    private var userTranslationX = 0f
-    private var userTranslationY = 0f
     private var requestedImportantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_AUTO
     private var acceptingTouchStream = false
-    private var retainedTouchEvent: MotionEvent? = null
 
     /** Driver this view is registered with in the native registry (0 = none). */
     internal var boundDriverId: Double = 0.0
@@ -92,23 +74,9 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
                 return
             }
 
-            if (outlineUsesPath) {
-                outline.setPath(clipPath)
-            } else if (outlineUsesFloatRoundRect) {
-                // Android's public Outline.setRoundRect overload accepts only
-                // integer edges. Path.addRoundRect is the platform float
-                // round-rect primitive; Outline.setPath preserves those edges
-                // without snapping fractional edges to integer outline bounds.
-                outline.setPath(clipPath)
-            } else {
-                outline.setRoundRect(
-                    outlineLeft,
-                    outlineTop,
-                    outlineRight,
-                    outlineBottom,
-                    clipRadius,
-                )
-            }
+            // Outline.setRoundRect only accepts integer edges. The raw path
+            // keeps sub-pixel coordinates and off-host geometry intact.
+            outline.setPath(clipPath)
         }
     }
 
@@ -220,10 +188,7 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         applyRequestedGeometry()
     }
 
-    /**
-     * Driver hot path. Geometry is already intersected with the host and
-     * its four radii have already had the CSS overlap factor applied in C++.
-     */
+    /** Driver hot path. Geometry is canonical, raw, and host-independent. */
     @DoNotStrip
     fun setClipPresentationPx(
         left: Float,
@@ -282,7 +247,7 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
                 shadowBlurRadius,
                 shadowSpreadDistance,
             )
-            applyNormalizedClipPx(
+            applyCanonicalClipPx(
                 left,
                 top,
                 right,
@@ -299,7 +264,7 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     }
 
     private fun applyRequestedGeometry() {
-        normalizeClipGeometryPx(
+        canonicalizeClipGeometryPx(
             requestedX,
             requestedY,
             requestedWidth,
@@ -309,10 +274,8 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
             requestedBottomRightRadius,
             requestedBottomLeftRadius,
             requestedCurveCode,
-            width.toFloat(),
-            height.toFloat(),
         ) { left, top, right, bottom, topLeft, topRight, bottomRight, bottomLeft, curve ->
-            applyNormalizedClipPx(
+            applyCanonicalClipPx(
                 left,
                 top,
                 right,
@@ -424,26 +387,32 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     }
 
     override fun dispatchDraw(canvas: Canvas) {
-        val shadowPath = boxShadowPath
-        val shadowPaint = boxShadowPaint
-        if (requestedShadowEnabled && !clipIsEmpty &&
-            requestedShadowAlpha > 0f && shadowPath != null &&
-            shadowPaint != null && !shadowPath.isEmpty
-        ) {
-            val saveCount = canvas.save()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                canvas.clipOutPath(clipPath)
-            } else {
-                @Suppress("DEPRECATION")
-                canvas.clipPath(clipPath, Region.Op.DIFFERENCE)
+        val hostSaveCount = canvas.save()
+        canvas.clipRect(0f, 0f, width.toFloat(), height.toFloat())
+        try {
+            val shadowPath = boxShadowPath
+            val shadowPaint = boxShadowPaint
+            if (requestedShadowEnabled && !clipIsEmpty &&
+                requestedShadowAlpha > 0f && shadowPath != null &&
+                shadowPaint != null && !shadowPath.isEmpty
+            ) {
+                val apertureSaveCount = canvas.save()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    canvas.clipOutPath(clipPath)
+                } else {
+                    @Suppress("DEPRECATION")
+                    canvas.clipPath(clipPath, Region.Op.DIFFERENCE)
+                }
+                canvas.drawPath(shadowPath, shadowPaint)
+                canvas.restoreToCount(apertureSaveCount)
             }
-            canvas.drawPath(shadowPath, shadowPaint)
-            canvas.restoreToCount(saveCount)
+            super.dispatchDraw(canvas)
+        } finally {
+            canvas.restoreToCount(hostSaveCount)
         }
-        super.dispatchDraw(canvas)
     }
 
-    private fun applyNormalizedClipPx(
+    private fun applyCanonicalClipPx(
         left: Float,
         top: Float,
         right: Float,
@@ -454,24 +423,9 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         bottomLeftRadius: Float,
         curveCode: Int,
     ) {
-        val radiiAreUniform = topLeftRadius == topRightRadius &&
-            topLeftRadius == bottomRightRadius &&
-            topLeftRadius == bottomLeftRadius
-        val needsPath = curveCode == CLIP_CURVE_CONTINUOUS || !radiiAreUniform
-        if (!needsPath) {
-            applyNormalizedFloatRoundRectPx(
-                left,
-                top,
-                right,
-                bottom,
-                topLeftRadius,
-            )
-            return
-        }
-
         val isEmpty = right <= left || bottom <= top
-        val outlineGeometryChanged = !outlineUsesPath ||
-            left != clipLeft || top != clipTop || right != clipRight ||
+        val geometryChanged = left != clipLeft || top != clipTop ||
+            right != clipRight ||
             bottom != clipBottom || topLeftRadius != clipTopLeftRadius ||
             topRightRadius != clipTopRightRadius ||
             bottomRightRadius != clipBottomRightRadius ||
@@ -481,122 +435,56 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         clipTop = top
         clipRight = right
         clipBottom = bottom
-        clipRadius = if (radiiAreUniform) topLeftRadius else 0f
+        val radiiAreUniform = topLeftRadius == topRightRadius &&
+            topLeftRadius == bottomRightRadius &&
+            topLeftRadius == bottomLeftRadius
         clipTopLeftRadius = topLeftRadius
         clipTopRightRadius = topRightRadius
         clipBottomRightRadius = bottomRightRadius
         clipBottomLeftRadius = bottomLeftRadius
         clipCurveCode = curveCode
-        // Path outlines retain physical-pixel floats and need no residual
-        // translation compensation.
-        clipResidualX = 0f
-        clipResidualY = 0f
-        applyClipPlacement()
+        applyContentTransform()
 
-        if (isEmpty != clipIsEmpty) {
-            if (isEmpty) cancelAcceptedTouchStream()
-            clipIsEmpty = isEmpty
-            visibility = clipVisibility(isEmpty)
-            importantForAccessibility = clipAccessibility(
-                isEmpty,
-                requestedImportantForAccessibility,
-            )
-        }
+        clipIsEmpty = isEmpty
+        reapplyClipPresentation()
 
-        if (!outlineGeometryChanged) return
+        if (!geometryChanged) return
 
-        outlineUsesPath = true
-        outlineUsesFloatRoundRect = false
         clipPath.reset()
         if (!isEmpty) {
-            appendRoundedRectPath(
-                clipPath,
-                left,
-                top,
-                right,
-                bottom,
-                topLeftRadius,
-                topRightRadius,
-                bottomRightRadius,
-                bottomLeftRadius,
-                curveCode,
-            )
+            if (curveCode == CLIP_CURVE_CIRCULAR && radiiAreUniform) {
+                clipPath.addRoundRect(
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    topLeftRadius,
+                    topLeftRadius,
+                    Path.Direction.CW,
+                )
+            } else {
+                appendRoundedRectPath(
+                    clipPath,
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    topLeftRadius,
+                    topRightRadius,
+                    bottomRightRadius,
+                    bottomLeftRadius,
+                    curveCode,
+                )
+            }
         }
         rebuildBoxShadowPath()
         clipContainer.invalidateOutline()
         if (requestedShadowEnabled) invalidate()
     }
 
-    /** Uniform circular geometry stays entirely in float physical pixels. */
-    private fun applyNormalizedFloatRoundRectPx(
-        left: Float,
-        top: Float,
-        right: Float,
-        bottom: Float,
-        radius: Float,
-    ) {
-        val isEmpty = right <= left || bottom <= top
-        val outlineGeometryChanged = outlineUsesPath ||
-            !outlineUsesFloatRoundRect ||
-            left != clipLeft || top != clipTop || right != clipRight ||
-            bottom != clipBottom || radius != clipRadius
-
-        clipLeft = left
-        clipTop = top
-        clipRight = right
-        clipBottom = bottom
-        clipRadius = radius
-        clipTopLeftRadius = radius
-        clipTopRightRadius = radius
-        clipBottomRightRadius = radius
-        clipBottomLeftRadius = radius
-        clipCurveCode = CLIP_CURVE_CIRCULAR
-        clipResidualX = 0f
-        clipResidualY = 0f
-        applyClipPlacement()
-
-        if (isEmpty != clipIsEmpty) {
-            if (isEmpty) cancelAcceptedTouchStream()
-            clipIsEmpty = isEmpty
-            visibility = clipVisibility(isEmpty)
-            importantForAccessibility = clipAccessibility(
-                isEmpty,
-                requestedImportantForAccessibility,
-            )
-        }
-
-        if (!outlineGeometryChanged) return
-        outlineUsesPath = false
-        outlineUsesFloatRoundRect = true
-        clipPath.reset()
-        if (!isEmpty) {
-            clipPath.addRoundRect(
-                left,
-                top,
-                right,
-                bottom,
-                radius,
-                radius,
-                Path.Direction.CW,
-            )
-        }
-        rebuildBoxShadowPath()
-        clipContainer.invalidateOutline()
-        if (requestedShadowEnabled) invalidate()
-    }
-
-    /**
-     * Single writer for both translations. The view carries the sub-pixel
-     * remainder of the clip origin; the content container subtracts it back out
-     * so only the clip edge moves and the content stays exactly where the
-     * driver put it. Every write self-dedupes inside View.setTranslationX, so
-     * calling this on an unchanged frame costs four float comparisons.
-     */
-    private fun applyClipPlacement() {
-        super.setTranslationX(userTranslationX + clipResidualX)
-        super.setTranslationY(userTranslationY + clipResidualY)
-        contentContainer.translationX = requestedContentTranslateX - clipResidualX
-        contentContainer.translationY = requestedContentTranslateY - clipResidualY
+    private fun applyContentTransform() {
+        contentContainer.translationX = requestedContentTranslateX
+        contentContainer.translationY = requestedContentTranslateY
         // Scale is intentionally centered and lives on the content only. View
         // translation properties are applied independently of scale, so a
         // caller's tx/ty remains a physical-pixel offset rather than scaling
@@ -607,37 +495,14 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         contentContainer.scaleY = requestedContentScale
     }
 
-    // The clip's sub-pixel placement and the consumer's `transform` prop share
-    // one property, so they are composed rather than allowed to overwrite each
-    // other. RN routes every transform write through these setters
-    // (BaseViewManager.setTransformProperty), so intercepting them is enough.
-    //
-    // The getters are deliberately NOT overridden to hide the residual:
-    // View.setTranslationX dedupes by calling getTranslationX() virtually, so
-    // reporting the consumer's value there would make every write look like a
-    // change and re-invalidate the view on frames where nothing moved. The cost
-    // of leaving them alone is that a read-modify-write of translationX picks up
-    // the residual twice — sub-pixel, and nothing in RN's transform path reads
-    // back before writing.
-    override fun setTranslationX(translationX: Float) {
-        userTranslationX = translationX
-        super.setTranslationX(translationX + clipResidualX)
-    }
-
-    override fun setTranslationY(translationY: Float) {
-        userTranslationY = translationY
-        super.setTranslationY(translationY + clipResidualY)
-    }
-
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         clipContainer.layout(0, 0, w, h)
         contentContainer.layout(0, 0, w, h)
-        applyClipPlacement()
+        applyContentTransform()
         if (boundDriverId != 0.0) {
-            // Driver deliveries are pre-normalized in C++ against the pushed
-            // host metrics; refresh them and let the registry redeliver the
-            // visible value synchronously.
+            // Host metrics only gate lifecycle readiness. Redelivery remains
+            // raw and canonical; this view owns the final viewport crop.
             SmoothClipBindings.nativeSetViewHostGeometry(
                 boundDriverId,
                 this,
@@ -652,6 +517,7 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
             // authoritative command wins over the driver value on resize.
             applyRequestedGeometry()
         }
+        reapplyClipPresentation()
     }
 
     override fun onAttachedToWindow() {
@@ -706,89 +572,33 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     }
 
     private fun containsRoundedPoint(x: Float, y: Float): Boolean {
-        // The event arrives in this view's local space, which the parent has
-        // already inverse-transformed by the residual translation. Adding it
-        // back maps the point into the space clipLeft/clipTop are expressed in,
-        // so hit testing stays against the geometry the driver delivered — the
-        // same test as before the residual existed.
-        if (outlineUsesPath) {
-            // Reuse the exact cubic path supplied to Outline.setPath: hit
-            // testing must follow the rendered aperture, including its
-            // portable continuous-curve approximation.
-            return !clipIsEmpty && containsPathPoint(clipPath, x, y)
-        }
-        return containsRoundedPointPx(
-            x + clipResidualX,
-            y + clipResidualY,
-            clipLeft,
-            clipTop,
-            clipRight,
-            clipBottom,
-            clipRadius,
-            clipIsEmpty,
-        )
+        // Reuse the exact path supplied to the Outline. Hit testing therefore
+        // follows the rendered aperture, including continuous corners.
+        return !clipIsEmpty && containsPathPoint(clipPath, x, y)
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                clearTouchState()
-                acceptingTouchStream = containsRoundedPoint(event.x, event.y)
-                if (!acceptingTouchStream) return false
-                val accepted = super.dispatchTouchEvent(event)
-                if (accepted) {
-                    retainTouchEvent(event)
-                } else {
-                    clearTouchState()
-                }
-                return accepted
-            }
-            MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_UP -> {
-                val result = if (acceptingTouchStream) {
-                    super.dispatchTouchEvent(event)
-                } else {
-                    false
-                }
-                clearTouchState()
-                return result
-            }
+        val action = event.actionMasked
+        if (action == MotionEvent.ACTION_DOWN) {
+            // The aperture gates admission only. Once accepted, the stream
+            // belongs to Android until its real UP or CANCEL arrives.
+            clearTouchState()
+            if (!containsRoundedPoint(event.x, event.y)) return false
+            acceptingTouchStream = true
         }
 
         if (!acceptingTouchStream) return false
         val result = super.dispatchTouchEvent(event)
-        retainTouchEvent(event)
+        if ((action == MotionEvent.ACTION_DOWN && !result) ||
+            action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_UP
+        ) {
+            clearTouchState()
+        }
         return result
-    }
-
-    private fun retainTouchEvent(event: MotionEvent) {
-        retainedTouchEvent?.recycle()
-        retainedTouchEvent = MotionEvent.obtain(event)
     }
 
     private fun clearTouchState() {
         acceptingTouchStream = false
-        retainedTouchEvent?.recycle()
-        retainedTouchEvent = null
-    }
-
-    private fun cancelAcceptedTouchStream() {
-        val latest = retainedTouchEvent
-        if (!acceptingTouchStream || latest == null) {
-            clearTouchState()
-            return
-        }
-        val cancel = MotionEvent.obtain(latest)
-        cancel.action = MotionEvent.ACTION_CANCEL
-        // Terminal BEFORE dispatch: a child's synchronous cancel handler can
-        // re-enter geometry application, and a nested emptiness transition
-        // must observe an already-ended stream instead of synthesizing a
-        // second cancel for it.
-        clearTouchState()
-        try {
-            super.dispatchTouchEvent(cancel)
-        } finally {
-            cancel.recycle()
-        }
     }
 
     fun setRequestedImportantForAccessibility(value: Int) {
@@ -797,18 +607,44 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     }
 
     fun reapplyClipPresentation() {
-        val expectedVisibility = clipVisibility(clipIsEmpty)
+        val apertureVisible = apertureIntersectsHost()
+        val expectedVisibility = renderVisibility(
+            apertureVisible || shadowIntersectsHost(),
+        )
         if (visibility != expectedVisibility) {
             visibility = expectedVisibility
         }
 
         val expectedAccessibility = clipAccessibility(
-            clipIsEmpty,
+            !apertureVisible,
             requestedImportantForAccessibility,
         )
         if (importantForAccessibility != expectedAccessibility) {
             importantForAccessibility = expectedAccessibility
         }
+    }
+
+    private fun apertureIntersectsHost(): Boolean =
+        !clipIsEmpty && clipRight > 0f && clipBottom > 0f &&
+            clipLeft < width.toFloat() && clipTop < height.toFloat()
+
+    private fun shadowIntersectsHost(): Boolean {
+        if (clipIsEmpty || !requestedShadowEnabled || requestedShadowAlpha <= 0f) {
+            return false
+        }
+        val spread = requestedShadowSpreadDistance
+        val pathLeft = clipLeft - spread + requestedShadowOffsetX
+        val pathTop = clipTop - spread + requestedShadowOffsetY
+        val pathRight = clipRight + spread + requestedShadowOffsetX
+        val pathBottom = clipBottom + spread + requestedShadowOffsetY
+        if (pathRight <= pathLeft || pathBottom <= pathTop) return false
+
+        // CSS blur is specified as a diameter-like radius. Expanding by the
+        // full value is conservative and prevents culling a faint blur tail.
+        val blurOutset = requestedShadowBlurRadius
+        return pathRight + blurOutset > 0f && pathBottom + blurOutset > 0f &&
+            pathLeft - blurOutset < width.toFloat() &&
+            pathTop - blurOutset < height.toFloat()
     }
 
     fun resetClipState() {
@@ -837,16 +673,8 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         requestedShadowSpreadDistance = 0f
         boxShadowPaint = null
         boxShadowPath = null
-        clipResidualX = 0f
-        clipResidualY = 0f
-        applyClipPlacement()
-        outlineUsesPath = false
-        outlineUsesFloatRoundRect = false
+        applyContentTransform()
         clipPath.reset()
-        outlineLeft = 0
-        outlineTop = 0
-        outlineRight = 0
-        outlineBottom = 0
         requestedImportantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_AUTO
         applyRequestedGeometry()
     }

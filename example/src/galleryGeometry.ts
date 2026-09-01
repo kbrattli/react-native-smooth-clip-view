@@ -68,43 +68,6 @@ function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-/**
- * Converts the requested aperture into the exact host-visible aperture while
- * leaving the content transform untouched. Native performs the same clipping
- * for streamed writes, but an autonomous `from` must already be normalized
- * so preflight can prove that every animation frame is host-independent.
- */
-export function normalizeGalleryPresentationToHost(
-  presentation: GalleryPresentation,
-  hostWidth: number,
-  hostHeight: number
-): GalleryPresentation {
-  'worklet';
-  const boundedHostWidth = sanitizeDimension(hostWidth);
-  const boundedHostHeight = sanitizeDimension(hostHeight);
-  const requestedX = sanitizeCoordinate(presentation.clip.x);
-  const requestedY = sanitizeCoordinate(presentation.clip.y);
-  const requestedWidth = sanitizeDimension(presentation.clip.width);
-  const requestedHeight = sanitizeDimension(presentation.clip.height);
-  const left = clamp(requestedX, 0, boundedHostWidth);
-  const top = clamp(requestedY, 0, boundedHostHeight);
-  const right = clamp(requestedX + requestedWidth, 0, boundedHostWidth);
-  const bottom = clamp(requestedY + requestedHeight, 0, boundedHostHeight);
-
-  return {
-    clip: {
-      x: left,
-      y: top,
-      width: Math.max(0, right - left),
-      height: Math.max(0, bottom - top),
-      radius: 0,
-    },
-    contentTranslateX: presentation.contentTranslateX,
-    contentTranslateY: presentation.contentTranslateY,
-    contentScale: presentation.contentScale,
-  };
-}
-
 function lerp(from: number, to: number, progress: number) {
   'worklet';
   return from + (to - from) * progress;

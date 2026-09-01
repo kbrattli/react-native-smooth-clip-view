@@ -33,7 +33,6 @@ import {
 import { scheduleOnRN, scheduleOnUI } from 'react-native-worklets';
 import {
   calculateOverlayClipGeometry,
-  normalizeOverlayPresentation,
   type OverlayClipGeometryResult,
 } from '../overlayClipGeometry';
 import {
@@ -268,21 +267,38 @@ type OverlayClipHostProps = {
 
 function OverlayClipHost({ children, driver }: OverlayClipHostProps) {
   return (
-    <View style={styles.clipViewport}>
-      <SmoothClipView
-        driver={driver}
-        style={styles.maximumClipHost}
-        testID="overlay-smooth-clip-host"
-      >
-        <View
-          style={styles.maximumClipContent}
-          testID="overlay-smooth-clip-content"
-        >
-          {children}
-        </View>
-      </SmoothClipView>
-    </View>
+    <SmoothClipView
+      driver={driver}
+      style={styles.clipHost}
+      testID="overlay-smooth-clip-host"
+    >
+      {children}
+    </SmoothClipView>
   );
+}
+
+const REVEAL_SHADOW_HIDDEN = {
+  color: '#00000000',
+  offsetX: 0,
+  offsetY: 2,
+  blurRadius: 64,
+  spreadDistance: 0,
+} as const;
+
+const REVEAL_SHADOW_VISIBLE = {
+  ...REVEAL_SHADOW_HIDDEN,
+  color: '#00000040',
+} as const;
+
+function withRevealShadow(
+  presentation: OverlayClipGeometryResult,
+  visible: boolean
+): OverlayClipGeometryResult {
+  'worklet';
+  return {
+    ...presentation,
+    boxShadow: visible ? REVEAL_SHADOW_VISIBLE : REVEAL_SHADOW_HIDDEN,
+  };
 }
 
 function fullscreenPresentation(
@@ -290,24 +306,27 @@ function fullscreenPresentation(
   maximumDragRadius: number
 ) {
   'worklet';
-  return calculateOverlayClipGeometry({
-    progress: 1,
-    originX: 0,
-    originY: 0,
-    originWidth: SCREEN_WIDTH,
-    originHeight: SCREEN_HEIGHT,
-    screenWidth: SCREEN_WIDTH,
-    screenHeight: SCREEN_HEIGHT,
-    translateX: 0,
-    translateY: 0,
-    dragThreshold: DRAG_THRESHOLD,
-    minimumWidth: MIN_WIDTH,
-    minimumHeight: MIN_HEIGHT,
-    topClipRatio: TOP_CLIP_RATIO,
-    dragTranslateY: DRAG_TRANSLATE_Y,
-    sourceRadius,
-    maximumDragRadius,
-  });
+  return withRevealShadow(
+    calculateOverlayClipGeometry({
+      progress: 1,
+      originX: 0,
+      originY: 0,
+      originWidth: SCREEN_WIDTH,
+      originHeight: SCREEN_HEIGHT,
+      screenWidth: SCREEN_WIDTH,
+      screenHeight: SCREEN_HEIGHT,
+      translateX: 0,
+      translateY: 0,
+      dragThreshold: DRAG_THRESHOLD,
+      minimumWidth: MIN_WIDTH,
+      minimumHeight: MIN_HEIGHT,
+      topClipRatio: TOP_CLIP_RATIO,
+      dragTranslateY: DRAG_TRANSLATE_Y,
+      sourceRadius,
+      maximumDragRadius,
+    }),
+    true
+  );
 }
 
 function applyPresentationScalars(
@@ -315,10 +334,8 @@ function applyPresentationScalars(
   presentation: OverlayClipGeometryResult
 ) {
   'worklet';
-  // The middle third of the native host is the visible screen. Offset only the
-  // x scalar here so the per-frame gesture stream remains allocation-free.
   driver.ui.setScalars(
-    presentation.clip.x + SCREEN_WIDTH,
+    presentation.clip.x,
     presentation.clip.y,
     presentation.clip.width,
     presentation.clip.height,
@@ -373,18 +390,24 @@ function closeEndpoints(
     maximumDragRadius,
   } as const;
   return {
-    release: calculateOverlayClipGeometry({
-      ...shared,
-      progress: 1,
-      translateX: startX,
-      translateY: startY,
-    }),
-    landing: calculateOverlayClipGeometry({
-      ...shared,
-      progress: 0,
-      translateX: 0,
-      translateY: 0,
-    }),
+    release: withRevealShadow(
+      calculateOverlayClipGeometry({
+        ...shared,
+        progress: 1,
+        translateX: startX,
+        translateY: startY,
+      }),
+      true
+    ),
+    landing: withRevealShadow(
+      calculateOverlayClipGeometry({
+        ...shared,
+        progress: 0,
+        translateX: 0,
+        translateY: 0,
+      }),
+      false
+    ),
   };
 }
 
@@ -426,7 +449,7 @@ const Overlay = memo(function OverlayView({
   // Native starts with this exact geometry, preventing a fullscreen flash
   // before the first UI-runtime command arrives.
   const [initialClip] = useState<ClipGeometry>(() => ({
-    x: initialOriginRect.x + SCREEN_WIDTH,
+    x: initialOriginRect.x,
     y: initialOriginRect.y,
     width: initialOriginRect.w,
     height: initialOriginRect.h,
@@ -448,6 +471,7 @@ const Overlay = memo(function OverlayView({
   });
   const translateY = useSharedValue(0);
   const translateX = useSharedValue(0);
+  const openingAnimationId = useSharedValue(0);
   const closingAnimationId = useSharedValue(0);
   const driverRef = useRef<SmoothClipDriver | null>(null);
 
@@ -455,9 +479,10 @@ const Overlay = memo(function OverlayView({
     'worklet';
     if (overlayPhase.get() !== OVERLAY_PHASE_OPENING) return;
 
+    openingAnimationId.set(0);
     overlayPhase.set(OVERLAY_PHASE_OPEN);
     hiddenIndex.set(openingIndex);
-  }, [hiddenIndex, openingIndex, overlayPhase]);
+  }, [hiddenIndex, openingAnimationId, openingIndex, overlayPhase]);
 
   const onNativeAnimationComplete = useCallback(
     (result: ClipAnimationResult) => {
@@ -468,6 +493,7 @@ const Overlay = memo(function OverlayView({
         'worklet';
         const action = resolveOverlayCompletionAction(
           overlayPhase.get(),
+          openingAnimationId.get(),
           closingAnimationId.get(),
           result
         );
@@ -486,12 +512,10 @@ const Overlay = memo(function OverlayView({
 
         closingAnimationId.set(0);
         const visiblePresentation = currentDriver.ui.beginInteraction();
-        const fullscreen = normalizeOverlayPresentation(
-          fullscreenPresentation(sourceRadius, maximumDragRadius),
-          SCREEN_WIDTH,
-          SCREEN_HEIGHT
+        const fullscreen = fullscreenPresentation(
+          sourceRadius,
+          maximumDragRadius
         );
-        if (fullscreen === null) return;
         overlayPhase.set(OVERLAY_PHASE_OPEN);
         translateX.set(0);
         translateY.set(0);
@@ -509,6 +533,7 @@ const Overlay = memo(function OverlayView({
       hiddenIndex,
       maximumDragRadius,
       onClosed,
+      openingAnimationId,
       overlayPhase,
       progress,
       sourceRadius,
@@ -522,6 +547,7 @@ const Overlay = memo(function OverlayView({
       clip: initialClip,
       contentTranslateX: initialOriginRect.x,
       contentTranslateY: initialOriginRect.y,
+      boxShadow: REVEAL_SHADOW_HIDDEN,
     },
     { onAnimationComplete: onNativeAnimationComplete }
   );
@@ -529,7 +555,7 @@ const Overlay = memo(function OverlayView({
 
   // Start the opening animation after the native clip host mounts.
   useEffect(() => {
-    const openPresentation = normalizeOverlayPresentation(
+    const openPresentation = withRevealShadow(
       calculateOverlayClipGeometry({
         progress: 1,
         originX: initialOriginRect.x,
@@ -548,16 +574,28 @@ const Overlay = memo(function OverlayView({
         sourceRadius,
         maximumDragRadius,
       }),
-      SCREEN_WIDTH,
-      SCREEN_HEIGHT
+      true
     );
-    if (openPresentation === null) return;
     scheduleOnUI(() => {
       'worklet';
-      driver.ui.animateTo(openPresentation, NATIVE_TIMING);
+      const animationId = driver.ui.animateTo(openPresentation, NATIVE_TIMING);
+      if (animationId === 0) {
+        driver.ui.set(openPresentation);
+        completeOpening();
+        return;
+      }
+      openingAnimationId.set(animationId);
       progress.set(withTiming(1, TIMING_CONFIG));
     });
-  }, [driver, initialOriginRect, maximumDragRadius, progress, sourceRadius]);
+  }, [
+    completeOpening,
+    driver,
+    initialOriginRect,
+    maximumDragRadius,
+    openingAnimationId,
+    progress,
+    sourceRadius,
+  ]);
 
   // Tracked on the JS side so render never reads a shared value.
   const lastIndexRef = useRef<number>(openingIndex);
@@ -626,20 +664,7 @@ const Overlay = memo(function OverlayView({
       sourceRadius,
       maximumDragRadius
     );
-    // Move both endpoints into the wider host. This matches the scalar stream's
-    // held presentation while keeping every timing endpoint host-valid; the
-    // outer viewport, rather than native geometry normalization, crops it.
-    const release = normalizeOverlayPresentation(
-      endpoints.release,
-      SCREEN_WIDTH,
-      SCREEN_HEIGHT
-    );
-    const landing = normalizeOverlayPresentation(
-      endpoints.landing,
-      SCREEN_WIDTH,
-      SCREEN_HEIGHT
-    );
-    if (release === null || landing === null) return;
+    const { release, landing } = endpoints;
 
     overlayPhase.set(OVERLAY_PHASE_CLOSING);
     const animationId = driver.ui.animateTo(landing, {
@@ -654,12 +679,11 @@ const Overlay = memo(function OverlayView({
       translateX.set(0);
       translateY.set(0);
       progress.set(1);
-      const fullscreen = normalizeOverlayPresentation(
-        fullscreenPresentation(sourceRadius, maximumDragRadius),
-        SCREEN_WIDTH,
-        SCREEN_HEIGHT
+      const fullscreen = fullscreenPresentation(
+        sourceRadius,
+        maximumDragRadius
       );
-      if (fullscreen !== null) driver.ui.set(fullscreen);
+      driver.ui.set(fullscreen);
       return;
     }
 
@@ -764,12 +788,11 @@ const Overlay = memo(function OverlayView({
             close();
           } else {
             const origin = originRect.get();
-            const fullscreen = normalizeOverlayPresentation(
-              fullscreenPresentation(sourceRadius, maximumDragRadius),
-              SCREEN_WIDTH,
-              SCREEN_HEIGHT
+            const fullscreen = fullscreenPresentation(
+              sourceRadius,
+              maximumDragRadius
             );
-            const releasePresentation = normalizeOverlayPresentation(
+            const releasePresentation = withRevealShadow(
               calculateOverlayClipGeometry({
                 progress: progress.get(),
                 originX: origin.x,
@@ -788,10 +811,8 @@ const Overlay = memo(function OverlayView({
                 sourceRadius,
                 maximumDragRadius,
               }),
-              SCREEN_WIDTH,
-              SCREEN_HEIGHT
+              true
             );
-            if (fullscreen === null || releasePresentation === null) return;
             driver.ui.animateTo(fullscreen, {
               ...NATIVE_FAST_TIMING,
               // Start from the release sample — the gated reaction never
@@ -987,24 +1008,9 @@ const styles = StyleSheet.create({
     width: SCREEN_WIDTH,
     zIndex: 999,
   },
-  maximumClipHost: {
-    height: SCREEN_HEIGHT,
-    left: -SCREEN_WIDTH,
-    position: 'absolute',
-    top: 0,
-    width: SCREEN_WIDTH * 3,
-  },
-  clipViewport: {
+  clipHost: {
     height: SCREEN_HEIGHT,
     left: 0,
-    overflow: 'hidden',
-    position: 'absolute',
-    top: 0,
-    width: SCREEN_WIDTH,
-  },
-  maximumClipContent: {
-    height: SCREEN_HEIGHT,
-    left: SCREEN_WIDTH,
     position: 'absolute',
     top: 0,
     width: SCREEN_WIDTH,

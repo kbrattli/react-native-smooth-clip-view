@@ -10,12 +10,17 @@ export type OverlayCompletionAction =
 
 export function resolveOverlayCompletionAction(
   phase: OverlayPhase,
+  openingAnimationId: number,
   closingAnimationId: number,
   result: ClipAnimationResult
 ): OverlayCompletionAction {
   'worklet';
   if (phase === OVERLAY_PHASE_OPENING) {
-    return result.finished ? 'complete-opening' : 'ignore';
+    return openingAnimationId !== 0 &&
+      result.animationId === openingAnimationId &&
+      result.finished
+      ? 'complete-opening'
+      : 'ignore';
   }
   if (
     phase !== OVERLAY_PHASE_CLOSING ||

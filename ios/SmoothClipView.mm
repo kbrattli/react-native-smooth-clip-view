@@ -161,7 +161,7 @@ static bool SmoothBoxShadowEqual(
 }
 
 static bool SmoothBoxShadowVisible(
-    SmoothNormalizedClipGeometry geometry,
+    SmoothClipCanonicalGeometry geometry,
     const smoothclip::Shadow &shadow) {
   return shadow.enabled && shadow.alpha > 0 && !CGRectIsEmpty(geometry.rect);
 }
@@ -174,9 +174,9 @@ static bool SmoothBoxShadowColorEqual(
 }
 
 static bool SmoothBoxShadowPathInputEqual(
-    SmoothNormalizedClipGeometry firstGeometry,
+    SmoothClipCanonicalGeometry firstGeometry,
     const smoothclip::Shadow &firstShadow,
-    SmoothNormalizedClipGeometry secondGeometry,
+    SmoothClipCanonicalGeometry secondGeometry,
     const smoothclip::Shadow &secondShadow) {
   return CGRectEqualToRect(firstGeometry.rect, secondGeometry.rect) &&
       SmoothClipCornerRadiiEqual(
@@ -228,7 +228,7 @@ static CGFloat SmoothClipAdjustedShadowRadius(
 }
 
 static CGPathRef SmoothClipCreateShadowPath(
-    SmoothNormalizedClipGeometry geometry,
+    SmoothClipCanonicalGeometry geometry,
     const smoothclip::Shadow &shadow) {
   const CGFloat spread = shadow.spreadDistance;
   CGRect rect = CGRectInset(geometry.rect, -spread, -spread);
@@ -315,27 +315,38 @@ static std::array<double, 11> SmoothClipVelocityChannels(
           contentScale};
 }
 
+static BOOL SmoothClipRectIntersectsHost(CGRect rect, CGRect host) {
+  const CGRect intersection = CGRectIntersection(rect, host);
+  return !CGRectIsNull(intersection) && !CGRectIsEmpty(intersection);
+}
+
+static smoothclip::Presentation SmoothClipCanonicalSnapshot(
+    smoothclip::Presentation presentation) {
+  smoothclip::canonicalizePresentation(presentation);
+  return presentation;
+}
+
 @implementation SmoothClipView {
   CALayer *_shadowLayer;
   SmoothClipContainerView *_clipContainer;
   SmoothClipContainerView *_contentContainer;
   CAShapeLayer *_unequalCornerMask;
   CGRect _requestedClip;
-  CGRect _normalizedClip;
+  CGRect _canonicalClip;
   CGFloat _requestedRadius;
-  CGFloat _normalizedRadius;
+  CGFloat _canonicalRadius;
   SmoothClipCornerRadii _requestedRadii;
-  SmoothClipCornerRadii _normalizedRadii;
+  SmoothClipCornerRadii _canonicalRadii;
   SmoothClipCornerCurve _requestedCurve;
-  SmoothClipCornerCurve _normalizedCurve;
+  SmoothClipCornerCurve _canonicalCurve;
   BOOL _requestedHasExplicitRadii;
-  BOOL _normalizedHasExplicitRadii;
+  BOOL _canonicalHasExplicitRadii;
   CGPoint _requestedContentTranslation;
-  CGPoint _normalizedContentTranslation;
+  CGPoint _canonicalContentTranslation;
   CGFloat _requestedContentScale;
-  CGFloat _normalizedContentScale;
+  CGFloat _canonicalContentScale;
   smoothclip::Shadow _requestedShadow;
-  smoothclip::Shadow _normalizedShadow;
+  smoothclip::Shadow _canonicalShadow;
   uint64_t _driverId;
   BOOL _hasLayout;
   BOOL _commandIsAuthoritative;
@@ -362,7 +373,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   smoothclip::SpringAnimation _springAnimation;
   SmoothClipAnimationDelegate *_animationDelegate;
 
-  // 'inherit' velocity samples (normalized geometry, per view); recording/
+  // 'inherit' velocity samples (raw canonical geometry, per view); recording/
   // coalescing/projection live in the shared cpp/SmoothClipVelocityTracker.h
   // (behavior-paired with Android's per-driver history).
   smoothclip::VelocitySampleHistory _velocitySamples;
@@ -389,6 +400,9 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     static const auto defaultProps =
         std::make_shared<const SmoothClipViewProps>();
     _props = defaultProps;
+    // SmoothClipView is the fixed viewport. Consumer overflow props are
+    // intentionally overridden again after every prop update below.
+    self.clipsToBounds = YES;
 
     _clipContainer = [[SmoothClipContainerView alloc] initWithFrame:CGRectZero];
     _clipContainer.layer.masksToBounds = YES;
@@ -417,21 +431,21 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     _unequalCornerMask.needsDisplayOnBoundsChange = NO;
 
     _requestedClip = CGRectZero;
-    _normalizedClip = CGRectZero;
+    _canonicalClip = CGRectZero;
     _requestedRadius = 0;
-    _normalizedRadius = 0;
+    _canonicalRadius = 0;
     _requestedRadii = {0, 0, 0, 0};
-    _normalizedRadii = {0, 0, 0, 0};
+    _canonicalRadii = {0, 0, 0, 0};
     _requestedCurve = SmoothClipCornerCurveCircular;
-    _normalizedCurve = SmoothClipCornerCurveCircular;
+    _canonicalCurve = SmoothClipCornerCurveCircular;
     _requestedHasExplicitRadii = NO;
-    _normalizedHasExplicitRadii = NO;
+    _canonicalHasExplicitRadii = NO;
     _requestedContentTranslation = CGPointZero;
-    _normalizedContentTranslation = CGPointZero;
+    _canonicalContentTranslation = CGPointZero;
     _requestedContentScale = 1;
-    _normalizedContentScale = 1;
+    _canonicalContentScale = 1;
     _requestedShadow = {};
-    _normalizedShadow = {};
+    _canonicalShadow = {};
     _driverId = 0;
     _hasLayout = NO;
     _commandIsAuthoritative = NO;
@@ -524,8 +538,8 @@ static std::array<double, 11> SmoothClipVelocityChannels(
 }
 
 - (void)writeShadow:(const smoothclip::Shadow &)shadow
-            geometry:(SmoothNormalizedClipGeometry)geometry {
-  _normalizedShadow = shadow;
+            geometry:(SmoothClipCanonicalGeometry)geometry {
+  _canonicalShadow = shadow;
   if (!shadow.enabled || CGRectIsEmpty(geometry.rect) || shadow.alpha <= 0) {
     if (_shadowLayer != nil) _shadowLayer.shadowOpacity = 0;
     return;
@@ -543,7 +557,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   shadowLayer.shadowOffset = CGSizeMake(shadow.offsetX, shadow.offsetY);
 }
 
-- (BOOL)normalizedRequestedGeometry:(SmoothNormalizedClipGeometry *)geometry {
+- (BOOL)canonicalRequestedGeometry:(SmoothClipCanonicalGeometry *)geometry {
   if (!_hasLayout) return NO;
 #if defined(SMOOTH_CLIP_ENABLE_SIGNPOSTS) && SMOOTH_CLIP_ENABLE_SIGNPOSTS
   const bool signpostsEnabled =
@@ -552,11 +566,10 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   if (signpostsEnabled) {
     identifier = os_signpost_id_generate([SmoothClipView signpostLog]);
     os_signpost_interval_begin(
-        [SmoothClipView signpostLog], identifier, "normalization");
+        [SmoothClipView signpostLog], identifier, "canonicalization");
   }
 #endif
-  const CGSize hostSize = self.bounds.size;
-  const BOOL valid = SmoothClipNormalizeGeometry(
+  const BOOL valid = SmoothClipCanonicalizeGeometry(
       CGRectGetMinX(_requestedClip),
       CGRectGetMinY(_requestedClip),
       CGRectGetWidth(_requestedClip),
@@ -566,12 +579,11 @@ static std::array<double, 11> SmoothClipVelocityChannels(
       _requestedRadii.bottomRight,
       _requestedRadii.bottomLeft,
       _requestedCurve,
-      CGSizeMake(MAX(0, hostSize.width), MAX(0, hostSize.height)),
       geometry);
 #if defined(SMOOTH_CLIP_ENABLE_SIGNPOSTS) && SMOOTH_CLIP_ENABLE_SIGNPOSTS
   if (signpostsEnabled) {
     os_signpost_interval_end(
-        [SmoothClipView signpostLog], identifier, "normalization");
+        [SmoothClipView signpostLog], identifier, "canonicalization");
   }
 #endif
   return valid;
@@ -586,15 +598,15 @@ static std::array<double, 11> SmoothClipVelocityChannels(
 
 - (void)syncVisibilityForRect:(CGRect)rect {
   [self setClipContainerHidden:CGRectIsEmpty(rect)];
+  _clipContainer.accessibilityElementsHidden =
+      !SmoothClipRectIntersectsHost(rect, self.bounds);
 }
 
 - (void)configureUnequalCornerMaskForGeometry:
-    (SmoothNormalizedClipGeometry)geometry {
-  const CGSize hostSize = self.bounds.size;
-  _unequalCornerMask.bounds = CGRectMake(
-      0, 0, MAX(0, hostSize.width), MAX(0, hostSize.height));
+    (SmoothClipCanonicalGeometry)geometry {
+  _unequalCornerMask.bounds = geometry.rect;
   _unequalCornerMask.position = CGPointMake(
-      MAX(0, hostSize.width) / 2, MAX(0, hostSize.height) / 2);
+      CGRectGetMidX(geometry.rect), CGRectGetMidY(geometry.rect));
   CGPathRef path = SmoothClipCreateRoundedRectPath(
       geometry.rect, geometry.radii, geometry.curve);
   _unequalCornerMask.path = path;
@@ -602,7 +614,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
 }
 
 - (void)applyStaticCornerRepresentation:
-    (SmoothNormalizedClipGeometry)geometry {
+    (SmoothClipCanonicalGeometry)geometry {
   CALayer *layer = _clipContainer.layer;
   if (SmoothClipCornerRadiiAreUniform(geometry.radii)) {
     layer.mask = nil;
@@ -616,29 +628,29 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   }
 }
 
-- (SmoothNormalizedClipGeometry)normalizedGeometryValue {
+- (SmoothClipCanonicalGeometry)canonicalGeometryValue {
   return {
-      .rect = _normalizedClip,
-      .radius = _normalizedRadius,
-      .radii = _normalizedRadii,
-      .curve = _normalizedCurve,
+      .rect = _canonicalClip,
+      .radius = _canonicalRadius,
+      .radii = _canonicalRadii,
+      .curve = _canonicalCurve,
   };
 }
 
-- (void)writeLayerGeometry:(SmoothNormalizedClipGeometry)geometry
+- (void)writeLayerGeometry:(SmoothClipCanonicalGeometry)geometry
          hasExplicitRadii:(BOOL)hasExplicitRadii {
   const BOOL rectChanged =
-      !CGRectEqualToRect(_normalizedClip, geometry.rect);
+      !CGRectEqualToRect(_canonicalClip, geometry.rect);
   const BOOL radiiChanged =
-      !SmoothClipCornerRadiiEqual(_normalizedRadii, geometry.radii);
-  const BOOL curveChanged = _normalizedCurve != geometry.curve;
+      !SmoothClipCornerRadiiEqual(_canonicalRadii, geometry.radii);
+  const BOOL curveChanged = _canonicalCurve != geometry.curve;
   const BOOL representationChanged =
-      _normalizedHasExplicitRadii != hasExplicitRadii;
-  _normalizedClip = geometry.rect;
-  _normalizedRadius = geometry.radius;
-  _normalizedRadii = geometry.radii;
-  _normalizedCurve = geometry.curve;
-  _normalizedHasExplicitRadii = hasExplicitRadii;
+      _canonicalHasExplicitRadii != hasExplicitRadii;
+  _canonicalClip = geometry.rect;
+  _canonicalRadius = geometry.radius;
+  _canonicalRadii = geometry.radii;
+  _canonicalCurve = geometry.curve;
+  _canonicalHasExplicitRadii = hasExplicitRadii;
   if (!rectChanged && !radiiChanged && !curveChanged &&
       !representationChanged) {
     return;
@@ -673,29 +685,33 @@ static std::array<double, 11> SmoothClipVelocityChannels(
 
 - (void)writeContentTranslation:(CGPoint)translation
                            scale:(CGFloat)scale {
-  if (CGPointEqualToPoint(_normalizedContentTranslation, translation) &&
-      _normalizedContentScale == scale) {
+  if (CGPointEqualToPoint(_canonicalContentTranslation, translation) &&
+      _canonicalContentScale == scale) {
     return;
   }
-  _normalizedContentTranslation = translation;
-  _normalizedContentScale = scale;
+  _canonicalContentTranslation = translation;
+  _canonicalContentScale = scale;
   _contentContainer.layer.affineTransform =
       SmoothClipContentTransform(scale, translation);
 }
 
 - (void)applyRequestedClip {
-  SmoothNormalizedClipGeometry geometry;
-  if (![self normalizedRequestedGeometry:&geometry]) return;
+  SmoothClipCanonicalGeometry geometry;
+  if (![self canonicalRequestedGeometry:&geometry]) return;
 
-  const BOOL visibilityChanged = _clipHidden != CGRectIsEmpty(geometry.rect);
-  if (CGRectEqualToRect(_normalizedClip, geometry.rect) &&
-      SmoothClipCornerRadiiEqual(_normalizedRadii, geometry.radii) &&
-      _normalizedCurve == geometry.curve &&
-      _normalizedHasExplicitRadii == _requestedHasExplicitRadii &&
+  const BOOL accessibilityHidden =
+      !SmoothClipRectIntersectsHost(geometry.rect, self.bounds);
+  const BOOL visibilityChanged =
+      _clipHidden != CGRectIsEmpty(geometry.rect) ||
+      _clipContainer.accessibilityElementsHidden != accessibilityHidden;
+  if (CGRectEqualToRect(_canonicalClip, geometry.rect) &&
+      SmoothClipCornerRadiiEqual(_canonicalRadii, geometry.radii) &&
+      _canonicalCurve == geometry.curve &&
+      _canonicalHasExplicitRadii == _requestedHasExplicitRadii &&
       CGPointEqualToPoint(
-          _normalizedContentTranslation, _requestedContentTranslation) &&
-      _normalizedContentScale == _requestedContentScale &&
-      SmoothBoxShadowEqual(_normalizedShadow, _requestedShadow) &&
+          _canonicalContentTranslation, _requestedContentTranslation) &&
+      _canonicalContentScale == _requestedContentScale &&
+      SmoothBoxShadowEqual(_canonicalShadow, _requestedShadow) &&
       !visibilityChanged) {
     return;
   }
@@ -747,18 +763,18 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   // Skipped for writes that are not interactive motion (a latched
   // cancel-to-target): they must not enter the 'inherit' history.
   if (recordVelocitySample && _hasLayout) {
-    [self recordInteractiveRect:_normalizedClip
-                          radii:_normalizedRadii
-             contentTranslation:_normalizedContentTranslation
-                   contentScale:_normalizedContentScale];
+    [self recordInteractiveRect:_canonicalClip
+                          radii:_canonicalRadii
+             contentTranslation:_canonicalContentTranslation
+                   contentScale:_canonicalContentScale];
   }
 }
 
 - (smoothclip::Presentation)smoothClipCurrentPresentation {
-  SmoothClipCornerRadii visibleRadii = _normalizedRadii;
+  SmoothClipCornerRadii visibleRadii = _canonicalRadii;
   const CGRect visibleRect = _activeAnimationId != 0
       ? [self presentationRectWithRadii:&visibleRadii]
-      : _normalizedClip;
+      : _canonicalClip;
   CALayer *contentLayer = _activeAnimationId != 0
       ? (CALayer *)_contentContainer.layer.presentationLayer
       : _contentContainer.layer;
@@ -771,23 +787,23 @@ static std::array<double, 11> SmoothClipVelocityChannels(
       CGRectGetWidth(visibleRect),
       CGRectGetHeight(visibleRect),
       uniform ? visibleRadii.topLeft : 0};
-  if (_normalizedHasExplicitRadii || !uniform) {
+  if (_canonicalHasExplicitRadii || !uniform) {
     geometry.topLeftRadius = visibleRadii.topLeft;
     geometry.topRightRadius = visibleRadii.topRight;
     geometry.bottomRightRadius = visibleRadii.bottomRight;
     geometry.bottomLeftRadius = visibleRadii.bottomLeft;
   }
-  geometry.curve = _normalizedCurve == SmoothClipCornerCurveContinuous
+  geometry.curve = _canonicalCurve == SmoothClipCornerCurveContinuous
       ? smoothclip::ClipCurve::Continuous
       : smoothclip::ClipCurve::Circular;
   const CGFloat contentScale = hypot(transform.a, transform.b);
-  smoothclip::Shadow shadow = _normalizedShadow;
+  smoothclip::Shadow shadow = _canonicalShadow;
   CALayer *shadowLayer = _activeAnimationId != 0 && _shadowLayer != nil
       ? (CALayer *)_shadowLayer.presentationLayer
       : _shadowLayer;
-  if (shadowLayer == nil) return {
-      geometry, transform.tx, transform.ty, contentScale, shadow};
-  shadow.enabled = _normalizedShadow.enabled || shadowLayer.shadowOpacity > 0;
+  if (shadowLayer == nil) return SmoothClipCanonicalSnapshot({
+      geometry, transform.tx, transform.ty, contentScale, shadow});
+  shadow.enabled = _canonicalShadow.enabled || shadowLayer.shadowOpacity > 0;
   shadow.blurRadius = shadowLayer.shadowRadius * 2.0;
   shadow.offsetX = shadowLayer.shadowOffset.width;
   shadow.offsetY = shadowLayer.shadowOffset.height;
@@ -808,7 +824,8 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     shadow.spreadDistance =
         CGRectGetMinX(visibleRect) - CGRectGetMinX(shadowBounds);
   }
-  return {geometry, transform.tx, transform.ty, contentScale, shadow};
+  return SmoothClipCanonicalSnapshot(
+      {geometry, transform.tx, transform.ty, contentScale, shadow});
 }
 
 - (BOOL)smoothClipIsJoinable {
@@ -868,7 +885,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
           (CAShapeLayer *)_unequalCornerMask.presentationLayer;
       if (mask == nil) mask = _unequalCornerMask;
       *radii = SmoothClipRadiiFromFixedPath(
-          mask.path, rect, _normalizedRadii);
+          mask.path, rect, _canonicalRadii);
     } else {
       *radii = {
           layer.cornerRadius,
@@ -894,7 +911,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   [_contentContainer.layer removeAnimationForKey:@"smoothClip.content"];
   [_unequalCornerMask removeAnimationForKey:@"smoothClip.mask"];
   [_shadowLayer removeAnimationForKey:@"smoothClip.shadow"];
-  [self applyStaticCornerRepresentation:[self normalizedGeometryValue]];
+  [self applyStaticCornerRepresentation:[self canonicalGeometryValue]];
   _ignoreAnimationCallback = NO;
   _activeAnimationId = 0;
   _activeAnimationKind = 0;
@@ -942,12 +959,12 @@ static std::array<double, 11> SmoothClipVelocityChannels(
 }
 
 - (void)installAnimationFromGeometry:
-            (SmoothNormalizedClipGeometry)fromGeometry
+            (SmoothClipCanonicalGeometry)fromGeometry
                    fromContentTranslation:(CGPoint)fromContentTranslation
                          fromContentScale:(CGFloat)fromContentScale
                               fromShadow:(smoothclip::Shadow)fromShadow
                                toGeometry:
-            (SmoothNormalizedClipGeometry)toGeometry
+            (SmoothClipCanonicalGeometry)toGeometry
                      hasExplicitToRadii:(BOOL)hasExplicitToRadii
                      toContentTranslation:(CGPoint)toContentTranslation
                            toContentScale:(CGFloat)toContentScale
@@ -965,6 +982,9 @@ static std::array<double, 11> SmoothClipVelocityChannels(
       !CGRectIsEmpty(fromGeometry.rect)) {
     [self setClipContainerHidden:NO];
   }
+  _clipContainer.accessibilityElementsHidden =
+      !SmoothClipRectIntersectsHost(
+          CGRectUnion(fromGeometry.rect, toGeometry.rect), self.bounds);
 
   CALayer *layer = _clipContainer.layer;
   const CGRect toBounds = toGeometry.rect;
@@ -1035,7 +1055,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   CAAnimationGroup *shadowGroup = animatesShadow
       ? [CAAnimationGroup animation]
       : nil;
-  CAAnimation *maskAnimation = nil;
+  CAAnimationGroup *maskAnimation = nil;
   if (_activeAnimationKind == 1) {
     CAMediaTimingFunction *timing = [CAMediaTimingFunction
         functionWithControlPoints:_timingAnimation.controlPoint1X
@@ -1053,10 +1073,21 @@ static std::array<double, 11> SmoothClipVelocityChannels(
                       timingFunction:timing],
     ]];
     if (usesMask) {
-      maskAnimation = [self basicAnimationForKeyPath:@"path"
-                                           fromValue:(__bridge id)fromMaskPath
-                                             toValue:(__bridge id)toMaskPath
-                                      timingFunction:timing];
+      maskAnimation = [CAAnimationGroup animation];
+      maskAnimation.animations = @[
+        [self basicAnimationForKeyPath:@"path"
+                             fromValue:(__bridge id)fromMaskPath
+                               toValue:(__bridge id)toMaskPath
+                        timingFunction:timing],
+        [self basicAnimationForKeyPath:@"bounds"
+                             fromValue:[NSValue valueWithCGRect:fromGeometry.rect]
+                               toValue:[NSValue valueWithCGRect:toGeometry.rect]
+                        timingFunction:timing],
+        [self basicAnimationForKeyPath:@"position"
+                             fromValue:[NSValue valueWithCGPoint:fromPosition]
+                               toValue:[NSValue valueWithCGPoint:toPosition]
+                        timingFunction:timing],
+      ];
     } else {
       [geometryAnimations addObject:
           [self basicAnimationForKeyPath:@"cornerRadius"
@@ -1161,11 +1192,44 @@ static std::array<double, 11> SmoothClipVelocityChannels(
                              duration:springDuration],
     ]];
     if (usesMask) {
-      maskAnimation = [self springAnimationForKeyPath:@"path"
-                                            fromValue:(__bridge id)fromMaskPath
-                                              toValue:(__bridge id)toMaskPath
-                                             velocity:velocity
-                                             duration:springDuration];
+      maskAnimation = [CAAnimationGroup animation];
+      maskAnimation.animations = @[
+        [self springAnimationForKeyPath:@"path"
+                              fromValue:(__bridge id)fromMaskPath
+                                toValue:(__bridge id)toMaskPath
+                               velocity:velocity
+                               duration:springDuration],
+        [self springAnimationForKeyPath:@"bounds.origin.x"
+                              fromValue:@(fromGeometry.rect.origin.x)
+                                toValue:@(toGeometry.rect.origin.x)
+                               velocity:velocity
+                               duration:springDuration],
+        [self springAnimationForKeyPath:@"bounds.origin.y"
+                              fromValue:@(fromGeometry.rect.origin.y)
+                                toValue:@(toGeometry.rect.origin.y)
+                               velocity:velocity
+                               duration:springDuration],
+        [self springAnimationForKeyPath:@"bounds.size.width"
+                              fromValue:@(fromGeometry.rect.size.width)
+                                toValue:@(toGeometry.rect.size.width)
+                               velocity:velocity
+                               duration:springDuration],
+        [self springAnimationForKeyPath:@"bounds.size.height"
+                              fromValue:@(fromGeometry.rect.size.height)
+                                toValue:@(toGeometry.rect.size.height)
+                               velocity:velocity
+                               duration:springDuration],
+        [self springAnimationForKeyPath:@"position.x"
+                              fromValue:@(fromPosition.x)
+                                toValue:@(toPosition.x)
+                               velocity:velocity
+                               duration:springDuration],
+        [self springAnimationForKeyPath:@"position.y"
+                              fromValue:@(fromPosition.y)
+                                toValue:@(toPosition.y)
+                               velocity:velocity
+                               duration:springDuration],
+      ];
     } else {
       [geometryAnimations addObject:
           [self springAnimationForKeyPath:@"cornerRadius"
@@ -1296,12 +1360,12 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     _pendingAnimationInstall = YES;
     return NO;
   }
-  SmoothNormalizedClipGeometry target;
-  if (![self normalizedRequestedGeometry:&target]) return NO;
+  SmoothClipCanonicalGeometry target;
+  if (![self canonicalRequestedGeometry:&target]) return NO;
   const smoothclip::Presentation current = [self smoothClipCurrentPresentation];
   const SmoothClipCornerRadii currentRadii =
       SmoothClipPresentationRadii(current.clip);
-  const SmoothNormalizedClipGeometry fromGeometry = {
+  const SmoothClipCanonicalGeometry fromGeometry = {
       .rect = CGRectMake(
           current.clip.x,
           current.clip.y,
@@ -1367,8 +1431,8 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   [self storeRequestedPresentation:presentation];
   _springAnimation = animation;
   if (animation.inheritVelocity) {
-    SmoothNormalizedClipGeometry target;
-    if ([self normalizedRequestedGeometry:&target]) {
+    SmoothClipCanonicalGeometry target;
+    if ([self canonicalRequestedGeometry:&target]) {
       _springAnimation.initialVelocity =
           [self inheritedVelocityToRect:target.rect
                                    radii:target.radii
@@ -1429,7 +1493,6 @@ static std::array<double, 11> SmoothClipVelocityChannels(
         return frame.presentation.shadow.enabled &&
             frame.presentation.shadow.alpha > 0;
       });
-  const CGSize hostSize = self.bounds.size;
   NSMutableArray<NSNumber *> *times =
       [NSMutableArray arrayWithCapacity:frameCount];
   NSMutableArray *boundsValues = [NSMutableArray arrayWithCapacity:frameCount];
@@ -1456,17 +1519,18 @@ static std::array<double, 11> SmoothClipVelocityChannels(
       ? [NSMutableArray arrayWithCapacity:frameCount] : nil;
   BOOL usesMask = NO;
   BOOL animatesScale = NO;
+  CGRect animatedApertureBounds = CGRectNull;
   SmoothClipCornerCurve firstCurve = SmoothClipCornerCurveCircular;
   BOOL hasFirstCurve = NO;
-  std::vector<SmoothNormalizedClipGeometry> normalizedFrames;
-  normalizedFrames.reserve(frameCount);
+  std::vector<SmoothClipCanonicalGeometry> canonicalFrames;
+  canonicalFrames.reserve(frameCount);
   for (const smoothclip::Keyframe &frame : keyframes) {
     const SmoothClipCornerRadii frameRadii =
         SmoothClipPresentationRadii(frame.presentation.clip);
     const SmoothClipCornerCurve frameCurve =
         SmoothClipPresentationCurve(frame.presentation.clip);
-    SmoothNormalizedClipGeometry normalized;
-    if (!SmoothClipNormalizeGeometry(
+    SmoothClipCanonicalGeometry canonical;
+    if (!SmoothClipCanonicalizeGeometry(
             frame.presentation.clip.x,
             frame.presentation.clip.y,
             frame.presentation.clip.width,
@@ -1476,35 +1540,37 @@ static std::array<double, 11> SmoothClipVelocityChannels(
             frameRadii.bottomRight,
             frameRadii.bottomLeft,
             frameCurve,
-            hostSize,
-            &normalized)) return NO;
-    normalizedFrames.push_back(normalized);
-    if (!SmoothClipCornerRadiiAreUniform(normalized.radii)) usesMask = YES;
+            &canonical)) return NO;
+    canonicalFrames.push_back(canonical);
+    animatedApertureBounds = CGRectIsNull(animatedApertureBounds)
+        ? canonical.rect
+        : CGRectUnion(animatedApertureBounds, canonical.rect);
+    if (!SmoothClipCornerRadiiAreUniform(canonical.radii)) usesMask = YES;
     if (!hasFirstCurve) {
-      firstCurve = normalized.curve;
+      firstCurve = canonical.curve;
       hasFirstCurve = YES;
-    } else if (normalized.curve != firstCurve) {
+    } else if (canonical.curve != firstCurve) {
       usesMask = YES;
     }
     if (frame.presentation.contentScale != 1) animatesScale = YES;
     [times addObject:@(frame.offset)];
-    [boundsValues addObject:[NSValue valueWithCGRect:normalized.rect]];
+    [boundsValues addObject:[NSValue valueWithCGRect:canonical.rect]];
     [positionValues addObject:[NSValue valueWithCGPoint:CGPointMake(
-        CGRectGetMidX(normalized.rect), CGRectGetMidY(normalized.rect))]];
-    [radiusValues addObject:@(normalized.radius)];
+        CGRectGetMidX(canonical.rect), CGRectGetMidY(canonical.rect))]];
+    [radiusValues addObject:@(canonical.radius)];
     [translateXValues addObject:@(frame.presentation.contentTranslateX)];
     [translateYValues addObject:@(frame.presentation.contentTranslateY)];
     [scaleValues addObject:@(frame.presentation.contentScale)];
     if (hasVisibleShadowFrame) {
       CGPathRef shadowPath = SmoothClipCreateShadowPath(
-          normalized, frame.presentation.shadow);
+          canonical, frame.presentation.shadow);
       [shadowPathValues addObject:(__bridge id)shadowPath];
       CGPathRelease(shadowPath);
       [shadowColorValues addObject:
           (__bridge id)[self colorForShadow:frame.presentation.shadow]];
       [shadowOpacityValues addObject:@(
           frame.presentation.shadow.enabled &&
-                  !CGRectIsEmpty(normalized.rect) &&
+                  !CGRectIsEmpty(canonical.rect) &&
                   frame.presentation.shadow.alpha > 0
               ? 1
               : 0)];
@@ -1517,9 +1583,9 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   }
 
   if (usesMask) {
-    for (const SmoothNormalizedClipGeometry &normalized : normalizedFrames) {
+    for (const SmoothClipCanonicalGeometry &canonical : canonicalFrames) {
       CGPathRef path = SmoothClipCreateRoundedRectPath(
-          normalized.rect, normalized.radii, normalized.curve);
+          canonical.rect, canonical.radii, canonical.curve);
       [maskPathValues addObject:(__bridge id)path];
       CGPathRelease(path);
     }
@@ -1539,8 +1605,8 @@ static std::array<double, 11> SmoothClipVelocityChannels(
       animatesShadowOpacity || animatesShadowRadius || animatesShadowOffset;
   if (animatesShadow) [self ensureShadowLayer];
 
-  SmoothNormalizedClipGeometry target;
-  if (![self normalizedRequestedGeometry:&target]) return NO;
+  SmoothClipCanonicalGeometry target;
+  if (![self canonicalRequestedGeometry:&target]) return NO;
   [self writeLayerGeometry:target
          hasExplicitRadii:_requestedHasExplicitRadii];
   [self writeContentTranslation:_requestedContentTranslation
@@ -1552,6 +1618,8 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     _clipContainer.layer.mask = _unequalCornerMask;
   }
   [self setClipContainerHidden:NO];
+  _clipContainer.accessibilityElementsHidden =
+      !SmoothClipRectIntersectsHost(animatedApertureBounds, self.bounds);
 
   CAAnimationGroup *group = [CAAnimationGroup animation];
   NSMutableArray<CAAnimation *> *geometryAnimations = [NSMutableArray arrayWithArray:@[
@@ -1616,12 +1684,22 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     shadowGroup.duration = group.duration;
   }
 
-  CAKeyframeAnimation *maskAnimation = usesMask
-      ? [self keyframeAnimationForKeyPath:@"path"
-                                  values:maskPathValues
-                                keyTimes:times]
-      : nil;
-  maskAnimation.duration = group.duration;
+  CAAnimationGroup *maskAnimation = nil;
+  if (usesMask) {
+    maskAnimation = [CAAnimationGroup animation];
+    maskAnimation.animations = @[
+      [self keyframeAnimationForKeyPath:@"path"
+                                 values:maskPathValues
+                               keyTimes:times],
+      [self keyframeAnimationForKeyPath:@"bounds"
+                                 values:boundsValues
+                               keyTimes:times],
+      [self keyframeAnimationForKeyPath:@"position"
+                                 values:positionValues
+                               keyTimes:times],
+    ];
+    maskAnimation.duration = group.duration;
+  }
 
   if (sharedBeginTime > 0) {
     group.beginTime = [_clipContainer.layer
@@ -1686,8 +1764,8 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   _animationDelegate = nil;
   [_unequalCornerMask removeAnimationForKey:@"smoothClip.mask"];
   [_shadowLayer removeAnimationForKey:@"smoothClip.shadow"];
-  [self applyStaticCornerRepresentation:[self normalizedGeometryValue]];
-  [self syncVisibilityForRect:_normalizedClip];
+  [self applyStaticCornerRepresentation:[self canonicalGeometryValue]];
+  [self syncVisibilityForRect:_canonicalClip];
   smoothclip::viewAnimationDidStop(
       driverId, animationId, self, finished);
 }
@@ -1697,6 +1775,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   const auto &newProps =
       *std::static_pointer_cast<const SmoothClipViewProps>(props);
   [super updateProps:props oldProps:oldProps];
+  self.clipsToBounds = YES;
 
   const uint64_t nextDriverId =
       isfinite(newProps.driverId) && newProps.driverId > 0
@@ -1828,8 +1907,8 @@ static std::array<double, 11> SmoothClipVelocityChannels(
       _activeAnimationKind = 1;
       _timingAnimation = {remaining * 1000.0, 0, 0, 1, 1, 2};
     }
-    SmoothNormalizedClipGeometry current;
-    SmoothClipNormalizeGeometry(
+    SmoothClipCanonicalGeometry current;
+    SmoothClipCanonicalizeGeometry(
         CGRectGetMinX(visibleRect),
         CGRectGetMinY(visibleRect),
         CGRectGetWidth(visibleRect),
@@ -1839,10 +1918,9 @@ static std::array<double, 11> SmoothClipVelocityChannels(
         visibleRadii.bottomRight,
         visibleRadii.bottomLeft,
         visibleCurve,
-        self.bounds.size,
         &current);
-    SmoothNormalizedClipGeometry target;
-    if ([self normalizedRequestedGeometry:&target]) {
+    SmoothClipCanonicalGeometry target;
+    if ([self canonicalRequestedGeometry:&target]) {
       [self installAnimationFromGeometry:current
                   fromContentTranslation:visibleContentTranslation
                         fromContentScale:visibleContentScale
@@ -1859,7 +1937,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     if (_driverId != 0 && smoothclip::hasActiveAnimation(_driverId)) {
       // Registry-level lifecycle pause owns the frozen model. A layout pass
       // while its latch is held must not apply the requested target or start a
-      // per-view timer; foreground/reattach will normalize and resume it once.
+      // per-view timer; foreground/reattach will re-latch and resume it once.
       return;
     }
     [self applyRequestedClip];
@@ -1868,10 +1946,10 @@ static std::array<double, 11> SmoothClipVelocityChannels(
 
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
   if (![super pointInside:point withEvent:event]) return NO;
-  SmoothClipCornerRadii radii = _normalizedRadii;
+  SmoothClipCornerRadii radii = _canonicalRadii;
   const CGRect clip = _activeAnimationId != 0
       ? [self presentationRectWithRadii:&radii]
-      : _normalizedClip;
+      : _canonicalClip;
   if (CGRectIsEmpty(clip) || !CGRectContainsPoint(clip, point)) return NO;
   CGPathRef path = nil;
   if (_clipContainer.layer.mask == _unequalCornerMask) {
@@ -1882,7 +1960,7 @@ static std::array<double, 11> SmoothClipVelocityChannels(
     path = mask.path;
     return path != nil && CGPathContainsPoint(path, NULL, point, NO);
   }
-  path = SmoothClipCreateRoundedRectPath(clip, radii, _normalizedCurve);
+  path = SmoothClipCreateRoundedRectPath(clip, radii, _canonicalCurve);
   const BOOL contains = CGPathContainsPoint(path, NULL, point, NO);
   CGPathRelease(path);
   return contains;
@@ -1955,21 +2033,21 @@ static std::array<double, 11> SmoothClipVelocityChannels(
   smoothclip::clearVelocitySamples(_velocitySamples);
   [super prepareForRecycle];
   _requestedClip = CGRectZero;
-  _normalizedClip = CGRectZero;
+  _canonicalClip = CGRectZero;
   _requestedRadius = 0;
-  _normalizedRadius = 0;
+  _canonicalRadius = 0;
   _requestedRadii = {0, 0, 0, 0};
-  _normalizedRadii = {0, 0, 0, 0};
+  _canonicalRadii = {0, 0, 0, 0};
   _requestedCurve = SmoothClipCornerCurveCircular;
-  _normalizedCurve = SmoothClipCornerCurveCircular;
+  _canonicalCurve = SmoothClipCornerCurveCircular;
   _requestedHasExplicitRadii = NO;
-  _normalizedHasExplicitRadii = NO;
+  _canonicalHasExplicitRadii = NO;
   _requestedContentTranslation = CGPointZero;
-  _normalizedContentTranslation = CGPointZero;
+  _canonicalContentTranslation = CGPointZero;
   _requestedContentScale = 1;
-  _normalizedContentScale = 1;
+  _canonicalContentScale = 1;
   _requestedShadow = {};
-  _normalizedShadow = {};
+  _canonicalShadow = {};
   _hasLayout = NO;
   _commandIsAuthoritative = NO;
 

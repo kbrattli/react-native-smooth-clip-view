@@ -522,7 +522,7 @@ static UIWindow *TestWindow(void) {
   smoothclip::destroyDriver(driverId);
 }
 
-- (void)testClipBoxShadowUsesTheExactNormalizedApertureAcrossLayoutAndEmptyClips {
+- (void)testClipBoxShadowUsesTheRawApertureInsideTheFixedHostViewport {
   constexpr uint64_t driverId = 99080;
   UIWindow *window = TestWindow();
   SmoothClipView *host =
@@ -549,6 +549,11 @@ static UIWindow *TestWindow(void) {
   XCTAssertNotNil(mask);
   XCTAssertTrue(mask.path != nil);
   XCTAssertTrue(shadow.shadowPath != nil);
+  XCTAssertTrue(host.clipsToBounds);
+  XCTAssertTrue(CGRectEqualToRect(
+      mask.bounds, CGRectMake(-10, 12, 180, 140)));
+  XCTAssertEqualWithAccuracy(mask.position.x, 80, 1e-9);
+  XCTAssertEqualWithAccuracy(mask.position.y, 82, 1e-9);
   // Spread expands the shadow outline beyond the clipping aperture.
   XCTAssertFalse(CGPathEqualToPath(mask.path, shadow.shadowPath));
   XCTAssertEqualWithAccuracy(shadow.shadowOpacity, 1, 1e-9);
@@ -580,6 +585,8 @@ static UIWindow *TestWindow(void) {
   host.frame = CGRectMake(0, 0, 150, 240);
   [host updateLayoutMetrics:newMetrics oldLayoutMetrics:oldMetrics];
   mask = (CAShapeLayer *)clip.layer.mask;
+  XCTAssertTrue(CGRectEqualToRect(
+      mask.bounds, CGRectMake(-10, 12, 180, 140)));
   XCTAssertFalse(CGPathEqualToPath(mask.path, shadow.shadowPath));
 
   smoothclip::Presentation empty = shadowOnlyUpdate;
@@ -816,7 +823,7 @@ static UIWindow *TestWindow(void) {
   smoothclip::destroyDriver(driverId);
 }
 
-- (void)testTimingRejectsWhenAnyKnownHostWouldNormalizeButStaticClippingWorks {
+- (void)testTimingKeepsRawGeometryAcrossDifferentlySizedHosts {
   constexpr uint64_t driverId = 99074;
   UIWindow *window = TestWindow();
   SmoothClipView *largeHost =
@@ -840,16 +847,11 @@ static UIWindow *TestWindow(void) {
       crossing,
       {250, 0.42, 0, 0.58, 1, 2});
 
-  XCTAssertEqual(animationId, 0);
-  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
-  const smoothclip::Presentation afterReject =
-      [smallHost smoothClipCurrentPresentation];
-  XCTAssertEqualWithAccuracy(afterReject.clip.x, initial.clip.x, 1e-9);
-  XCTAssertEqualWithAccuracy(afterReject.clip.width, initial.clip.width, 1e-9);
-
-  // The guard applies only to autonomous interpolation. Static delivery still
-  // clips independently for every host, including the smaller aperture.
-  smoothclip::setPresentation(driverId, crossing, true);
+  XCTAssertGreaterThan(animationId, 0);
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+  const smoothclip::CancelResult landed =
+      smoothclip::cancelAnimation(driverId, animationId, true);
+  XCTAssertTrue(landed.handled);
   const smoothclip::Presentation largeStatic =
       [largeHost smoothClipCurrentPresentation];
   const smoothclip::Presentation smallStatic =
@@ -857,7 +859,7 @@ static UIWindow *TestWindow(void) {
   XCTAssertEqualWithAccuracy(largeStatic.clip.x, 80, 1e-9);
   XCTAssertEqualWithAccuracy(largeStatic.clip.width, 40, 1e-9);
   XCTAssertEqualWithAccuracy(smallStatic.clip.x, 80, 1e-9);
-  XCTAssertEqualWithAccuracy(smallStatic.clip.width, 20, 1e-9);
+  XCTAssertEqualWithAccuracy(smallStatic.clip.width, 40, 1e-9);
   XCTAssertEqualWithAccuracy(smallStatic.contentScale, 0.8, 1e-9);
 
   smoothclip::unregisterView(driverId, largeHost);
@@ -867,7 +869,45 @@ static UIWindow *TestWindow(void) {
   smoothclip::destroyDriver(driverId);
 }
 
-- (void)testExplicitStartRejectionsDoNotReplaceExistingOwnership {
+- (void)testSpringAcceptsFullyOffHostOversizedTargetAndReturnsItRaw {
+  constexpr uint64_t driverId = 9907401;
+  UIWindow *window = TestWindow();
+  SmoothClipView *host =
+      DisplayableView(window, CGRectMake(0, 0, 100, 100));
+  [host setValue:@(driverId) forKey:@"driverId"];
+  const smoothclip::Presentation initial =
+      Presentation(10, 10, 40, 40, 8, 0, 0);
+  const smoothclip::Presentation requested =
+      Presentation(-280, 130, 260, 180, 200, 12, -7);
+  smoothclip::registerView(driverId, host, initial);
+
+  const smoothclip::SpringAnimation spring{1, 180, 40, 0, false, 2};
+  const int32_t animationId = smoothclip::animateSpring(
+      driverId, {true, initial}, requested, spring);
+
+  XCTAssertGreaterThan(animationId, 0);
+  UIView *clip = [host valueForKey:@"clipContainer"];
+  CAAnimationGroup *group = (CAAnimationGroup *)[clip.layer
+      animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(group);
+
+  const smoothclip::CancelResult landed =
+      smoothclip::cancelAnimation(driverId, animationId, true);
+  XCTAssertTrue(landed.handled);
+  XCTAssertEqualWithAccuracy(landed.presentation.clip.x, -280, 1e-9);
+  XCTAssertEqualWithAccuracy(landed.presentation.clip.y, 130, 1e-9);
+  XCTAssertEqualWithAccuracy(landed.presentation.clip.width, 260, 1e-9);
+  XCTAssertEqualWithAccuracy(landed.presentation.clip.height, 180, 1e-9);
+  XCTAssertEqualWithAccuracy(landed.presentation.clip.radius, 90, 1e-9);
+  XCTAssertEqualWithAccuracy(landed.presentation.contentTranslateX, 12, 1e-9);
+  XCTAssertEqualWithAccuracy(landed.presentation.contentTranslateY, -7, 1e-9);
+
+  smoothclip::unregisterView(driverId, host);
+  [host setValue:@0 forKey:@"driverId"];
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testInvalidExplicitKeyframesDoNotReplaceExistingOwnership {
   constexpr uint64_t driverId = 9907402;
   UIWindow *window = TestWindow();
   SmoothClipView *host =
@@ -879,20 +919,11 @@ static UIWindow *TestWindow(void) {
   const smoothclip::Presentation oldTarget = PresentationValue(
       20, 20, 60, 60, 12, 10, 8, 6,
       smoothclip::ClipCurve::Circular, 3, -2, 1);
-  const smoothclip::Presentation crossing = PresentationValue(
-      70, 10, 80, 60, 20, 16, 12, 8,
-      smoothclip::ClipCurve::Circular, 8, -4, 0.8);
   smoothclip::registerView(driverId, host, initial);
   const smoothclip::TimingAnimation timing{500, 0.42, 0, 0.58, 1, 2};
   const int32_t oldId = smoothclip::animateTiming(
       driverId, {true, initial}, oldTarget, timing);
   XCTAssertGreaterThan(oldId, 0);
-
-  XCTAssertEqual(
-      smoothclip::animateTiming(
-          driverId, {true, initial}, crossing, timing),
-      0);
-  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
 
   std::vector<smoothclip::Keyframe> mismatchedFrames{
       {0, oldTarget},
@@ -917,7 +948,7 @@ static UIWindow *TestWindow(void) {
   smoothclip::destroyDriver(driverId);
 }
 
-- (void)testKeyframesRejectOutOfBoundsIntermediateWithoutMutation {
+- (void)testKeyframesKeepAnOffHostIntermediateRaw {
   constexpr uint64_t driverId = 99075;
   UIWindow *window = TestWindow();
   SmoothClipView *host =
@@ -942,24 +973,23 @@ static UIWindow *TestWindow(void) {
   const int32_t animationId = smoothclip::animateKeyframes(
       driverId, {true, initial}, target, 250, frames, 2);
 
-  XCTAssertEqual(animationId, 0);
-  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
-  const smoothclip::Presentation afterReject =
-      smoothclip::snapshotCurrent(driverId);
-  XCTAssertEqualWithAccuracy(afterReject.clip.x, initial.clip.x, 1e-9);
-  XCTAssertEqualWithAccuracy(afterReject.clip.y, initial.clip.y, 1e-9);
-  XCTAssertEqualWithAccuracy(afterReject.clip.width, initial.clip.width, 1e-9);
-  XCTAssertEqualWithAccuracy(
-      afterReject.contentTranslateX, initial.contentTranslateX, 1e-9);
-  XCTAssertEqualWithAccuracy(
-      afterReject.contentScale, initial.contentScale, 1e-9);
+  XCTAssertGreaterThan(animationId, 0);
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+  UIView *clip = [host valueForKey:@"clipContainer"];
+  CAAnimationGroup *group =
+      (CAAnimationGroup *)[clip.layer animationForKey:@"smoothClip.geometry"];
+  CAKeyframeAnimation *bounds = (CAKeyframeAnimation *)group.animations[0];
+  const CGRect crossingBounds = [bounds.values[1] CGRectValue];
+  XCTAssertEqualWithAccuracy(CGRectGetMinX(crossingBounds), -20, 1e-9);
+  XCTAssertEqualWithAccuracy(CGRectGetWidth(crossingBounds), 80, 1e-9);
+  smoothclip::cancelAnimation(driverId, animationId, false);
 
   smoothclip::unregisterView(driverId, host);
   [host setValue:@0 forKey:@"driverId"];
   smoothclip::destroyDriver(driverId);
 }
 
-- (void)testNormalizationRejectsGroupReplacementAtomically {
+- (void)testBoundaryCrossingGroupReplacementIsAcceptedAtomically {
   constexpr uint64_t firstDriverId = 99076;
   constexpr uint64_t secondDriverId = 99077;
   UIWindow *window = TestWindow();
@@ -1008,7 +1038,7 @@ static UIWindow *TestWindow(void) {
       smoothclip::GroupSuspensionPolicy::Pause);
   XCTAssertGreaterThan(oldGroupId, 0);
 
-  const int32_t rejectedGroupId = smoothclip::animateTimingGroup(
+  const int32_t replacementGroupId = smoothclip::animateTimingGroup(
       99101,
       {
           GroupEntry(firstDriverId, false, initial, safeReplacement),
@@ -1017,17 +1047,20 @@ static UIWindow *TestWindow(void) {
       timing,
       smoothclip::GroupSuspensionPolicy::Pause);
 
-  XCTAssertEqual(rejectedGroupId, 0);
+  XCTAssertGreaterThan(replacementGroupId, 0);
+  XCTAssertNotEqual(replacementGroupId, oldGroupId);
   XCTAssertTrue(smoothclip::hasActiveAnimation(firstDriverId));
   XCTAssertTrue(smoothclip::hasActiveAnimation(secondDriverId));
-  XCTAssertEqual(events.size(), 0u);
-  const std::vector<smoothclip::DriverSnapshot> frozen =
-      smoothclip::cancelAnimationGroup(
-          oldGroupId, smoothclip::GroupCancelBehavior::Freeze);
-  XCTAssertEqual(frozen.size(), 2u);
   XCTAssertEqual(events.size(), 1u);
   XCTAssertEqual(events[0].groupId, oldGroupId);
   XCTAssertFalse(events[0].finished);
+  const std::vector<smoothclip::DriverSnapshot> frozen =
+      smoothclip::cancelAnimationGroup(
+          replacementGroupId, smoothclip::GroupCancelBehavior::Freeze);
+  XCTAssertEqual(frozen.size(), 2u);
+  XCTAssertEqual(events.size(), 2u);
+  XCTAssertEqual(events[1].groupId, replacementGroupId);
+  XCTAssertFalse(events[1].finished);
 
   smoothclip::clearGroupCompletionCallback((__bridge const void *)self);
   smoothclip::unregisterView(firstDriverId, first);

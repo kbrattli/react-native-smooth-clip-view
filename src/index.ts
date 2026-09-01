@@ -38,14 +38,11 @@ export {
   canonicalizeClipGeometry,
   canonicalizeClipPresentation,
   createClipPresentation,
-  normalizeClipGeometry,
-  normalizeClipPresentation,
 } from './geometry';
 export type {
   CanonicalClipGeometry,
   CanonicalClipBoxShadow,
   CanonicalSmoothClipPresentation,
-  ClipBounds,
   ClipCurve,
   ClipGeometry,
   ClipBoxShadow,

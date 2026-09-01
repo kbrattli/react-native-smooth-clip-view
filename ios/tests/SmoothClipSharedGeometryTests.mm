@@ -2,16 +2,16 @@
 
 #import "SmoothClipGeometry.h"
 
+#include "SmoothClipAnimationCurve.h"
 #include "SmoothClipSharedGeometry.h"
 
 #include <cmath>
 
-// Shared vector table: mirrored in ClipGeometryNormalizerTest.kt so the
-// Kotlin, the shared C++ normalizer (Android driver deliveries),
-// and the iOS normalizer provably agree.
+// Mirrored in ClipGeometryNormalizerTest.kt so Kotlin, shared C++, and iOS
+// provably use the same host-independent canonical geometry.
 typedef struct {
-  double x, y, width, height, radius, hostWidth, hostHeight;
-  double left, top, right, bottom, normalizedRadius;
+  double x, y, width, height, radius;
+  double left, top, right, bottom, canonicalRadius;
 } SmoothClipGeometryVector;
 
 @interface SmoothClipSharedGeometryTests : XCTestCase
@@ -19,27 +19,25 @@ typedef struct {
 
 @implementation SmoothClipSharedGeometryTests
 
-- (void)testSharedNormalizerMatchesTheIOSNormalizerOnAcceptedVectors {
+- (void)testSharedCanonicalizerMatchesTheIOSCanonicalizer {
   const SmoothClipGeometryVector vectors[] = {
-      {-20, -10, 70, 50, 99, 300, 200, 0, 0, 50, 40, 20},
-      {400, 300, 20, 20, 8, 300, 200, 300, 200, 300, 200, 0},
-      {50, 50, -10, -20, -4, 300, 200, 50, 50, 50, 50, 0},
-      {10, 10, 500, 500, 30, 300, 200, 10, 10, 300, 200, 30},
-      {0, 0, 100, 40, 99, 300, 200, 0, 0, 100, 40, 20},
-      {5, 5, 20, 20, 10, 0, 0, 0, 0, 0, 0, 0},
-      {-50, -50, 20, 20, 5, 300, 200, 0, 0, 0, 0, 0},
+      {-20, -10, 70, 50, 99, -20, -10, 50, 40, 25},
+      {400, 300, 20, 20, 8, 400, 300, 420, 320, 8},
+      {50, 50, -10, -20, -4, 50, 50, 50, 50, 0},
+      {10, 10, 500, 500, 30, 10, 10, 510, 510, 30},
+      {0, 0, 100, 40, 99, 0, 0, 100, 40, 20},
+      {5, 5, 20, 20, 10, 5, 5, 25, 25, 10},
+      {-50, -50, 20, 20, 5, -50, -50, -30, -30, 5},
   };
   const size_t count = sizeof(vectors) / sizeof(vectors[0]);
   for (size_t index = 0; index < count; index += 1) {
     const SmoothClipGeometryVector vector = vectors[index];
-    smoothclip::NormalizedClip shared;
-    const bool sharedAccepted = smoothclip::SmoothClipNormalize(
-        vector.x, vector.y, vector.width, vector.height, vector.radius,
-        vector.hostWidth, vector.hostHeight, shared);
-    SmoothNormalizedClipGeometry ios;
-    const BOOL iosAccepted = SmoothClipNormalizeGeometry(
-        vector.x, vector.y, vector.width, vector.height, vector.radius,
-        CGSizeMake(vector.hostWidth, vector.hostHeight), &ios);
+    smoothclip::CanonicalClip shared;
+    const bool sharedAccepted = smoothclip::SmoothClipCanonicalize(
+        vector.x, vector.y, vector.width, vector.height, vector.radius, shared);
+    SmoothClipCanonicalGeometry ios;
+    const BOOL iosAccepted = SmoothClipCanonicalizeGeometry(
+        vector.x, vector.y, vector.width, vector.height, vector.radius, &ios);
 
     XCTAssertTrue(sharedAccepted, @"vector %zu", index);
     XCTAssertTrue(iosAccepted, @"vector %zu", index);
@@ -47,8 +45,7 @@ typedef struct {
     XCTAssertEqualWithAccuracy(shared.top, vector.top, 1e-9);
     XCTAssertEqualWithAccuracy(shared.right, vector.right, 1e-9);
     XCTAssertEqualWithAccuracy(shared.bottom, vector.bottom, 1e-9);
-    XCTAssertEqualWithAccuracy(shared.radius, vector.normalizedRadius, 1e-9);
-    // Edge-form output must agree with the iOS rect-form output exactly.
+    XCTAssertEqualWithAccuracy(shared.radius, vector.canonicalRadius, 1e-9);
     XCTAssertEqualWithAccuracy(CGRectGetMinX(ios.rect), shared.left, 1e-9);
     XCTAssertEqualWithAccuracy(CGRectGetMinY(ios.rect), shared.top, 1e-9);
     XCTAssertEqualWithAccuracy(CGRectGetMaxX(ios.rect), shared.right, 1e-9);
@@ -57,74 +54,39 @@ typedef struct {
   }
 }
 
-- (void)testSharedNormalizerRejectsEveryNonFiniteChannelWithoutWriting {
+- (void)testSharedCanonicalizerRejectsEveryNonFiniteChannelAtomically {
   const double nan = NAN;
-  const double inputs[][7] = {
-      {nan, 0, 10, 10, 1, 100, 100},
-      {0, nan, 10, 10, 1, 100, 100},
-      {0, 0, nan, 10, 1, 100, 100},
-      {0, 0, 10, nan, 1, 100, 100},
-      {0, 0, 10, 10, nan, 100, 100},
-      {0, 0, 10, 10, 1, nan, 100},
-      {0, 0, 10, 10, 1, 100, nan},
-      {INFINITY, 0, 10, 10, 1, 100, 100},
+  const double inputs[][5] = {
+      {nan, 0, 10, 10, 1},
+      {0, nan, 10, 10, 1},
+      {0, 0, nan, 10, 1},
+      {0, 0, 10, nan, 1},
+      {0, 0, 10, 10, nan},
+      {INFINITY, 0, 10, 10, 1},
   };
   const size_t count = sizeof(inputs) / sizeof(inputs[0]);
   for (size_t index = 0; index < count; index += 1) {
-    smoothclip::NormalizedClip shared;
+    smoothclip::CanonicalClip shared;
     shared.left = -1;
-    const bool accepted = smoothclip::SmoothClipNormalize(
+    const bool accepted = smoothclip::SmoothClipCanonicalize(
         inputs[index][0], inputs[index][1], inputs[index][2], inputs[index][3],
-        inputs[index][4], inputs[index][5], inputs[index][6], shared);
+        inputs[index][4], shared);
     XCTAssertFalse(accepted, @"input %zu", index);
-    // Rejection is atomic: the output must not have been written.
     XCTAssertEqual(shared.left, -1.0, @"input %zu", index);
   }
 }
 
-- (void)testLinearAnimationEligibilityRequiresIdentityNormalization {
-  smoothclip::Geometry uniform{10, 20, 120, 80, 18};
-  XCTAssertTrue(smoothclip::SmoothClipGeometryNormalizationIsIdentity(
-      uniform, 200, 200));
+- (void)testCanonicalPresentationKeepsRawCoordinatesAndScalesRadiiOnly {
+  smoothclip::Presentation presentation{{-20, 180, 30, 20, 40}, 7, -9, 1};
 
-  smoothclip::Geometry unequal{10, 20, 120, 80, 0};
-  unequal.topLeftRadius = 24;
-  unequal.topRightRadius = 16;
-  unequal.bottomRightRadius = 8;
-  unequal.bottomLeftRadius = 4;
-  XCTAssertTrue(smoothclip::SmoothClipGeometryNormalizationIsIdentity(
-      unequal, 200, 200));
-
-  smoothclip::Geometry crossesLeft = uniform;
-  crossesLeft.x = -1;
-  XCTAssertFalse(smoothclip::SmoothClipGeometryNormalizationIsIdentity(
-      crossesLeft, 200, 200));
-
-  smoothclip::Geometry crossesRight = uniform;
-  crossesRight.x = 100;
-  XCTAssertFalse(smoothclip::SmoothClipGeometryNormalizationIsIdentity(
-      crossesRight, 200, 200));
-
-  smoothclip::Geometry overlappingRadii = uniform;
-  overlappingRadii.width = 30;
-  overlappingRadii.radius = 20;
-  XCTAssertFalse(smoothclip::SmoothClipGeometryNormalizationIsIdentity(
-      overlappingRadii, 200, 200));
-
-  // The autonomous-animation eligibility gate must not narrow static
-  // clipping: the same crossing geometry is still accepted and normalized.
-  smoothclip::NormalizedClip normalized;
-  XCTAssertTrue(smoothclip::SmoothClipNormalize(
-      crossesLeft.x,
-      crossesLeft.y,
-      crossesLeft.width,
-      crossesLeft.height,
-      crossesLeft.radius,
-      200,
-      200,
-      normalized));
-  XCTAssertEqualWithAccuracy(normalized.left, 0, 1e-9);
-  XCTAssertEqualWithAccuracy(normalized.right, 119, 1e-9);
+  XCTAssertTrue(smoothclip::canonicalizePresentation(presentation));
+  XCTAssertEqualWithAccuracy(presentation.clip.x, -20, 1e-9);
+  XCTAssertEqualWithAccuracy(presentation.clip.y, 180, 1e-9);
+  XCTAssertEqualWithAccuracy(presentation.clip.width, 30, 1e-9);
+  XCTAssertEqualWithAccuracy(presentation.clip.height, 20, 1e-9);
+  XCTAssertEqualWithAccuracy(presentation.clip.radius, 10, 1e-9);
+  XCTAssertEqualWithAccuracy(presentation.contentTranslateX, 7, 1e-9);
+  XCTAssertEqualWithAccuracy(presentation.contentTranslateY, -9, 1e-9);
 }
 
 @end

@@ -1,15 +1,7 @@
-import { describe, expect, it, jest } from '@jest/globals';
-
-jest.mock('react-native-smooth-clip-view', () => {
-  const geometry = jest.requireActual<typeof import('../../../src/geometry')>(
-    '../../../src/geometry'
-  );
-  return { normalizeClipPresentation: geometry.normalizeClipPresentation };
-});
+import { describe, expect, it } from '@jest/globals';
 
 import {
   calculateOverlayClipGeometry,
-  normalizeOverlayPresentation,
   resolveDragClipRadius,
   resolveDragContentScale,
 } from '../overlayClipGeometry';
@@ -132,43 +124,22 @@ describe('overlay clip geometry', () => {
     ['left', -100],
     ['right', 100],
   ] as const) {
-    it(`keeps an off-screen ${edge} release intact inside the wider host`, () => {
+    it(`keeps an off-screen ${edge} release in screen coordinates`, () => {
       const requested = geometryAt({
         progress: 1,
         translateX,
         translateY: 300,
       });
-      const normalized = normalizeOverlayPresentation(
-        requested,
-        SCREEN_WIDTH,
-        SCREEN_HEIGHT
-      );
-
-      expect(normalized).not.toBeNull();
-      expect(normalized!.clip.x).toBeGreaterThanOrEqual(0);
-      expect(normalized!.clip.y).toBeGreaterThanOrEqual(0);
-      expect(normalized!.clip.x + normalized!.clip.width).toBeLessThanOrEqual(
-        SCREEN_WIDTH * 3
-      );
-      expect(normalized!.clip.y + normalized!.clip.height).toBeLessThanOrEqual(
-        SCREEN_HEIGHT
-      );
-      expect(normalized!.clip.x).toBeCloseTo(requested.clip.x + SCREEN_WIDTH);
-      expect(normalized!.clip.width).toBeCloseTo(requested.clip.width);
-      expect(normalized!.clip.radius).toBeCloseTo(requested.clip.radius);
       if (edge === 'left') {
-        expect(normalized!.clip.x).toBeLessThan(SCREEN_WIDTH);
+        expect(requested.clip.x).toBeLessThan(0);
       } else {
-        expect(normalized!.clip.x + normalized!.clip.width).toBeGreaterThan(
-          SCREEN_WIDTH * 2
+        expect(requested.clip.x + requested.clip.width).toBeGreaterThan(
+          SCREEN_WIDTH
         );
       }
-      expect(normalized!.contentTranslateX).toBe(requested.contentTranslateX);
-      expect(normalized!.contentTranslateY).toBe(requested.contentTranslateY);
-      expect(normalized!.contentScale).toBe(requested.contentScale);
-      expect(normalized!.contentVisibleHeight).toBe(
-        requested.contentVisibleHeight
-      );
+      expect(requested.contentTranslateX).toBeDefined();
+      expect(requested.contentTranslateY).toBeDefined();
+      expect(requested.contentScale).toBeGreaterThan(0);
     });
   }
 

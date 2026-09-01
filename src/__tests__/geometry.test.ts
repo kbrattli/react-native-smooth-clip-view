@@ -8,20 +8,19 @@ import {
   isFiniteClipPresentation,
   clipGeometryEquals,
   isFiniteClipGeometry,
-  normalizeClipGeometry,
-  normalizeClipPresentation,
 } from '../geometry';
 import type { ClipGeometry } from '../geometry';
 
-const bounds = { width: 300, height: 200 };
-
-describe('normalizeClipGeometry', () => {
+describe('canonicalizeClipGeometry', () => {
   it('keeps valid geometry and caps the radius', () => {
     expect(
-      normalizeClipGeometry(
-        { x: 10, y: 20, width: 100, height: 40, radius: 99 },
-        bounds
-      )
+      canonicalizeClipGeometry({
+        x: 10,
+        y: 20,
+        width: 100,
+        height: 40,
+        radius: 99,
+      })
     ).toEqual({
       x: 10,
       y: 20,
@@ -36,17 +35,20 @@ describe('normalizeClipGeometry', () => {
     });
   });
 
-  it('intersects negative offsets with host bounds', () => {
+  it('preserves negative coordinates', () => {
     expect(
-      normalizeClipGeometry(
-        { x: -20, y: -10, width: 70, height: 50, radius: 12 },
-        bounds
-      )
+      canonicalizeClipGeometry({
+        x: -20,
+        y: -10,
+        width: 70,
+        height: 50,
+        radius: 12,
+      })
     ).toEqual({
-      x: 0,
-      y: 0,
-      width: 50,
-      height: 40,
+      x: -20,
+      y: -10,
+      width: 70,
+      height: 50,
       radius: 12,
       topLeftRadius: 12,
       topRightRadius: 12,
@@ -56,32 +58,38 @@ describe('normalizeClipGeometry', () => {
     });
   });
 
-  it('intersects geometry that extends beyond the far edges', () => {
+  it('preserves coordinates and dimensions beyond an arbitrary host edge', () => {
     expect(
-      normalizeClipGeometry(
-        { x: 280, y: 180, width: 80, height: 80, radius: 30 },
-        bounds
-      )
+      canonicalizeClipGeometry({
+        x: 280,
+        y: 180,
+        width: 80,
+        height: 80,
+        radius: 30,
+      })
     ).toEqual({
       x: 280,
       y: 180,
-      width: 20,
-      height: 20,
-      radius: 10,
-      topLeftRadius: 10,
-      topRightRadius: 10,
-      bottomRightRadius: 10,
-      bottomLeftRadius: 10,
+      width: 80,
+      height: 80,
+      radius: 30,
+      topLeftRadius: 30,
+      topRightRadius: 30,
+      bottomRightRadius: 30,
+      bottomLeftRadius: 30,
       curve: 'circular',
     });
   });
 
   it('turns negative dimensions and radius into an empty clip', () => {
     expect(
-      normalizeClipGeometry(
-        { x: 50, y: 50, width: -10, height: -20, radius: -4 },
-        bounds
-      )
+      canonicalizeClipGeometry({
+        x: 50,
+        y: 50,
+        width: -10,
+        height: -20,
+        radius: -4,
+      })
     ).toEqual({
       x: 50,
       y: 50,
@@ -96,48 +104,19 @@ describe('normalizeClipGeometry', () => {
     });
   });
 
-  it('returns an empty edge clip when the rectangle is outside', () => {
-    expect(
-      normalizeClipGeometry(
-        { x: 400, y: 300, width: 20, height: 20, radius: 8 },
-        bounds
-      )
-    ).toEqual({
-      x: 300,
-      y: 200,
-      width: 0,
-      height: 0,
-      radius: 0,
-      topLeftRadius: 0,
-      topRightRadius: 0,
-      bottomRightRadius: 0,
-      bottomLeftRadius: 0,
-      curve: 'circular',
-    });
-  });
-
   it('rejects every non-finite input atomically', () => {
     expect(
-      normalizeClipGeometry(
-        {
-          x: 0,
-          y: 0,
-          width: Number.NaN,
-          height: 20,
-          radius: 4,
-        },
-        bounds
-      )
-    ).toBeNull();
-    expect(
-      normalizeClipGeometry(
-        { x: 0, y: 0, width: 20, height: 20, radius: 4 },
-        { width: Number.POSITIVE_INFINITY, height: 200 }
-      )
+      canonicalizeClipGeometry({
+        x: 0,
+        y: 0,
+        width: Number.NaN,
+        height: 20,
+        radius: 4,
+      })
     ).toBeNull();
   });
 
-  it('compares geometry without allocating normalized copies', () => {
+  it('compares geometry without allocating canonical copies', () => {
     const clip = { x: 1, y: 2, width: 3, height: 4, radius: 2 };
 
     expect(isFiniteClipGeometry(clip)).toBe(true);
@@ -233,10 +212,10 @@ describe('normalizeClipGeometry', () => {
       })
     ).toBe(false);
     expect(
-      normalizeClipGeometry(
-        { ...clip, bottomLeftRadius: Number.POSITIVE_INFINITY },
-        bounds
-      )
+      canonicalizeClipGeometry({
+        ...clip,
+        bottomLeftRadius: Number.POSITIVE_INFINITY,
+      })
     ).toBeNull();
   });
 });
@@ -319,7 +298,7 @@ describe('SmoothClipPresentation', () => {
     ).toBe(false);
   });
 
-  it('canonicalizes and host-normalizes a complete presentation', () => {
+  it('canonicalizes a complete presentation without changing raw coordinates', () => {
     const presentation = createClipPresentation(
       {
         x: -20,
@@ -341,23 +320,6 @@ describe('SmoothClipPresentation', () => {
         y: -10,
         width: 70,
         height: 50,
-        radius: 0,
-        topLeftRadius: 20,
-        topRightRadius: 12,
-        bottomRightRadius: 12,
-        bottomLeftRadius: 12,
-        curve: 'continuous',
-      },
-      contentTranslateX: -11,
-      contentTranslateY: 17,
-      contentScale: 1.5,
-    });
-    expect(normalizeClipPresentation(presentation, bounds)).toEqual({
-      clip: {
-        x: 0,
-        y: 0,
-        width: 50,
-        height: 40,
         radius: 0,
         topLeftRadius: 20,
         topRightRadius: 12,

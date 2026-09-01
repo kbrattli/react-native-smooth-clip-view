@@ -16,11 +16,11 @@ typedef NS_ENUM(NSInteger, SmoothClipCornerCurve) {
 
 typedef struct {
   CGRect rect;
-  // Uniform-radius fast-path value; zero when normalized radii are unequal.
+  // Uniform-radius fast-path value; zero when canonical radii are unequal.
   CGFloat radius;
   SmoothClipCornerRadii radii;
   SmoothClipCornerCurve curve;
-} SmoothNormalizedClipGeometry;
+} SmoothClipCanonicalGeometry;
 
 NS_INLINE BOOL SmoothClipCornerRadiiEqual(
     SmoothClipCornerRadii first,
@@ -47,13 +47,13 @@ NS_INLINE CGFloat SmoothClipSafeOverlapFactor(
 }
 
 /**
- * Normalizes the rectangle and four radii without allocating.
+ * Canonicalizes the rectangle and four radii without allocating.
  *
  * The proportional overlap rule matches CSS border radii and the shared
  * Android/C++ contract: all corners use one scale factor, preserving their
  * relative shape while no opposing pair exceeds its edge.
  */
-NS_INLINE BOOL SmoothClipNormalizeGeometry(
+NS_INLINE BOOL SmoothClipCanonicalizeGeometry(
     CGFloat x,
     CGFloat y,
     CGFloat width,
@@ -63,30 +63,18 @@ NS_INLINE BOOL SmoothClipNormalizeGeometry(
     CGFloat bottomRightRadius,
     CGFloat bottomLeftRadius,
     NSInteger curveCode,
-    CGSize hostSize,
-    SmoothNormalizedClipGeometry *result) {
+    SmoothClipCanonicalGeometry *result) {
   if (!isfinite(x) || !isfinite(y) || !isfinite(width) ||
       !isfinite(height) || !isfinite(topLeftRadius) ||
       !isfinite(topRightRadius) || !isfinite(bottomRightRadius) ||
-      !isfinite(bottomLeftRadius) || !isfinite(hostSize.width) ||
-      !isfinite(hostSize.height) ||
+      !isfinite(bottomLeftRadius) ||
       (curveCode != SmoothClipCornerCurveCircular &&
        curveCode != SmoothClipCornerCurveContinuous)) {
     return NO;
   }
 
-  const CGFloat hostWidth = MAX(0, hostSize.width);
-  const CGFloat hostHeight = MAX(0, hostSize.height);
   const CGFloat requestedWidth = MAX(0, width);
   const CGFloat requestedHeight = MAX(0, height);
-  const CGFloat requestedRight = x + requestedWidth;
-  const CGFloat requestedBottom = y + requestedHeight;
-  const CGFloat left = MIN(hostWidth, MAX(0, x));
-  const CGFloat top = MIN(hostHeight, MAX(0, y));
-  const CGFloat right = MIN(hostWidth, MAX(0, requestedRight));
-  const CGFloat bottom = MIN(hostHeight, MAX(0, requestedBottom));
-  const CGFloat visibleWidth = MAX(0, right - left);
-  const CGFloat visibleHeight = MAX(0, bottom - top);
 
   SmoothClipCornerRadii radii = {
       MAX(0, topLeftRadius),
@@ -99,20 +87,20 @@ NS_INLINE BOOL SmoothClipNormalizeGeometry(
       MIN(
           MIN(
               SmoothClipSafeOverlapFactor(
-                  visibleWidth, radii.topLeft, radii.topRight),
+                  requestedWidth, radii.topLeft, radii.topRight),
               SmoothClipSafeOverlapFactor(
-                  visibleWidth, radii.bottomLeft, radii.bottomRight)),
+                  requestedWidth, radii.bottomLeft, radii.bottomRight)),
           MIN(
               SmoothClipSafeOverlapFactor(
-                  visibleHeight, radii.topLeft, radii.bottomLeft),
+                  requestedHeight, radii.topLeft, radii.bottomLeft),
               SmoothClipSafeOverlapFactor(
-                  visibleHeight, radii.topRight, radii.bottomRight))));
+                  requestedHeight, radii.topRight, radii.bottomRight))));
   radii.topLeft *= overlapScale;
   radii.topRight *= overlapScale;
   radii.bottomRight *= overlapScale;
   radii.bottomLeft *= overlapScale;
 
-  result->rect = CGRectMake(left, top, visibleWidth, visibleHeight);
+  result->rect = CGRectMake(x, y, requestedWidth, requestedHeight);
   result->radii = radii;
   result->radius = SmoothClipCornerRadiiAreUniform(radii)
       ? radii.topLeft
@@ -122,15 +110,14 @@ NS_INLINE BOOL SmoothClipNormalizeGeometry(
 }
 
 /** Mirrors the Android and JavaScript geometry contract without allocating. */
-NS_INLINE BOOL SmoothClipNormalizeGeometry(
+NS_INLINE BOOL SmoothClipCanonicalizeGeometry(
     CGFloat x,
     CGFloat y,
     CGFloat width,
     CGFloat height,
     CGFloat radius,
-    CGSize hostSize,
-    SmoothNormalizedClipGeometry *result) {
-  return SmoothClipNormalizeGeometry(
+    SmoothClipCanonicalGeometry *result) {
+  return SmoothClipCanonicalizeGeometry(
       x,
       y,
       width,
@@ -140,7 +127,6 @@ NS_INLINE BOOL SmoothClipNormalizeGeometry(
       radius,
       radius,
       SmoothClipCornerCurveCircular,
-      hostSize,
       result);
 }
 

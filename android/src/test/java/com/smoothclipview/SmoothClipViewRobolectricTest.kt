@@ -65,12 +65,63 @@ class SmoothClipViewRobolectricTest {
     }
 
     @Test
-    fun collapseDuringAcceptedStreamDispatchesDownThenCancel() {
+    fun offHostApertureKeepsShadowRenderingButHidesAccessibilityAndTouch() {
+        view.setClipPresentationPx(
+            -30f, 20f, -10f, 40f,
+            6f, 6f, 6f, 6f,
+            CLIP_CURVE_CIRCULAR,
+            0f, 0f, 1f,
+            true, 0f, 0f, 0f, 0.25f, 20f, 0f, 0f, 0f,
+        )
+
+        assertEquals(View.VISIBLE, view.visibility)
+        assertEquals(
+            View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+            view.importantForAccessibility,
+        )
+        assertEquals(RectF(-10f, 20f, 10f, 40f), boxShadowBounds())
+        assertFalse(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 0f, 30f)))
+    }
+
+    @Test
+    fun fullyOffHostApertureWithoutAnOverlappingShadowIsCulled() {
+        setUniformPresentationPx(view, -30f, 20f, -10f, 40f, 6f, 0f, 0f)
+
+        assertEquals(View.INVISIBLE, view.visibility)
+        assertEquals(
+            View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+            view.importantForAccessibility,
+        )
+    }
+
+    @Test
+    fun partiallyOffHostApertureRemainsAccessibleAndUsesRawGeometry() {
+        setUniformPresentationPx(view, -20f, 10f, 30f, 60f, 8f, 0f, 0f)
+
+        assertFalse(
+            view.importantForAccessibility ==
+                View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS,
+        )
+        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 10f, 30f)))
+    }
+
+    @Test
+    fun acceptedStreamSurvivesApertureLeavingHostUntilUp() {
         assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 50f, 50f)))
 
+        setUniformPresentationPx(view, -100f, 0f, -50f, 100f, 0f, 0f, 0f)
+        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_MOVE, 55f, 50f)))
         setUniformPresentationPx(view, 0f, 0f, 0f, 100f, 0f, 0f, 0f)
+        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_UP, 55f, 50f)))
 
-        assertEquals(listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_CANCEL), actions)
+        assertEquals(
+            listOf(
+                MotionEvent.ACTION_DOWN,
+                MotionEvent.ACTION_MOVE,
+                MotionEvent.ACTION_UP,
+            ),
+            actions,
+        )
     }
 
     @Test
@@ -115,7 +166,7 @@ class SmoothClipViewRobolectricTest {
     }
 
     @Test
-    fun v3UniformCircularGeometryUsesFloatOutlineWithoutResidual() {
+    fun uniformCircularGeometryUsesTheRawFloatPath() {
         view.setClipPresentationPx(
             0.25f,
             0.75f,
@@ -131,10 +182,7 @@ class SmoothClipViewRobolectricTest {
             1f,
         )
 
-        assertTrue(privateBoolean("outlineUsesFloatRoundRect"))
-        assertEquals(0f, privateFloat("clipResidualX"))
-        assertEquals(0f, privateFloat("clipResidualY"))
-
+        assertEquals(RectF(0.25f, 0.75f, 80.5f, 70.25f), clipBounds())
     }
 
     @Test
@@ -230,7 +278,7 @@ class SmoothClipViewRobolectricTest {
             0f, 0f, 1f,
             true, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 7f,
         )
-        assertTrue(privateBoolean("outlineUsesPath"))
+        assertEquals(RectF(0f, 0f, 100f, 100f), clipBounds())
         assertEquals(RectF(-7f, -7f, 107f, 107f), boxShadowBounds())
 
         view.setClipPresentationPx(
@@ -240,62 +288,8 @@ class SmoothClipViewRobolectricTest {
             0f, 0f, 1f,
             true, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 9f,
         )
-        assertTrue(privateBoolean("outlineUsesPath"))
+        assertEquals(RectF(3f, 5f, 94f, 91f), clipBounds())
         assertEquals(RectF(-6f, -4f, 103f, 100f), boxShadowBounds())
-    }
-
-    @Test
-    fun collapseWithoutAStreamDoesNotSynthesizeCancel() {
-        setUniformPresentationPx(view, 0f, 0f, 0f, 100f, 0f, 0f, 0f)
-
-        assertTrue(actions.isEmpty())
-    }
-
-    @Test
-    fun reentrantCollapseFromTheCancelHandlerDispatchesExactlyOneCancel() {
-        val application = RuntimeEnvironment.getApplication()
-        val reactContext = mock(ReactApplicationContext::class.java)
-        val themedContext = ThemedReactContext(reactContext, application, null, -1)
-        val reentrantView = SmoothClipView(themedContext)
-        val reentrantActions = mutableListOf<Int>()
-        var collapsedFromHandler = false
-        val child = View(themedContext).apply {
-            isClickable = true
-            setOnTouchListener { _, event ->
-                reentrantActions += event.actionMasked
-                if (event.actionMasked == MotionEvent.ACTION_CANCEL &&
-                    !collapsedFromHandler
-                ) {
-                    // Untrusted child code re-entering geometry application
-                    // synchronously from the synthesized cancel: the stream
-                    // must already read as ended, or this nested collapse
-                    // would synthesize a second cancel.
-                    collapsedFromHandler = true
-                    setUniformPresentationPx(
-                        reentrantView, 0f, 0f, 0f, 100f, 0f, 0f, 0f,
-                    )
-                }
-                true
-            }
-        }
-        reentrantView.contentContainer.addView(child)
-        reentrantView.layout(0, 0, 100, 100)
-        child.layout(0, 0, 100, 100)
-        setUniformPresentationPx(
-            reentrantView, 0f, 0f, 100f, 100f, 0f, 0f, 0f,
-        )
-
-        assertTrue(
-            reentrantView.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 50f, 50f)),
-        )
-        setUniformPresentationPx(
-            reentrantView, 0f, 0f, 0f, 100f, 0f, 0f, 0f,
-        )
-
-        assertEquals(
-            listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_CANCEL),
-            reentrantActions,
-        )
     }
 
     private fun event(action: Int, x: Float, y: Float): MotionEvent =
@@ -327,18 +321,6 @@ class SmoothClipViewRobolectricTest {
         )
     }
 
-    private fun privateBoolean(name: String): Boolean =
-        SmoothClipView::class.java.getDeclaredField(name).let { field ->
-            field.isAccessible = true
-            field.getBoolean(view)
-        }
-
-    private fun privateFloat(name: String): Float =
-        SmoothClipView::class.java.getDeclaredField(name).let { field ->
-            field.isAccessible = true
-            field.getFloat(view)
-        }
-
     private fun privatePath(name: String): Path =
         SmoothClipView::class.java.getDeclaredField(name).let { field ->
             field.isAccessible = true
@@ -353,5 +335,9 @@ class SmoothClipViewRobolectricTest {
 
     private fun boxShadowBounds(): RectF = RectF().also {
         privatePath("boxShadowPath").computeBounds(it, true)
+    }
+
+    private fun clipBounds(): RectF = RectF().also {
+        privatePath("clipPath").computeBounds(it, true)
     }
 }

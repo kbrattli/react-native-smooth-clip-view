@@ -209,14 +209,15 @@ const gesture = Gesture.Pan()
 | `driver`   | `SmoothClipDriver` | Reusable hybrid clip driver.            |
 | `children` | `ReactNode`        | Content rendered inside the fixed host. |
 
-The host hides itself, drops out of the accessibility tree, and stops accepting
-touches while the normalized clip has a zero-or-negative extent. Both platforms
-retain fractional geometry through their native aperture paths.
+The host hides itself while the raw aperture has a zero extent. It drops out of
+the accessibility tree and stops accepting touches whenever that aperture does
+not intersect the host. Both platforms retain fractional geometry through their
+native aperture paths.
 
 ### `boxShadow`
 
 `SmoothClipPresentation.boxShadow` defines one outset shadow that always follows
-the visible normalized aperture:
+the raw aperture:
 
 ```ts
 type ClipBoxShadow = Readonly<{
@@ -231,7 +232,7 @@ type ClipBoxShadow = Readonly<{
 Color defaults to opaque black; blur and spread default to zero. Put opacity in
 the color alpha, matching React Native's `boxShadow` model. Blur is clamped to a
 nonnegative value; negative spread remains valid. iOS lazily creates one
-unmasked CALayer whose `shadowPath` is built from the normalized aperture.
+unmasked CALayer whose `shadowPath` is built from the raw aperture.
 Android draws the same outset path with CSS-compatible offset, blur, spread,
 color, and per-corner geometry instead of hardware elevation. Timing, spring, keyframe, streamed,
 interrupted, and relatched presentations keep the shadow in the same native
@@ -374,10 +375,11 @@ CSS string parsing, and `filter.dropShadow` are intentionally unsupported.
 Do not call `driver.ui` from React code — it throws on the React runtime; use
 `driver.react` there. During a native transition, `driver.presentation.value`
 is the requested target, not a per-frame mirror of the native presentation
-layer. `beginInteraction()` returns geometry normalized against the host
-bounds, so a clip that extended beyond the host comes back clamped. Start
-gestures with `beginInteraction()`: interactive writes issued while native
-still owns rendering are dropped.
+layer. `beginInteraction()` returns the raw canonical native snapshot, including
+coordinates outside the host, so it can be handed directly to the next gesture
+or animation without a coordinate conversion. Start gestures with
+`beginInteraction()`: interactive writes issued while native still owns
+rendering are dropped.
 
 ### Group driver
 
@@ -436,16 +438,16 @@ type ClipGeometry = Readonly<{
 ```
 
 Values use React Native points/DIPs. Native code rejects non-finite updates,
-intersects the requested rectangle with the actual host bounds, prevents
-negative sizes, and proportionally scales overlapping corners with the CSS
-corner-normalization rule. Content scale is centered on the native content
-container; translation is independent and is not multiplied by scale.
+clamps negative dimensions to zero, and proportionally scales overlapping
+corners against the requested rectangle with the CSS corner-overlap rule. It
+does not clamp or intersect `x`, `y`, `width`, or `height` against the host.
+The fixed `SmoothClipView` bounds are the final rendering viewport: content and
+the aperture's outset shadow are cropped there, while the aperture does not
+clip its own shadow. Content scale is centered on the native content container;
+translation is independent and is not multiplied by scale.
 
-### `normalizeClipGeometry`
-
-`normalizeClipGeometry(geometry, bounds)` mirrors the native normalization
-contract for tests and non-native calculations. Native bounds remain
-authoritative at render time.
+`canonicalizeClipGeometry(geometry)` exposes the same host-independent geometry
+rule for tests and other non-native calculations.
 
 ## Migrating from 0.0.x
 

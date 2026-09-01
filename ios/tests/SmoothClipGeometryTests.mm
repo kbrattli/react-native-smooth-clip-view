@@ -15,40 +15,40 @@ static void CountPathElements(
   *count += 1;
 }
 
-- (void)testIntersectsGeometryAndClampsRadius {
-  SmoothNormalizedClipGeometry result;
+- (void)testPreservesOffHostGeometryAndClampsRadiusAgainstRequestedRect {
+  SmoothClipCanonicalGeometry result;
 
-  XCTAssertTrue(SmoothClipNormalizeGeometry(
-      -20, -10, 70, 50, 99, CGSizeMake(300, 200), &result));
-  XCTAssertTrue(CGRectEqualToRect(result.rect, CGRectMake(0, 0, 50, 40)));
-  XCTAssertEqual(result.radius, 20);
+  XCTAssertTrue(SmoothClipCanonicalizeGeometry(
+      -20, -10, 70, 50, 99, &result));
+  XCTAssertTrue(CGRectEqualToRect(result.rect, CGRectMake(-20, -10, 70, 50)));
+  XCTAssertEqual(result.radius, 25);
 }
 
-- (void)testProducesAnEmptyClipOutsideTheHost {
-  SmoothNormalizedClipGeometry result;
+- (void)testPreservesGeometryOutsideTheHost {
+  SmoothClipCanonicalGeometry result;
 
-  XCTAssertTrue(SmoothClipNormalizeGeometry(
-      400, 300, 20, 20, 8, CGSizeMake(300, 200), &result));
-  XCTAssertTrue(CGRectEqualToRect(result.rect, CGRectMake(300, 200, 0, 0)));
-  XCTAssertEqual(result.radius, 0);
+  XCTAssertTrue(SmoothClipCanonicalizeGeometry(
+      400, 300, 20, 20, 8, &result));
+  XCTAssertTrue(CGRectEqualToRect(result.rect, CGRectMake(400, 300, 20, 20)));
+  XCTAssertEqual(result.radius, 8);
 }
 
 - (void)testRejectsNonFiniteGeometryAtomically {
-  SmoothNormalizedClipGeometry result = {
+  SmoothClipCanonicalGeometry result = {
       .rect = CGRectMake(1, 2, 3, 4),
       .radius = 5,
   };
 
-  XCTAssertFalse(SmoothClipNormalizeGeometry(
-      0, 0, NAN, 20, 4, CGSizeMake(300, 200), &result));
+  XCTAssertFalse(SmoothClipCanonicalizeGeometry(
+      0, 0, NAN, 20, 4, &result));
   XCTAssertTrue(CGRectEqualToRect(result.rect, CGRectMake(1, 2, 3, 4)));
   XCTAssertEqual(result.radius, 5);
 }
 
 - (void)testNormalizesFourRadiiWithOneCSSOverlapFactor {
-  SmoothNormalizedClipGeometry result;
+  SmoothClipCanonicalGeometry result;
 
-  XCTAssertTrue(SmoothClipNormalizeGeometry(
+  XCTAssertTrue(SmoothClipCanonicalizeGeometry(
       0,
       0,
       100,
@@ -58,7 +58,6 @@ static void CountPathElements(
       20,
       40,
       SmoothClipCornerCurveContinuous,
-      CGSizeMake(100, 60),
       &result));
 
   // The vertical left edge is limiting: 60 / (80 + 40) == 0.5. All four
@@ -72,15 +71,15 @@ static void CountPathElements(
 }
 
 - (void)testRejectsAnUnknownCurveWithoutWriting {
-  SmoothNormalizedClipGeometry result = {
+  SmoothClipCanonicalGeometry result = {
       .rect = CGRectMake(1, 2, 3, 4),
       .radius = 5,
       .radii = {6, 7, 8, 9},
       .curve = SmoothClipCornerCurveContinuous,
   };
 
-  XCTAssertFalse(SmoothClipNormalizeGeometry(
-      0, 0, 100, 100, 10, 20, 30, 40, 99, CGSizeMake(100, 100),
+  XCTAssertFalse(SmoothClipCanonicalizeGeometry(
+      0, 0, 100, 100, 10, 20, 30, 40, 99,
       &result));
   XCTAssertTrue(CGRectEqualToRect(result.rect, CGRectMake(1, 2, 3, 4)));
   XCTAssertEqual(result.radii.topLeft, 6);

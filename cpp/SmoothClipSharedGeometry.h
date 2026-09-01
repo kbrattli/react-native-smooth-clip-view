@@ -7,7 +7,13 @@
 
 namespace smoothclip {
 
-struct NormalizedClip {
+/**
+ * Host-independent canonical clip geometry expressed as edges.
+ *
+ * The moving aperture is allowed to cross or sit outside any host. Hosts crop
+ * the rendered result; they never rewrite the geometry stored by the driver.
+ */
+struct CanonicalClip {
   double left = 0;
   double top = 0;
   double right = 0;
@@ -25,71 +31,13 @@ inline double SmoothClipResolvedRadius(double overrideValue, double radius) {
 }
 
 /**
- * Returns true only when host normalization is the identity for this geometry.
+ * Canonicalizes a requested rectangle without consulting host dimensions.
  *
- * Timing/keyframe renderers interpolate already-normalized native values on
- * iOS, while Android interpolates presentation scalars and normalizes each
- * delivered frame. Those operations commute exactly when every anchor stays
- * inside one host and the CSS corner-overlap rule never activates. Because
- * each condition below is linear, it also holds for every convex interpolation
- * between accepted anchors.
- *
- * Static clipping deliberately does not use this gate: out-of-bounds geometry
- * remains valid and is still clipped by SmoothClipNormalize.
+ * Negative dimensions collapse to zero. Corner radii follow the CSS
+ * corner-overlap rule against the requested rectangle, using one common scale
+ * factor so their proportions are preserved.
  */
-inline bool SmoothClipGeometryNormalizationIsIdentity(
-    const Geometry &geometry,
-    double hostWidth,
-    double hostHeight) {
-  const double topLeft = SmoothClipResolvedRadius(
-      geometry.topLeftRadius, geometry.radius);
-  const double topRight = SmoothClipResolvedRadius(
-      geometry.topRightRadius, geometry.radius);
-  const double bottomRight = SmoothClipResolvedRadius(
-      geometry.bottomRightRadius, geometry.radius);
-  const double bottomLeft = SmoothClipResolvedRadius(
-      geometry.bottomLeftRadius, geometry.radius);
-  const double right = geometry.x + geometry.width;
-  const double bottom = geometry.y + geometry.height;
-  const double topRadii = topLeft + topRight;
-  const double bottomRadii = bottomLeft + bottomRight;
-  const double leftRadii = topLeft + bottomLeft;
-  const double rightRadii = topRight + bottomRight;
-  const double values[] = {
-      geometry.x,
-      geometry.y,
-      geometry.width,
-      geometry.height,
-      geometry.radius,
-      topLeft,
-      topRight,
-      bottomRight,
-      bottomLeft,
-      right,
-      bottom,
-      topRadii,
-      bottomRadii,
-      leftRadii,
-      rightRadii,
-      hostWidth,
-      hostHeight,
-  };
-  for (const double value : values) {
-    if (!std::isfinite(value)) return false;
-  }
-  return hostWidth >= 0 && hostHeight >= 0 &&
-      geometry.x >= 0 && geometry.y >= 0 &&
-      geometry.width >= 0 && geometry.height >= 0 &&
-      right <= hostWidth && bottom <= hostHeight &&
-      topLeft >= 0 && topRight >= 0 &&
-      bottomRight >= 0 && bottomLeft >= 0 &&
-      topRadii <= geometry.width &&
-      bottomRadii <= geometry.width &&
-      leftRadii <= geometry.height &&
-      rightRadii <= geometry.height;
-}
-
-inline bool SmoothClipNormalize(
+inline bool SmoothClipCanonicalize(
     double x,
     double y,
     double width,
@@ -100,9 +48,7 @@ inline bool SmoothClipNormalize(
     double bottomRightRadius,
     double bottomLeftRadius,
     ClipCurve curve,
-    double hostWidth,
-    double hostHeight,
-    NormalizedClip &out) {
+    CanonicalClip &out) {
   const double resolvedTopLeft =
       SmoothClipResolvedRadius(topLeftRadius, radius);
   const double resolvedTopRight =
@@ -117,20 +63,16 @@ inline bool SmoothClipNormalize(
       !std::isfinite(resolvedTopRight) ||
       !std::isfinite(resolvedBottomRight) ||
       !std::isfinite(resolvedBottomLeft) ||
-      !std::isfinite(hostWidth) || !std::isfinite(hostHeight)) {
+      (curve != ClipCurve::Circular && curve != ClipCurve::Continuous)) {
     return false;
   }
 
-  const double boundedHostWidth = std::max(0.0, hostWidth);
-  const double boundedHostHeight = std::max(0.0, hostHeight);
-  const double requestedRight = x + std::max(0.0, width);
-  const double requestedBottom = y + std::max(0.0, height);
-  out.left = std::min(boundedHostWidth, std::max(0.0, x));
-  out.top = std::min(boundedHostHeight, std::max(0.0, y));
-  out.right = std::min(boundedHostWidth, std::max(0.0, requestedRight));
-  out.bottom = std::min(boundedHostHeight, std::max(0.0, requestedBottom));
-  const double visibleWidth = std::max(0.0, out.right - out.left);
-  const double visibleHeight = std::max(0.0, out.bottom - out.top);
+  const double canonicalWidth = std::max(0.0, width);
+  const double canonicalHeight = std::max(0.0, height);
+  out.left = x;
+  out.top = y;
+  out.right = x + canonicalWidth;
+  out.bottom = y + canonicalHeight;
 
   double topLeft = std::max(0.0, resolvedTopLeft);
   double topRight = std::max(0.0, resolvedTopRight);
@@ -140,11 +82,12 @@ inline bool SmoothClipNormalize(
   const auto includeLimit = [&scale](double available, double requested) {
     if (requested > 0) scale = std::min(scale, available / requested);
   };
-  includeLimit(visibleWidth, topLeft + topRight);
-  includeLimit(visibleWidth, bottomLeft + bottomRight);
-  includeLimit(visibleHeight, topLeft + bottomLeft);
-  includeLimit(visibleHeight, topRight + bottomRight);
-  scale = std::max(0.0, std::min(1.0, scale));
+  includeLimit(canonicalWidth, topLeft + topRight);
+  includeLimit(canonicalWidth, bottomLeft + bottomRight);
+  includeLimit(canonicalHeight, topLeft + bottomLeft);
+  includeLimit(canonicalHeight, topRight + bottomRight);
+  scale = std::clamp(scale, 0.0, 1.0);
+
   out.topLeftRadius = topLeft * scale;
   out.topRightRadius = topRight * scale;
   out.bottomRightRadius = bottomRight * scale;
@@ -157,20 +100,31 @@ inline bool SmoothClipNormalize(
   return true;
 }
 
-// Shared clip normalization emitting edges (Android's Outline consumes
-// edges). Mirrors ios/SmoothClipGeometry.h (SmoothClipNormalizeGeometry) and
-// ClipGeometryNormalizer.kt (normalizeClipGeometryPx); a change here must
-// land in all three.
-inline bool SmoothClipNormalize(
+inline bool SmoothClipCanonicalize(
+    const Geometry &geometry,
+    CanonicalClip &out) {
+  return SmoothClipCanonicalize(
+      geometry.x,
+      geometry.y,
+      geometry.width,
+      geometry.height,
+      geometry.radius,
+      geometry.topLeftRadius,
+      geometry.topRightRadius,
+      geometry.bottomRightRadius,
+      geometry.bottomLeftRadius,
+      geometry.curve,
+      out);
+}
+
+inline bool SmoothClipCanonicalize(
     double x,
     double y,
     double width,
     double height,
     double radius,
-    double hostWidth,
-    double hostHeight,
-    NormalizedClip &out) {
-  return SmoothClipNormalize(
+    CanonicalClip &out) {
+  return SmoothClipCanonicalize(
       x,
       y,
       width,
@@ -181,9 +135,22 @@ inline bool SmoothClipNormalize(
       radius,
       radius,
       ClipCurve::Circular,
-      hostWidth,
-      hostHeight,
       out);
+}
+
+inline Geometry SmoothClipGeometry(const CanonicalClip &clip) {
+  Geometry geometry{
+      clip.left,
+      clip.top,
+      std::max(0.0, clip.right - clip.left),
+      std::max(0.0, clip.bottom - clip.top),
+      clip.radius};
+  geometry.topLeftRadius = clip.topLeftRadius;
+  geometry.topRightRadius = clip.topRightRadius;
+  geometry.bottomRightRadius = clip.bottomRightRadius;
+  geometry.bottomLeftRadius = clip.bottomLeftRadius;
+  geometry.curve = clip.curve;
+  return geometry;
 }
 
 } // namespace smoothclip

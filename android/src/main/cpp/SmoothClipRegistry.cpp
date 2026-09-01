@@ -323,6 +323,10 @@ bool advanceSpring(ActiveAnimation &animation, double now) {
       animation.springPosition,
       animation.start.clip.curve,
       animation.start.shadow.enabled || animation.target.shadow.enabled);
+  if (!canonicalizePresentation(animation.current)) {
+    animation.current = animation.target;
+    return true;
+  }
   return settled || now - animation.startedAtS >= kSpringMaxDurationS;
 }
 
@@ -384,17 +388,16 @@ Presentation visiblePresentation(
   return state.animation.has_value() ? state.animation->current : state.latest;
 }
 
-// Terminal per-frame delivery: scale DIP -> px and normalize against the
-// pushed host metrics in C++, so the JNI call carries final pixel floats and
-// the Kotlin side reduces to field stores + invalidateOutline().
+// Terminal per-frame delivery: scale canonical DIP geometry to pixels without
+// consulting host metrics. Each SmoothClipView applies the fixed viewport crop.
 void deliverToView(const ViewEntry &entry, const Presentation &presentation) {
   if (entry.density <= 0) {
     entry.view->applyClip(presentation);
     return;
   }
   const double density = entry.density;
-  NormalizedClip clip;
-  if (!SmoothClipNormalize(
+  CanonicalClip clip;
+  if (!SmoothClipCanonicalize(
           presentation.clip.x * density,
           presentation.clip.y * density,
           presentation.clip.width * density,
@@ -405,8 +408,6 @@ void deliverToView(const ViewEntry &entry, const Presentation &presentation) {
           presentation.clip.bottomRightRadius * density,
           presentation.clip.bottomLeftRadius * density,
           presentation.clip.curve,
-          entry.hostWidthPx,
-          entry.hostHeightPx,
           clip)) {
     return;
   }
@@ -509,77 +510,6 @@ Presentation prepareAnimation(
 bool entryDisplayable(const ViewEntry &entry) {
   return entry.hostWidthPx > 0 && entry.hostHeightPx > 0 &&
       entry.lifecycleVisible;
-}
-
-Geometry geometryInPixels(
-    const Geometry &geometry,
-    double density) {
-  Geometry result = geometry;
-  result.x *= density;
-  result.y *= density;
-  result.width *= density;
-  result.height *= density;
-  result.radius *= density;
-  result.topLeftRadius *= density;
-  result.topRightRadius *= density;
-  result.bottomRightRadius *= density;
-  result.bottomLeftRadius *= density;
-  return result;
-}
-
-bool presentationFitsEveryKnownHostWithoutNormalization(
-    const DriverState &state,
-    const Presentation &presentation) {
-  for (const ViewEntry &entry : state.views) {
-    // Zero host metrics are still waiting on Fabric layout and remain covered
-    // by the existing readiness latch. Once metrics exist, density is required
-    // to compare the DIP presentation against the exact pixel host bounds.
-    if (entry.hostWidthPx <= 0 || entry.hostHeightPx <= 0) continue;
-    if (entry.density <= 0 ||
-        !SmoothClipGeometryNormalizationIsIdentity(
-            geometryInPixels(presentation.clip, entry.density),
-            entry.hostWidthPx,
-            entry.hostHeightPx)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool timingPlanPreservesLinearHostNormalization(
-    const DriverState &state,
-    const Presentation &start,
-    const Presentation &target,
-    const TimingAnimation &animation) {
-  const double minimumProgress = std::min(
-      {0.0, 1.0, animation.controlPoint1Y, animation.controlPoint2Y});
-  const double maximumProgress = std::max(
-      {0.0, 1.0, animation.controlPoint1Y, animation.controlPoint2Y});
-  const Presentation minimum =
-      interpolate(start, target, minimumProgress);
-  const Presentation maximum =
-      interpolate(start, target, maximumProgress);
-  return isFinitePresentation(minimum) &&
-      isFinitePresentation(maximum) &&
-      presentationFitsEveryKnownHostWithoutNormalization(state, minimum) &&
-      presentationFitsEveryKnownHostWithoutNormalization(state, maximum);
-}
-
-bool keyframePlanPreservesLinearHostNormalization(
-    const DriverState &state,
-    const Presentation &resolvedStart,
-    const std::vector<Keyframe> &keyframes) {
-  if (!presentationFitsEveryKnownHostWithoutNormalization(
-          state, resolvedStart)) {
-    return false;
-  }
-  for (std::size_t index = 1; index < keyframes.size(); index += 1) {
-    if (!presentationFitsEveryKnownHostWithoutNormalization(
-            state, keyframes[index].presentation)) {
-      return false;
-    }
-  }
-  return true;
 }
 
 bool anyDisplayableView(const DriverState &state) {
@@ -916,7 +846,11 @@ void advance(uint64_t driverId, DriverState &state, double now) {
           fraction);
       animation.current = interpolate(animation.start, animation.target, eased);
     }
-    done = fraction >= 1.0;
+    const bool canonical = canonicalizePresentation(animation.current);
+    if (!canonical) {
+      animation.current = animation.target;
+    }
+    done = !canonical || fraction >= 1.0;
   }
   // The completion branch below fans out the exact target; applying the
   // integrated value too would double every JNI crossing on the final frame.
@@ -963,6 +897,7 @@ void advanceGroup(int32_t groupId, ActiveGroup &group, double now) {
     group.lastFrameS = now;
     const double fraction =
         timingFraction(now, group.startedAtS, group.durationS);
+    bool canonical = true;
     for (GroupMemberAnimation &member : group.members) {
       member.animation.lastFrameS = now;
       if (group.kind == AnimationKind::Keyframes) {
@@ -978,8 +913,12 @@ void advanceGroup(int32_t groupId, ActiveGroup &group, double now) {
         member.animation.current = interpolate(
             member.animation.start, member.animation.target, eased);
       }
+      if (!canonicalizePresentation(member.animation.current)) {
+        member.animation.current = member.animation.target;
+        canonical = false;
+      }
     }
-    done = fraction >= 1.0;
+    done = !canonical || fraction >= 1.0;
   }
 
   if (done) {
@@ -1151,10 +1090,14 @@ std::vector<DriverSnapshot> beginGroupInteraction(
 
 bool setPresentationBatch(const std::vector<BatchEntry> &entries) {
   if (!isOnMainThread() || entries.empty()) return false;
+  std::vector<BatchEntry> canonicalEntries = entries;
+  for (BatchEntry &entry : canonicalEntries) {
+    if (!canonicalizePresentation(entry.presentation)) return false;
+  }
   std::vector<uint64_t> unique;
   std::vector<int32_t> groupsToCancel;
   unique.reserve(entries.size());
-  for (const BatchEntry &entry : entries) {
+  for (const BatchEntry &entry : canonicalEntries) {
     if (entry.driverId == 0 ||
         std::find(unique.begin(), unique.end(), entry.driverId) != unique.end()) {
       return false;
@@ -1182,7 +1125,7 @@ bool setPresentationBatch(const std::vector<BatchEntry> &entries) {
   }
 
   const double now = nowSeconds();
-  for (const BatchEntry &entry : entries) {
+  for (const BatchEntry &entry : canonicalEntries) {
     DriverState &state = registry().at(entry.driverId);
     state.destroyed = false;
     finishActive(entry.driverId, state, false);
@@ -1192,7 +1135,7 @@ bool setPresentationBatch(const std::vector<BatchEntry> &entries) {
     recordVelocitySample(
         state.samples, velocityChannels(entry.presentation), now);
   }
-  for (const BatchEntry &entry : entries) {
+  for (const BatchEntry &entry : canonicalEntries) {
     applyToViews(registry().at(entry.driverId), entry.presentation);
   }
   return true;
@@ -1214,6 +1157,13 @@ int32_t startGroupCommon(
       (suspensionPolicy != GroupSuspensionPolicy::Pause &&
        suspensionPolicy != GroupSuspensionPolicy::Finish)) {
     return 0;
+  }
+  for (GroupMotionEntry &entry : entries) {
+    if ((entry.hasFrom && !canonicalizePresentation(entry.from)) ||
+        !canonicalizePresentation(entry.target) ||
+        !canonicalizeKeyframes(entry.keyframes)) {
+      return 0;
+    }
   }
   if (kind == AnimationKind::Timing &&
       !isValidTiming(timing)) {
@@ -1275,18 +1225,6 @@ int32_t startGroupCommon(
       }
     } else if (!entry.keyframes.empty()) {
       return 0;
-    }
-    if (!reduce && iterator != registry().end()) {
-      if (kind == AnimationKind::Timing &&
-          !timingPlanPreservesLinearHostNormalization(
-              iterator->second, resolvedStart, entry.target, timing)) {
-        return 0;
-      }
-      if (kind == AnimationKind::Keyframes &&
-          !keyframePlanPreservesLinearHostNormalization(
-              iterator->second, resolvedStart, entry.keyframes)) {
-        return 0;
-      }
     }
     resolvedStarts.push_back(resolvedStart);
     unique.push_back(entry.driverId);
@@ -1471,6 +1409,7 @@ void setPresentation(
     bool overridePendingAnimation,
     bool recordVelocity) {
   if (!isOnMainThread()) return;
+  if (!canonicalizePresentation(presentation)) return;
   SMOOTH_CLIP_TRACE("SmoothClip.setPresentation");
   auto iterator = registry().find(driverId);
   if (!takeOwnership) {
@@ -1562,6 +1501,11 @@ int32_t animateTiming(
     Presentation presentation,
     TimingAnimation animation) {
   const bool validAnimation = isValidTiming(animation);
+  if (!canonicalizePresentation(presentation) ||
+      (start.hasInteractiveStart &&
+       !canonicalizePresentation(start.interactiveStart))) {
+    return 0;
+  }
   if (!isOnMainThread() || driverId == 0 ||
       !isFinitePresentation(presentation) || !validAnimation) {
     return 0;
@@ -1586,11 +1530,6 @@ int32_t animateTiming(
   }
   const bool reduce = shouldReduceMotion(animation.reduceMotion) ||
       animation.durationMs <= 0;
-  if (!reduce && iterator != registry().end() &&
-      !timingPlanPreservesLinearHostNormalization(
-          iterator->second, preflightStart, presentation, animation)) {
-    return 0;
-  }
   if (iterator == registry().end()) {
     iterator = registry().try_emplace(driverId).first;
     iterator->second.latest = start.interactiveStart;
@@ -1623,6 +1562,11 @@ int32_t animateSpring(
     Presentation presentation,
     SpringAnimation animation) {
   const bool validAnimation = isValidSpring(animation);
+  if (!canonicalizePresentation(presentation) ||
+      (start.hasInteractiveStart &&
+       !canonicalizePresentation(start.interactiveStart))) {
+    return 0;
+  }
   if (!isOnMainThread() || driverId == 0 ||
       !isFinitePresentation(presentation) || !validAnimation) {
     return 0;
@@ -1703,6 +1647,12 @@ int32_t animateKeyframes(
     std::vector<Keyframe> keyframes,
     int32_t reduceMotion) {
   const bool finiteDuration = std::isfinite(durationMs);
+  if (!canonicalizePresentation(presentation) ||
+      (start.hasInteractiveStart &&
+       !canonicalizePresentation(start.interactiveStart)) ||
+      !canonicalizeKeyframes(keyframes)) {
+    return 0;
+  }
   if (!isOnMainThread() || driverId == 0 ||
       !isFinitePresentation(presentation) ||
       !finiteDuration || durationMs < 0 ||
@@ -1729,11 +1679,6 @@ int32_t animateKeyframes(
     return 0;
   }
   const bool reduce = shouldReduceMotion(reduceMotion) || durationMs <= 0;
-  if (!reduce && iterator != registry().end() &&
-      !keyframePlanPreservesLinearHostNormalization(
-          iterator->second, preflightStart, keyframes)) {
-    return 0;
-  }
   if (iterator == registry().end()) {
     iterator = registry().try_emplace(driverId).first;
     iterator->second.latest = start.interactiveStart;
@@ -1892,7 +1837,7 @@ void JSmoothClipView::applyClip(const Presentation &presentation) const {
 }
 
 void JSmoothClipView::applyClipPx(
-    const NormalizedClip &clip,
+    const CanonicalClip &clip,
     double contentTranslateXPx,
     double contentTranslateYPx,
     double contentScale,
@@ -1954,6 +1899,7 @@ void registerViewAndroid(
     double hostWidthPx,
     double hostHeightPx,
     bool lifecycleVisible) {
+  if (!canonicalizePresentation(initialPresentation)) return;
   auto &state = registry()[driverId];
   state.destroyed = false;
   if (!state.hasLatest) {

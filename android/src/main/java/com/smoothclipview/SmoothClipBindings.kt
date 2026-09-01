@@ -50,8 +50,9 @@ internal object SmoothClipBindings {
     )
 
     /**
-     * Pushes a registered view's density and pixel host size so driver
-     * deliveries are pre-normalized in C++; redelivers the visible value.
+     * Pushes a registered view's density and pixel host size. Density converts
+     * raw DIP presentations to pixels; host size controls readiness and the
+     * fixed rendering viewport, but never rewrites registry geometry.
      */
     external fun nativeSetViewHostGeometry(
         driverId: Double,

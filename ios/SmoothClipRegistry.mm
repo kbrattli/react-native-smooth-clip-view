@@ -371,67 +371,6 @@ bool driverReady(const DriverState &state) {
   return false;
 }
 
-bool presentationFitsEveryKnownHostWithoutNormalization(
-    const DriverState &state,
-    const Presentation &presentation) {
-  for (const ViewKey key : state.views) {
-    SmoothClipView *view = viewForKey(key);
-    // A pre-layout host has no authoritative bounds yet. It remains covered by
-    // the existing readiness latch; fixed-host promotion reaches this path
-    // only after its participating host has laid out.
-    if (![view smoothClipIsJoinable]) continue;
-    const CGSize hostSize = view.bounds.size;
-    if (!SmoothClipGeometryNormalizationIsIdentity(
-            presentation.clip, hostSize.width, hostSize.height)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool timingPlanPreservesLinearHostNormalization(
-    const DriverState &state,
-    const Presentation &start,
-    const Presentation &target,
-    const TimingAnimation &animation) {
-  // A cubic Bezier stays inside the convex hull of its Y control points. The
-  // bound is deliberately conservative: if an overshooting easing still fits
-  // at both extrema, every presentation it can generate fits too because all
-  // host/radius eligibility inequalities are linear.
-  const double minimumProgress = std::min(
-      {0.0, 1.0, animation.controlPoint1Y, animation.controlPoint2Y});
-  const double maximumProgress = std::max(
-      {0.0, 1.0, animation.controlPoint1Y, animation.controlPoint2Y});
-  const Presentation minimum =
-      interpolate(start, target, minimumProgress);
-  const Presentation maximum =
-      interpolate(start, target, maximumProgress);
-  return isFinitePresentation(minimum) &&
-      isFinitePresentation(maximum) &&
-      presentationFitsEveryKnownHostWithoutNormalization(state, minimum) &&
-      presentationFitsEveryKnownHostWithoutNormalization(state, maximum);
-}
-
-bool keyframePlanPreservesLinearHostNormalization(
-    const DriverState &state,
-    const Presentation &resolvedStart,
-    const std::vector<Keyframe> &keyframes) {
-  if (!presentationFitsEveryKnownHostWithoutNormalization(
-          state, resolvedStart)) {
-    return false;
-  }
-  // Frame zero is replaced by resolvedStart for an implicit native retarget.
-  // Every later anchor must be identity-normalized; convex segment-wise linear
-  // interpolation then cannot cross a host boundary or activate radius scaling.
-  for (std::size_t index = 1; index < keyframes.size(); index += 1) {
-    if (!presentationFitsEveryKnownHostWithoutNormalization(
-            state, keyframes[index].presentation)) {
-      return false;
-    }
-  }
-  return true;
-}
-
 DriverSnapshot snapshotForDriver(uint64_t driverId) {
   const auto iterator = registry().find(driverId);
   if (iterator == registry().end() || iterator->second.destroyed) {
@@ -561,6 +500,7 @@ void applyPresentation(
     DriverState &state,
     Presentation presentation,
     bool recordVelocitySample = true) {
+  if (!canonicalizePresentation(presentation)) return;
   state.latest = presentation;
   state.hasLatest = true;
   state.ownership = Ownership::Interactive;
@@ -940,6 +880,7 @@ void registerView(
     SmoothClipView *view,
     Presentation initialPresentation) {
   NSCAssert(NSThread.isMainThread, @"SmoothClip registry is main-thread only");
+  if (!canonicalizePresentation(initialPresentation)) return;
   auto &state = registry()[driverId];
   state.destroyed = false;
   // Seed canonical geometry from the mounting view's initial props BEFORE
@@ -1204,6 +1145,7 @@ void setPresentation(
     bool takeOwnership,
     bool overridePendingAnimation,
     bool recordVelocity) {
+  if (!canonicalizePresentation(presentation)) return;
   // CALayer writes require the main thread (not main-queue drain context).
   if (!NSThread.isMainThread) {
     // Never block an off-main caller: a synchronous hop can deadlock against
@@ -1395,8 +1337,12 @@ std::vector<DriverSnapshot> beginGroupInteraction(
 
 bool setPresentationBatch(const std::vector<BatchEntry> &entries) {
   if (!NSThread.isMainThread) return false;
+  std::vector<BatchEntry> canonicalEntries = entries;
+  for (BatchEntry &entry : canonicalEntries) {
+    if (!canonicalizePresentation(entry.presentation)) return false;
+  }
   std::unordered_set<uint64_t> unique;
-  for (const BatchEntry &entry : entries) {
+  for (const BatchEntry &entry : canonicalEntries) {
     const auto iterator = registry().find(entry.driverId);
     if (entry.driverId == 0 || !unique.insert(entry.driverId).second ||
         iterator == registry().end() || iterator->second.destroyed ||
@@ -1406,7 +1352,7 @@ bool setPresentationBatch(const std::vector<BatchEntry> &entries) {
   }
 
   std::unordered_set<int32_t> cancelledGroups;
-  for (const BatchEntry &entry : entries) {
+  for (const BatchEntry &entry : canonicalEntries) {
     DriverState &state = registry().find(entry.driverId)->second;
     if (!state.animation.has_value()) continue;
     const int32_t groupId = state.animation->groupId;
@@ -1427,7 +1373,7 @@ bool setPresentationBatch(const std::vector<BatchEntry> &entries) {
 
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
-  for (const BatchEntry &entry : entries) {
+  for (const BatchEntry &entry : canonicalEntries) {
     applyPresentation(
         registry().find(entry.driverId)->second, entry.presentation, true);
   }
@@ -1438,7 +1384,7 @@ bool setPresentationBatch(const std::vector<BatchEntry> &entries) {
 namespace {
 
 bool preflightGroupEntries(
-    const std::vector<GroupMotionEntry> &entries,
+    std::vector<GroupMotionEntry> &entries,
     AnimationKind kind,
     const TimingAnimation &timing,
     const SpringAnimation &spring,
@@ -1447,6 +1393,13 @@ bool preflightGroupEntries(
     bool &reduced,
     std::vector<Presentation> &resolvedStarts) {
   if (entries.empty()) return false;
+  for (GroupMotionEntry &entry : entries) {
+    if ((entry.hasFrom && !canonicalizePresentation(entry.from)) ||
+        !canonicalizePresentation(entry.target) ||
+        !canonicalizeKeyframes(entry.keyframes)) {
+      return false;
+    }
+  }
   if (kind == AnimationKind::Timing &&
       !isValidTiming(timing)) {
     return false;
@@ -1497,18 +1450,6 @@ bool preflightGroupEntries(
       }
     } else if (!entry.keyframes.empty()) {
       return false;
-    }
-    if (!reduced && iterator != registry().end()) {
-      if (kind == AnimationKind::Timing &&
-          !timingPlanPreservesLinearHostNormalization(
-              iterator->second, resolvedStart, entry.target, timing)) {
-        return false;
-      }
-      if (kind == AnimationKind::Keyframes &&
-          !keyframePlanPreservesLinearHostNormalization(
-              iterator->second, resolvedStart, entry.keyframes)) {
-        return false;
-      }
     }
     resolvedStarts.push_back(resolvedStart);
   }
@@ -1718,6 +1659,11 @@ int32_t animateTiming(
     // documented rejection sentinel.
     return 0;
   }
+  if (!canonicalizePresentation(presentation) ||
+      (start.hasInteractiveStart &&
+       !canonicalizePresentation(start.interactiveStart))) {
+    return 0;
+  }
   const bool validAnimation = isValidTiming(animation);
   if (driverId == 0 || !isFinitePresentation(presentation) ||
       !validAnimation) {
@@ -1741,11 +1687,6 @@ int32_t animateTiming(
   }
   const bool reduced = shouldReduceMotion(animation.reduceMotion) ||
       animation.durationMs <= 0;
-  if (!reduced && iterator != registry().end() &&
-      !timingPlanPreservesLinearHostNormalization(
-          iterator->second, preflightStart, presentation, animation)) {
-    return 0;
-  }
   if (iterator == registry().end()) {
     iterator = registry().try_emplace(driverId).first;
     iterator->second.latest = start.interactiveStart;
@@ -1804,6 +1745,11 @@ int32_t animateSpring(
     SpringAnimation animation) {
   if (!NSThread.isMainThread) {
     // See setPresentation: blocking off-main risks a deadlock.
+    return 0;
+  }
+  if (!canonicalizePresentation(presentation) ||
+      (start.hasInteractiveStart &&
+       !canonicalizePresentation(start.interactiveStart))) {
     return 0;
   }
   const bool validAnimation = isValidSpring(animation);
@@ -1884,6 +1830,12 @@ int32_t animateKeyframes(
     // See setPresentation: blocking off-main risks a deadlock.
     return 0;
   }
+  if (!canonicalizePresentation(presentation) ||
+      (start.hasInteractiveStart &&
+       !canonicalizePresentation(start.interactiveStart)) ||
+      !canonicalizeKeyframes(keyframes)) {
+    return 0;
+  }
   const bool finiteDuration = std::isfinite(durationMs);
   if (driverId == 0 || !isFinitePresentation(presentation) ||
       !finiteDuration || durationMs < 0 ||
@@ -1908,11 +1860,6 @@ int32_t animateKeyframes(
     return 0;
   }
   const bool reduced = shouldReduceMotion(reduceMotion) || durationMs <= 0;
-  if (!reduced && iterator != registry().end() &&
-      !keyframePlanPreservesLinearHostNormalization(
-          iterator->second, preflightStart, keyframes)) {
-    return 0;
-  }
   if (iterator == registry().end()) {
     iterator = registry().try_emplace(driverId).first;
     iterator->second.latest = start.interactiveStart;

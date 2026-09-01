@@ -9,8 +9,8 @@ namespace smoothclip {
 // Channels are the eleven geometry/content presentation scalars. Scale is stored
 // so histories remain coherent but excluded from velocity projection; each of
 // the four radius channels contributes one quarter of the uniform-radius weight.
-// iOS records normalized (host-clamped) geometry, Android raw DIP — the
-// projection only needs both samples and the target in the same space.
+// Both platforms record raw canonical geometry, including off-host coordinates.
+// The projection only needs both samples and the target in the same space.
 // Shared by ios/SmoothClipView.mm and android/.../SmoothClipRegistry.cpp; a
 // behavior change here changes both platforms.
 struct VelocitySampleHistory {

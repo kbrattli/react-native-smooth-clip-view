@@ -18,7 +18,7 @@ struct JSmoothClipView : facebook::jni::JavaClass<JSmoothClipView> {
 
   void applyClip(const Presentation &presentation) const;
   void applyClipPx(
-      const NormalizedClip &clip,
+      const CanonicalClip &clip,
       double contentTranslateXPx,
       double contentTranslateYPx,
       double contentScale,
@@ -36,7 +36,8 @@ void registerViewAndroid(
     double hostHeightPx,
     bool lifecycleVisible);
 // Refreshes a registered view's density / host size (px) and synchronously
-// redelivers the driver's visible value pre-normalized against them.
+// redelivers the driver's raw canonical value. Host metrics only participate
+// in lifecycle readiness; the view itself owns final viewport cropping.
 void setViewHostGeometryAndroid(
     uint64_t driverId,
     facebook::jni::alias_ref<JSmoothClipView> view,

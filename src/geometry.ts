@@ -42,18 +42,13 @@ export type CanonicalClipGeometry = Readonly<{
   y: number;
   width: number;
   height: number;
-  /** Normalized all-corners value; zero when the corner radii differ. */
+  /** Canonical all-corners value; zero when the corner radii differ. */
   radius: number;
   topLeftRadius: number;
   topRightRadius: number;
   bottomRightRadius: number;
   bottomLeftRadius: number;
   curve: ClipCurve;
-}>;
-
-export type ClipBounds = Readonly<{
-  width: number;
-  height: number;
 }>;
 
 export type SmoothClipPresentation = Readonly<{
@@ -265,15 +260,15 @@ function createCanonicalClipGeometry(
   if (left > 0) scale = Math.min(scale, height / left);
   scale = Math.max(0, Math.min(1, scale));
 
-  const normalizedTopLeftRadius = topLeftRadius * scale;
-  const normalizedTopRightRadius = topRightRadius * scale;
-  const normalizedBottomRightRadius = bottomRightRadius * scale;
-  const normalizedBottomLeftRadius = bottomLeftRadius * scale;
+  const canonicalTopLeftRadius = topLeftRadius * scale;
+  const canonicalTopRightRadius = topRightRadius * scale;
+  const canonicalBottomRightRadius = bottomRightRadius * scale;
+  const canonicalBottomLeftRadius = bottomLeftRadius * scale;
   const radius =
-    normalizedTopLeftRadius === normalizedTopRightRadius &&
-    normalizedTopRightRadius === normalizedBottomRightRadius &&
-    normalizedBottomRightRadius === normalizedBottomLeftRadius
-      ? normalizedTopLeftRadius
+    canonicalTopLeftRadius === canonicalTopRightRadius &&
+    canonicalTopRightRadius === canonicalBottomRightRadius &&
+    canonicalBottomRightRadius === canonicalBottomLeftRadius
+      ? canonicalTopLeftRadius
       : 0;
 
   return {
@@ -282,10 +277,10 @@ function createCanonicalClipGeometry(
     width,
     height,
     radius,
-    topLeftRadius: normalizedTopLeftRadius,
-    topRightRadius: normalizedTopRightRadius,
-    bottomRightRadius: normalizedBottomRightRadius,
-    bottomLeftRadius: normalizedBottomLeftRadius,
+    topLeftRadius: canonicalTopLeftRadius,
+    topRightRadius: canonicalTopRightRadius,
+    bottomRightRadius: canonicalBottomRightRadius,
+    bottomLeftRadius: canonicalBottomLeftRadius,
     curve: resolvedCurve(geometry),
   };
 }
@@ -367,61 +362,5 @@ export function createClipPresentation(
           // bad source value so the driver's atomic validation rejects it.
           boxShadow: (canonicalShadow ?? boxShadow) as CanonicalClipBoxShadow,
         }),
-  };
-}
-
-/**
- * Mirrors the native geometry contract for tests and non-native fallbacks.
- * Native remains authoritative because its bounds are the actual rendered size.
- */
-export function normalizeClipGeometry(
-  geometry: ClipGeometry,
-  bounds: ClipBounds
-): CanonicalClipGeometry | null {
-  'worklet';
-  if (
-    !isFiniteClipGeometry(geometry) ||
-    !Number.isFinite(bounds.width) ||
-    !Number.isFinite(bounds.height)
-  ) {
-    return null;
-  }
-
-  const boundsWidth = Math.max(0, bounds.width);
-  const boundsHeight = Math.max(0, bounds.height);
-  const requestedWidth = Math.max(0, geometry.width);
-  const requestedHeight = Math.max(0, geometry.height);
-
-  const left = Math.min(boundsWidth, Math.max(0, geometry.x));
-  const top = Math.min(boundsHeight, Math.max(0, geometry.y));
-  const right = Math.min(boundsWidth, Math.max(0, geometry.x + requestedWidth));
-  const bottom = Math.min(
-    boundsHeight,
-    Math.max(0, geometry.y + requestedHeight)
-  );
-  const width = Math.max(0, right - left);
-  const height = Math.max(0, bottom - top);
-
-  return createCanonicalClipGeometry(geometry, left, top, width, height);
-}
-
-export function normalizeClipPresentation(
-  presentation: SmoothClipPresentation,
-  bounds: ClipBounds
-): CanonicalSmoothClipPresentation | null {
-  'worklet';
-  if (!isFiniteClipPresentation(presentation)) return null;
-
-  const clip = normalizeClipGeometry(presentation.clip, bounds);
-  if (clip === null) return null;
-  const boxShadow = canonicalizeClipBoxShadow(presentation.boxShadow);
-  if (boxShadow === null) return null;
-
-  return {
-    clip,
-    contentTranslateX: presentation.contentTranslateX,
-    contentTranslateY: presentation.contentTranslateY,
-    contentScale: resolvedContentScale(presentation),
-    ...(boxShadow === undefined ? {} : { boxShadow }),
   };
 }
