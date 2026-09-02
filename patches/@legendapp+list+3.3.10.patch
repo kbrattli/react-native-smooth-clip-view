@@ -1,0 +1,1518 @@
+diff --git a/node_modules/@legendapp/list/animated.d.ts b/node_modules/@legendapp/list/animated.d.ts
+index 3cefc68..ff9aad9 100644
+--- a/node_modules/@legendapp/list/animated.d.ts
++++ b/node_modules/@legendapp/list/animated.d.ts
+@@ -8,7 +8,7 @@ interface MaintainVisibleContentPositionNormalized<ItemT = any> {
+     shouldRestorePosition?: (item: ItemT, index: number, data: readonly ItemT[]) => boolean;
+ }
+
+-type ListenerType = "activeStickyIndex" | "alignItemsAtEndPadding" | "anchoredEndSpaceSize" | "containerLayoutEpoch" | "debugComputedScroll" | "debugRawScroll" | "extraData" | "footerSize" | "headerSize" | "lastItemKeys" | "lastPositionUpdate" | "maintainVisibleContentPosition" | "numColumns" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "scrollAdjust" | "scrollAdjustPending" | "scrollAdjustUserOffset" | "scrollSize" | "snapToOffsets" | "stylePaddingTop" | "totalSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | `containerColumn${number}` | `containerSpan${number}` | `containerItemData${number}` | `containerItemIndex${number}` | `containerItemKey${number}` | `containerLayoutReady${number}` | `containerPosition${number}` | `containerSticky${number}`;
++type ListenerType = "activeStickyIndex" | "alignItemsAtEndPadding" | "anchoredEndSpaceSize" | "containerLayoutEpoch" | "debugComputedScroll" | "debugRawScroll" | "extraData" | "footerSize" | "headerSize" | "initialContentVisible" | "lastItemKeys" | "lastPositionUpdate" | "maintainVisibleContentPosition" | "numColumns" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "scrollAdjust" | "scrollAdjustPending" | "scrollAdjustUserOffset" | "scrollSize" | "snapToOffsets" | "stylePaddingTop" | "totalSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | `containerColumn${number}` | `containerSpan${number}` | `containerItemData${number}` | `containerItemIndex${number}` | `containerItemKey${number}` | `containerLayoutReady${number}` | `containerPosition${number}` | `containerSticky${number}`;
+ type LegendListListenerType = Extract<ListenerType, "activeStickyIndex" | "anchoredEndSpaceSize" | "footerSize" | "headerSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | "lastItemKeys" | "lastPositionUpdate" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "snapToOffsets" | "totalSize">;
+ type ListenerTypeValueMap = {
+     activeStickyIndex: number;
+@@ -21,6 +21,7 @@ type ListenerTypeValueMap = {
+     extraData: any;
+     footerSize: number;
+     headerSize: number;
++    initialContentVisible: boolean;
+     isAtEnd: boolean;
+     isAtStart: boolean;
+     isNearEnd: boolean;
+@@ -350,6 +351,25 @@ interface LegendListSpecificProps<ItemT, TItemType extends string | undefined> {
+      * Configures the adaptive render signal. Items can use this to render a lighter version while scrolling quickly.
+      */
+     experimental_adaptiveRender?: AdaptiveRenderConfig;
++    /**
++     * Declares the exact initial viewport so a native Fabric list can render its initial scroll
++     * target in the first commit instead of waiting for measurement and bootstrap convergence.
++     *
++     * This is a correctness guarantee, not a hint: the declared size must match the measured
++     * layout, `getFixedItemSize` must return an exact size for every initial item, and an
++     * index-based `initialScrollIndex` (or `initialScrollAtEnd`) must be set. It is intentionally
++     * separate from `estimatedListSize`, which stays a performance hint.
++     *
++     * Unsupported configurations, the old architecture and web keep the existing behavior and warn
++     * once in development. A declared size that does not match the measured layout falls back to
++     * the normal initial-scroll path, but it cannot retract a frame that was already presented.
++     *
++     * @default undefined
++     */
++    experimental_exactInitialLayout?: {
++        height: number;
++        width: number;
++    };
+     /**
+      * Keeps a newly recycled item laid out but invisible until its size has been measured, so it is never painted at
+      * the estimated position it was recycled to. Only applies on the new architecture.
+diff --git a/node_modules/@legendapp/list/keyboard-legacy.d.ts b/node_modules/@legendapp/list/keyboard-legacy.d.ts
+index 79f6de6..d8c77b8 100644
+--- a/node_modules/@legendapp/list/keyboard-legacy.d.ts
++++ b/node_modules/@legendapp/list/keyboard-legacy.d.ts
+@@ -9,7 +9,7 @@ interface MaintainVisibleContentPositionNormalized<ItemT = any> {
+     shouldRestorePosition?: (item: ItemT, index: number, data: readonly ItemT[]) => boolean;
+ }
+
+-type ListenerType = "activeStickyIndex" | "alignItemsAtEndPadding" | "anchoredEndSpaceSize" | "containerLayoutEpoch" | "debugComputedScroll" | "debugRawScroll" | "extraData" | "footerSize" | "headerSize" | "lastItemKeys" | "lastPositionUpdate" | "maintainVisibleContentPosition" | "numColumns" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "scrollAdjust" | "scrollAdjustPending" | "scrollAdjustUserOffset" | "scrollSize" | "snapToOffsets" | "stylePaddingTop" | "totalSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | `containerColumn${number}` | `containerSpan${number}` | `containerItemData${number}` | `containerItemIndex${number}` | `containerItemKey${number}` | `containerLayoutReady${number}` | `containerPosition${number}` | `containerSticky${number}`;
++type ListenerType = "activeStickyIndex" | "alignItemsAtEndPadding" | "anchoredEndSpaceSize" | "containerLayoutEpoch" | "debugComputedScroll" | "debugRawScroll" | "extraData" | "footerSize" | "headerSize" | "initialContentVisible" | "lastItemKeys" | "lastPositionUpdate" | "maintainVisibleContentPosition" | "numColumns" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "scrollAdjust" | "scrollAdjustPending" | "scrollAdjustUserOffset" | "scrollSize" | "snapToOffsets" | "stylePaddingTop" | "totalSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | `containerColumn${number}` | `containerSpan${number}` | `containerItemData${number}` | `containerItemIndex${number}` | `containerItemKey${number}` | `containerLayoutReady${number}` | `containerPosition${number}` | `containerSticky${number}`;
+ type LegendListListenerType = Extract<ListenerType, "activeStickyIndex" | "anchoredEndSpaceSize" | "footerSize" | "headerSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | "lastItemKeys" | "lastPositionUpdate" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "snapToOffsets" | "totalSize">;
+ type ListenerTypeValueMap = {
+     activeStickyIndex: number;
+@@ -22,6 +22,7 @@ type ListenerTypeValueMap = {
+     extraData: any;
+     footerSize: number;
+     headerSize: number;
++    initialContentVisible: boolean;
+     isAtEnd: boolean;
+     isAtStart: boolean;
+     isNearEnd: boolean;
+diff --git a/node_modules/@legendapp/list/keyboard.d.ts b/node_modules/@legendapp/list/keyboard.d.ts
+index 43678c2..5e5ded0 100644
+--- a/node_modules/@legendapp/list/keyboard.d.ts
++++ b/node_modules/@legendapp/list/keyboard.d.ts
+@@ -10,7 +10,7 @@ interface MaintainVisibleContentPositionNormalized<ItemT = any> {
+     shouldRestorePosition?: (item: ItemT, index: number, data: readonly ItemT[]) => boolean;
+ }
+
+-type ListenerType = "activeStickyIndex" | "alignItemsAtEndPadding" | "anchoredEndSpaceSize" | "containerLayoutEpoch" | "debugComputedScroll" | "debugRawScroll" | "extraData" | "footerSize" | "headerSize" | "lastItemKeys" | "lastPositionUpdate" | "maintainVisibleContentPosition" | "numColumns" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "scrollAdjust" | "scrollAdjustPending" | "scrollAdjustUserOffset" | "scrollSize" | "snapToOffsets" | "stylePaddingTop" | "totalSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | `containerColumn${number}` | `containerSpan${number}` | `containerItemData${number}` | `containerItemIndex${number}` | `containerItemKey${number}` | `containerLayoutReady${number}` | `containerPosition${number}` | `containerSticky${number}`;
++type ListenerType = "activeStickyIndex" | "alignItemsAtEndPadding" | "anchoredEndSpaceSize" | "containerLayoutEpoch" | "debugComputedScroll" | "debugRawScroll" | "extraData" | "footerSize" | "headerSize" | "initialContentVisible" | "lastItemKeys" | "lastPositionUpdate" | "maintainVisibleContentPosition" | "numColumns" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "scrollAdjust" | "scrollAdjustPending" | "scrollAdjustUserOffset" | "scrollSize" | "snapToOffsets" | "stylePaddingTop" | "totalSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | `containerColumn${number}` | `containerSpan${number}` | `containerItemData${number}` | `containerItemIndex${number}` | `containerItemKey${number}` | `containerLayoutReady${number}` | `containerPosition${number}` | `containerSticky${number}`;
+ type LegendListListenerType = Extract<ListenerType, "activeStickyIndex" | "anchoredEndSpaceSize" | "footerSize" | "headerSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | "lastItemKeys" | "lastPositionUpdate" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "snapToOffsets" | "totalSize">;
+ type ListenerTypeValueMap = {
+     activeStickyIndex: number;
+@@ -23,6 +23,7 @@ type ListenerTypeValueMap = {
+     extraData: any;
+     footerSize: number;
+     headerSize: number;
++    initialContentVisible: boolean;
+     isAtEnd: boolean;
+     isAtStart: boolean;
+     isNearEnd: boolean;
+diff --git a/node_modules/@legendapp/list/react-native.d.ts b/node_modules/@legendapp/list/react-native.d.ts
+index fad796b..c9338ad 100644
+--- a/node_modules/@legendapp/list/react-native.d.ts
++++ b/node_modules/@legendapp/list/react-native.d.ts
+@@ -8,7 +8,7 @@ interface MaintainVisibleContentPositionNormalized<ItemT = any> {
+     shouldRestorePosition?: (item: ItemT, index: number, data: readonly ItemT[]) => boolean;
+ }
+
+-type ListenerType = "activeStickyIndex" | "alignItemsAtEndPadding" | "anchoredEndSpaceSize" | "containerLayoutEpoch" | "debugComputedScroll" | "debugRawScroll" | "extraData" | "footerSize" | "headerSize" | "lastItemKeys" | "lastPositionUpdate" | "maintainVisibleContentPosition" | "numColumns" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "scrollAdjust" | "scrollAdjustPending" | "scrollAdjustUserOffset" | "scrollSize" | "snapToOffsets" | "stylePaddingTop" | "totalSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | `containerColumn${number}` | `containerSpan${number}` | `containerItemData${number}` | `containerItemIndex${number}` | `containerItemKey${number}` | `containerLayoutReady${number}` | `containerPosition${number}` | `containerSticky${number}`;
++type ListenerType = "activeStickyIndex" | "alignItemsAtEndPadding" | "anchoredEndSpaceSize" | "containerLayoutEpoch" | "debugComputedScroll" | "debugRawScroll" | "extraData" | "footerSize" | "headerSize" | "initialContentVisible" | "lastItemKeys" | "lastPositionUpdate" | "maintainVisibleContentPosition" | "numColumns" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "scrollAdjust" | "scrollAdjustPending" | "scrollAdjustUserOffset" | "scrollSize" | "snapToOffsets" | "stylePaddingTop" | "totalSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | `containerColumn${number}` | `containerSpan${number}` | `containerItemData${number}` | `containerItemIndex${number}` | `containerItemKey${number}` | `containerLayoutReady${number}` | `containerPosition${number}` | `containerSticky${number}`;
+ type LegendListListenerType = Extract<ListenerType, "activeStickyIndex" | "anchoredEndSpaceSize" | "footerSize" | "headerSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | "lastItemKeys" | "lastPositionUpdate" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "snapToOffsets" | "totalSize">;
+ type ListenerTypeValueMap = {
+     activeStickyIndex: number;
+@@ -21,6 +21,7 @@ type ListenerTypeValueMap = {
+     extraData: any;
+     footerSize: number;
+     headerSize: number;
++    initialContentVisible: boolean;
+     isAtEnd: boolean;
+     isAtStart: boolean;
+     isNearEnd: boolean;
+@@ -350,6 +351,25 @@ interface LegendListSpecificProps<ItemT, TItemType extends string | undefined> {
+      * Configures the adaptive render signal. Items can use this to render a lighter version while scrolling quickly.
+      */
+     experimental_adaptiveRender?: AdaptiveRenderConfig;
++    /**
++     * Declares the exact initial viewport so a native Fabric list can render its initial scroll
++     * target in the first commit instead of waiting for measurement and bootstrap convergence.
++     *
++     * This is a correctness guarantee, not a hint: the declared size must match the measured
++     * layout, `getFixedItemSize` must return an exact size for every initial item, and an
++     * index-based `initialScrollIndex` (or `initialScrollAtEnd`) must be set. It is intentionally
++     * separate from `estimatedListSize`, which stays a performance hint.
++     *
++     * Unsupported configurations, the old architecture and web keep the existing behavior and warn
++     * once in development. A declared size that does not match the measured layout falls back to
++     * the normal initial-scroll path, but it cannot retract a frame that was already presented.
++     *
++     * @default undefined
++     */
++    experimental_exactInitialLayout?: {
++        height: number;
++        width: number;
++    };
+     /**
+      * Keeps a newly recycled item laid out but invisible until its size has been measured, so it is never painted at
+      * the estimated position it was recycled to. Only applies on the new architecture.
+diff --git a/node_modules/@legendapp/list/react-native.js b/node_modules/@legendapp/list/react-native.js
+index cd82bc6..09a2c7d 100644
+--- a/node_modules/@legendapp/list/react-native.js
++++ b/node_modules/@legendapp/list/react-native.js
+@@ -458,6 +458,286 @@ var EDGE_POSITION_EPSILON = 1;
+ var ENABLE_DEVMODE = IS_DEV && false;
+ var ENABLE_DEBUG_VIEW = IS_DEV && false;
+
++// src/utils/helpers.ts
++function isFunction(obj) {
++  return typeof obj === "function";
++}
++function isArray(obj) {
++  return Array.isArray(obj);
++}
++var warned = /* @__PURE__ */ new Set();
++function warnDevOnce(id, text) {
++  if (IS_DEV && !warned.has(id)) {
++    warned.add(id);
++    console.warn(`[legend-list] ${text}`);
++  }
++}
++function roundSize(size) {
++  return Math.floor(size * 8) / 8;
++}
++function isNullOrUndefined(value) {
++  return value === null || value === void 0;
++}
++function getPadding(s, type) {
++  var _a3, _b, _c;
++  const axisPadding = type === "Left" || type === "Right" ? s.paddingHorizontal : s.paddingVertical;
++  return (_c = (_b = (_a3 = s[`padding${type}`]) != null ? _a3 : axisPadding) != null ? _b : s.padding) != null ? _c : 0;
++}
++function extractPadding(style, contentContainerStyle, type) {
++  return getPadding(style, type) + getPadding(contentContainerStyle, type);
++}
++function findContainerId(ctx, key) {
++  var _a3, _b;
++  const directMatch = (_b = (_a3 = ctx.state) == null ? void 0 : _a3.containerItemKeys) == null ? void 0 : _b.get(key);
++  if (directMatch !== void 0) {
++    return directMatch;
++  }
++  const numContainers = peek$(ctx, "numContainers");
++  for (let i = 0; i < numContainers; i++) {
++    const itemKey = peek$(ctx, `containerItemKey${i}`);
++    if (itemKey === key) {
++      return i;
++    }
++  }
++  return -1;
++}
++
++// src/core/exactInitialLayout.native.ts
++var EXACT_INITIAL_LAYOUT_EPSILON = 1;
++function isPositiveFinite(value) {
++  return value !== void 0 && Number.isFinite(value) && value > 0;
++}
++function hasContentInset(contentInset) {
++  return !!((contentInset == null ? void 0 : contentInset.top) || (contentInset == null ? void 0 : contentInset.right) || (contentInset == null ? void 0 : contentInset.bottom) || (contentInset == null ? void 0 : contentInset.left));
++}
++function getScrollAxisGap(options) {
++  var _a3, _b;
++  const { columnWrapperStyle, horizontal } = options;
++  const gap = horizontal ? (_a3 = columnWrapperStyle == null ? void 0 : columnWrapperStyle.columnGap) != null ? _a3 : columnWrapperStyle == null ? void 0 : columnWrapperStyle.gap : (_b = columnWrapperStyle == null ? void 0 : columnWrapperStyle.rowGap) != null ? _b : columnWrapperStyle == null ? void 0 : columnWrapperStyle.gap;
++  return typeof gap === "number" && Number.isFinite(gap) ? gap : 0;
++}
++function hasUnsupportedLayoutModifier(options) {
++  var _a3, _b;
++  return options.alignItemsAtEnd || !!options.anchoredEndSpace || options.hasActiveRefreshControl || options.hasItemSeparator || options.hasListFooter || options.hasListHeader || !!options.overrideItemLayout || !!options.renderScrollComponent || !!((_a3 = options.snapToIndices) == null ? void 0 : _a3.length) || !!((_b = options.stickyHeaderIndices) == null ? void 0 : _b.length) || options.useWindowScroll || getScrollAxisGap(options) !== 0 || options.scrollAxisPaddingStart !== 0 || options.scrollAxisPaddingEnd !== 0 || hasContentInset(options.contentInset) || options.contentInsetAdjustmentBehavior !== void 0 && options.contentInsetAdjustmentBehavior !== "never" || !!options.contentInsetEndAdjustment;
++}
++function createExactInitialLayoutSnapshot(options, layout, targetIndex) {
++  var _a3;
++  const { data, getFixedItemSize, getItemType, horizontal, initialScroll } = options;
++  const viewportLength = horizontal ? layout.width : layout.height;
++  const dataLength = data.length;
++  const positions = new Array(dataLength);
++  const sizes = new Array(dataLength);
++  let totalSize = 0;
++  let targetPosition = 0;
++  let targetSize = 0;
++  for (let index = 0; index < dataLength; index++) {
++    const item = data[index];
++    const itemType = getItemType ? (_a3 = getItemType(item, index)) != null ? _a3 : "" : "";
++    const size = getFixedItemSize(item, index, itemType);
++    if (!isPositiveFinite(size)) {
++      return {
++        reason: "experimental_exactInitialLayout requires a positive finite getFixedItemSize result for every initial item."
++      };
++    }
++    positions[index] = totalSize;
++    sizes[index] = size;
++    if (index === targetIndex) {
++      targetPosition = totalSize;
++      targetSize = size;
++    }
++    totalSize += size;
++  }
++  let targetOffset = targetPosition;
++  const viewOffset = initialScroll == null ? void 0 : initialScroll.viewOffset;
++  const viewPosition = initialScroll == null ? void 0 : initialScroll.viewPosition;
++  if (viewOffset) {
++    targetOffset -= viewOffset;
++  }
++  if (viewPosition !== void 0) {
++    targetOffset -= viewPosition * (viewportLength - targetSize);
++  }
++  const extraEndOffset = typeof viewOffset === "number" && viewOffset < 0 ? -viewOffset : 0;
++  const maxOffset = Math.max(0, totalSize - viewportLength) + extraEndOffset;
++  targetOffset = Math.max(0, Math.min(targetOffset, maxOffset));
++  return {
++    snapshot: {
++      averageItemSize: totalSize / dataLength,
++      height: layout.height,
++      positions,
++      sizes,
++      targetIndex,
++      targetOffset,
++      totalSize,
++      viewportLength,
++      width: layout.width
++    }
++  };
++}
++function resolveExactInitialLayout(options) {
++  const { exactInitialLayout } = options;
++  if (!exactInitialLayout) {
++    return void 0;
++  }
++  if (!options.isNewArchitecture) {
++    return { reason: "experimental_exactInitialLayout requires the new architecture (Fabric)." };
++  }
++  if (!isPositiveFinite(exactInitialLayout.width) || !isPositiveFinite(exactInitialLayout.height)) {
++    return { reason: "experimental_exactInitialLayout requires positive finite width and height." };
++  }
++  if (options.data.length === 0) {
++    return { reason: "experimental_exactInitialLayout requires non-empty initial data." };
++  }
++  if (options.numColumns !== 1) {
++    return { reason: "experimental_exactInitialLayout currently supports single-column lists only." };
++  }
++  if (options.horizontal && options.isRTL) {
++    return { reason: "experimental_exactInitialLayout does not yet support horizontal RTL lists." };
++  }
++  if (hasUnsupportedLayoutModifier(options)) {
++    return {
++      reason: "experimental_exactInitialLayout does not support layout modifiers whose initial contribution is measured after mount."
++    };
++  }
++  if (!options.getFixedItemSize) {
++    return { reason: "experimental_exactInitialLayout requires getFixedItemSize." };
++  }
++  const initialScroll = options.initialScroll;
++  const targetIndex = (initialScroll == null ? void 0 : initialScroll.contentOffset) === void 0 ? initialScroll == null ? void 0 : initialScroll.index : void 0;
++  if (targetIndex === void 0 || !Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= options.data.length) {
++    return { reason: "experimental_exactInitialLayout requires an in-range integer initialScrollIndex." };
++  }
++  return createExactInitialLayoutSnapshot(options, exactInitialLayout, targetIndex);
++}
++function useExactInitialLayoutFirstCommit(getOptions) {
++  var _a3;
++  const ctx = useStateContext();
++  if (ctx.exactInitialLayout === void 0) {
++    const options = getOptions();
++    const resolution = resolveExactInitialLayout(options);
++    ctx.exactInitialLayout = (_a3 = resolution == null ? void 0 : resolution.snapshot) != null ? _a3 : null;
++    if (IS_DEV && (resolution == null ? void 0 : resolution.reason)) {
++      warnDevOnce(
++        `exact-initial-layout-${resolution.reason}`,
++        `${resolution.reason} Falling back to the normal initial-scroll path.`
++      );
++    }
++  }
++  return !!ctx.exactInitialLayout;
++}
++function attachExactInitialLayout(ctx) {
++  const snapshot = ctx.exactInitialLayout;
++  if (snapshot) {
++    ctx.state.exactInitialLayout = { snapshot };
++    ctx.values.set("initialContentVisible", true);
++  }
++}
++function getActiveExactInitialLayout(ctx) {
++  var _a3;
++  const exactInitialLayout = (_a3 = ctx.state) == null ? void 0 : _a3.exactInitialLayout;
++  return exactInitialLayout && !exactInitialLayout.invalidated ? exactInitialLayout : void 0;
++}
++function isExactInitialLayoutActive(ctx) {
++  return !!getActiveExactInitialLayout(ctx);
++}
++function seedExactInitialLayoutState(ctx) {
++  const exactInitialLayout = getActiveExactInitialLayout(ctx);
++  if (!exactInitialLayout) {
++    return;
++  }
++  const state = ctx.state;
++  const { positions, sizes, targetOffset, totalSize, viewportLength } = exactInitialLayout.snapshot;
++  const data = state.props.data;
++  const keyExtractor = state.props.keyExtractor;
++  state.scrollLength = viewportLength;
++  for (let index = 0; index < data.length; index++) {
++    const id = keyExtractor ? keyExtractor(data[index], index) : index;
++    state.idCache[index] = id;
++    state.indexByKey.set(id, index);
++    state.sizes.set(id, sizes[index]);
++    state.sizesKnown.set(id, sizes[index]);
++    state.positions[index] = positions[index];
++  }
++  state.totalSize = totalSize;
++  set$(ctx, "totalSize", totalSize);
++  state.scroll = targetOffset;
++  state.scrollPending = targetOffset;
++  state.scrollPrev = targetOffset;
++}
++function getExactInitialContentOffset(ctx) {
++  var _a3;
++  return (_a3 = getActiveExactInitialLayout(ctx)) == null ? void 0 : _a3.snapshot.targetOffset;
++}
++function getExactInitialAverageItemSize(ctx) {
++  return getActiveExactInitialLayout(ctx).snapshot.averageItemSize;
++}
++function recordExactInitialLayoutNativeOffset(ctx, offset) {
++  const exactInitialLayout = getActiveExactInitialLayout(ctx);
++  if (exactInitialLayout && Number.isFinite(offset)) {
++    exactInitialLayout.observedNativeOffset = offset;
++  }
++}
++function invalidateExactInitialLayout(ctx) {
++  var _a3;
++  const exactInitialLayout = (_a3 = ctx.state) == null ? void 0 : _a3.exactInitialLayout;
++  if (!exactInitialLayout) {
++    return;
++  }
++  exactInitialLayout.invalidated = true;
++  exactInitialLayout.verified = false;
++  exactInitialLayout.observedNativeOffset = void 0;
++  hideExactInitialContent(ctx);
++}
++function hideExactInitialContent(ctx) {
++  if (peek$(ctx, "initialContentVisible")) {
++    set$(ctx, "initialContentVisible", false);
++  }
++}
++function verifyExactInitialLayoutOnMeasure(ctx, layout) {
++  const exactInitialLayout = getActiveExactInitialLayout(ctx);
++  if (!exactInitialLayout || layout.width <= 0 || layout.height <= 0) {
++    return;
++  }
++  const { height, width } = exactInitialLayout.snapshot;
++  const matchesDeclaredLayout = Math.abs(layout.width - width) <= EXACT_INITIAL_LAYOUT_EPSILON && Math.abs(layout.height - height) <= EXACT_INITIAL_LAYOUT_EPSILON;
++  if (matchesDeclaredLayout) {
++    exactInitialLayout.verified = true;
++    return;
++  }
++  invalidateExactInitialLayout(ctx);
++  if (IS_DEV) {
++    warnDevOnce(
++      "exact-initial-layout-mismatch",
++      `experimental_exactInitialLayout declared ${width}x${height}, but the first measured layout was ${layout.width}x${layout.height}. Falling back to the normal initial-scroll path.`
++    );
++  }
++}
++function shouldFinishExactInitialScrollWithoutScroll(ctx, resolvedOffset, options) {
++  const exactInitialLayout = getActiveExactInitialLayout(ctx);
++  if (!(exactInitialLayout == null ? void 0 : exactInitialLayout.verified)) {
++    return false;
++  }
++  if (!options.areMountedBufferedIndicesMeasured || !options.areVisibleIndicesMeasured) {
++    return false;
++  }
++  const observedNativeOffset = exactInitialLayout.observedNativeOffset;
++  if (observedNativeOffset === void 0 || !Number.isFinite(observedNativeOffset)) {
++    return false;
++  }
++  const didExactSeedSettle = Math.abs(exactInitialLayout.snapshot.targetOffset - resolvedOffset) <= EXACT_INITIAL_LAYOUT_EPSILON && Math.abs(observedNativeOffset - resolvedOffset) <= EXACT_INITIAL_LAYOUT_EPSILON;
++  if (!didExactSeedSettle) {
++    const seededOffset = exactInitialLayout.snapshot.targetOffset;
++    invalidateExactInitialLayout(ctx);
++    if (IS_DEV) {
++      warnDevOnce(
++        "exact-initial-layout-offset-mismatch",
++        `experimental_exactInitialLayout seeded offset ${seededOffset}, but the list settled at ${resolvedOffset} with a native offset of ${observedNativeOffset}. Falling back to the normal initial-scroll path.`
++      );
++    }
++    return false;
++  }
++  return Platform.OS !== "android";
++}
++
+ // src/core/cancelImperativeScroll.ts
+ function cancelScrollCompletionChecks({ scheduledWork }) {
+   scheduledWork.cancel("checkFinishedScrollFrame");
+@@ -943,6 +1223,9 @@ function resetInitialRenderState(ctx, {
+   if (resetInitialScroll) {
+     state.didFinishInitialScroll = false;
+   }
++  if ((resetLayout || resetInitialScroll)) {
++    invalidateExactInitialLayout(ctx);
++  }
+   set$(ctx, "readyToRender", false);
+   resetAdaptiveRender(ctx);
+ }
+@@ -1047,6 +1330,9 @@ function finishInitialScroll(ctx, options) {
+     } else {
+       clearPreservedInitialScrollTarget(state);
+     }
++    if ((options == null ? void 0 : options.setInitialScrollFinishedBeforeRecalculate)) {
++      setInitialRenderState(ctx, { didInitialScroll: true });
++    }
+     if (options == null ? void 0 : options.recalculateItems) {
+       recalculateSettledScroll(ctx);
+     }
+@@ -1161,50 +1447,6 @@ function setSize(ctx, itemKey, size, notifyTotalSize = true) {
+   sizes.set(itemKey, size);
+ }
+
+-// src/utils/helpers.ts
+-function isFunction(obj) {
+-  return typeof obj === "function";
+-}
+-function isArray(obj) {
+-  return Array.isArray(obj);
+-}
+-var warned = /* @__PURE__ */ new Set();
+-function warnDevOnce(id, text) {
+-  if (IS_DEV && !warned.has(id)) {
+-    warned.add(id);
+-    console.warn(`[legend-list] ${text}`);
+-  }
+-}
+-function roundSize(size) {
+-  return Math.floor(size * 8) / 8;
+-}
+-function isNullOrUndefined(value) {
+-  return value === null || value === void 0;
+-}
+-function getPadding(s, type) {
+-  var _a3, _b, _c;
+-  const axisPadding = type === "Left" || type === "Right" ? s.paddingHorizontal : s.paddingVertical;
+-  return (_c = (_b = (_a3 = s[`padding${type}`]) != null ? _a3 : axisPadding) != null ? _b : s.padding) != null ? _c : 0;
+-}
+-function extractPadding(style, contentContainerStyle, type) {
+-  return getPadding(style, type) + getPadding(contentContainerStyle, type);
+-}
+-function findContainerId(ctx, key) {
+-  var _a3, _b;
+-  const directMatch = (_b = (_a3 = ctx.state) == null ? void 0 : _a3.containerItemKeys) == null ? void 0 : _b.get(key);
+-  if (directMatch !== void 0) {
+-    return directMatch;
+-  }
+-  const numContainers = peek$(ctx, "numContainers");
+-  for (let i = 0; i < numContainers; i++) {
+-    const itemKey = peek$(ctx, `containerItemKey${i}`);
+-    if (itemKey === key) {
+-      return i;
+-    }
+-  }
+-  return -1;
+-}
+-
+ // src/utils/getItemSize.ts
+ function getKnownOrFixedSize(ctx, key, index, data, resolved) {
+   var _a3, _b;
+@@ -3050,6 +3292,13 @@ function evaluateBootstrapInitialScroll(ctx) {
+     const id = (_a4 = state.idCache[index]) != null ? _a4 : getId(state, index);
+     return state.sizesKnown.has(id);
+   });
++  if (shouldFinishExactInitialScrollWithoutScroll(ctx, resolvedOffset, {
++    areMountedBufferedIndicesMeasured,
++    areVisibleIndicesMeasured
++  })) {
++    finishExactInitialScrollWithoutScroll(ctx, resolvedOffset);
++    return;
++  }
+   const previousResolvedOffset = bootstrapInitialScroll.previousResolvedOffset;
+   const previousVisibleIndices = bootstrapInitialScroll.visibleIndices;
+   bootstrapInitialScroll.previousResolvedOffset = resolvedOffset;
+@@ -3091,6 +3340,19 @@ function finishBootstrapInitialScrollWithoutScroll(ctx, resolvedOffset) {
+     schedulePreservedTargetClear: shouldPreserveResizeTarget
+   });
+ }
++function finishExactInitialScrollWithoutScroll(ctx, resolvedOffset) {
++  var _a3;
++  const state = ctx.state;
++  clearBootstrapInitialScrollSession(state);
++  const shouldPreserveResizeTarget = !state.clearPreservedInitialScrollOnNextFinish && state.props.data.length > 0 && ((_a3 = state.initialScroll) == null ? void 0 : _a3.viewPosition) === 1;
++  finishInitialScroll(ctx, {
++    preserveTarget: shouldPreserveResizeTarget,
++    recalculateItems: true,
++    resolvedOffset,
++    schedulePreservedTargetClear: shouldPreserveResizeTarget,
++    setInitialScrollFinishedBeforeRecalculate: true
++  });
++}
+ function abortBootstrapInitialScroll(ctx) {
+   var _a3, _b, _c, _d;
+   const state = ctx.state;
+@@ -4284,7 +4546,7 @@ function calculateItemsInView(ctx, params = {}) {
+     const drawDistance = getEffectiveDrawDistance(ctx, params.drawDistanceMode);
+     const { dataChanged, doMVCP, forceFullItemPositions, mvcpAdjustmentSource } = params;
+     const bootstrapInitialScrollState = ((_a3 = state.initialScrollSession) == null ? void 0 : _a3.kind) === "bootstrap" ? state.initialScrollSession.bootstrap : void 0;
+-    const suppressInitialScrollSideEffects = !!bootstrapInitialScrollState;
++    const suppressInitialScrollSideEffects = !!bootstrapInitialScrollState || !!params.suppressInitialScrollSideEffects ;
+     const prevNumContainers = peek$(ctx, "numContainers");
+     if (!data || scrollLength === 0 || !prevNumContainers) {
+       return;
+@@ -4697,6 +4959,9 @@ function calculateItemsInView(ctx, params = {}) {
+       set$(ctx, "lastPositionUpdate", Date.now());
+     }
+     if (suppressInitialScrollSideEffects) {
++      if (!bootstrapInitialScrollState) {
++        return;
++      }
+       evaluateBootstrapInitialScroll(ctx);
+       return;
+     }
+@@ -5870,8 +6135,17 @@ var ContainersLayer = typedMemo(function ContainersLayer2({
+   const ctx = useStateContext();
+   const columnWrapperStyle = ctx.columnWrapperStyle;
+   const animSize = useValue$("totalSize");
+-  const [readyToRender, numColumns, otherAxisSize = 0] = useArr$(["readyToRender", "numColumns", "otherAxisSize"]);
+-  const isVisible = useFreshDataTransitionVisibility(!!readyToRender, freshDataTransitionEpoch);
++  const [initialContentVisible, readyToRender, numColumns, otherAxisSize = 0] = useArr$([
++    "initialContentVisible",
++    "readyToRender",
++    "numColumns",
++    "otherAxisSize"
++  ]);
++  const isVisible = useFreshDataTransitionVisibility(
++    !!initialContentVisible || !!readyToRender,
++    freshDataTransitionEpoch
++  );
++  const isInteractive = isVisible && !!readyToRender;
+   const style = horizontal ? {
+     height: otherAxisSize || "100%",
+     minHeight: otherAxisSize,
+@@ -5898,7 +6172,7 @@ var ContainersLayer = typedMemo(function ContainersLayer2({
+       }
+     }
+   }
+-  return /* @__PURE__ */ React2__namespace.createElement(ReactNative.Animated.View, { pointerEvents: isVisible ? void 0 : "none", style }, /* @__PURE__ */ React2__namespace.createElement(ContainerLayoutCoordinator, null, children));
++  return /* @__PURE__ */ React2__namespace.createElement(ReactNative.Animated.View, { pointerEvents: isInteractive ? void 0 : "none", style }, /* @__PURE__ */ React2__namespace.createElement(ContainerLayoutCoordinator, null, children));
+ });
+ var Containers = typedMemo(function Containers2({
+   freshDataTransitionEpoch,
+@@ -6357,7 +6631,9 @@ function doInitialAllocateContainers(ctx) {
+   const hasContainers = peek$(ctx, "numContainers");
+   if (scrollLength > 0 && data.length > 0 && !hasContainers) {
+     let averageItemSize;
+-    if (getFixedItemSize) {
++    if (isExactInitialLayoutActive(ctx)) {
++      averageItemSize = getExactInitialAverageItemSize(ctx);
++    } else if (getFixedItemSize) {
+       let totalSize = 0;
+       const num = Math.min(20, data.length);
+       for (let i = 0; i < num; i++) {
+@@ -6413,6 +6689,9 @@ function handleLayout(ctx, layoutParam, setCanRender) {
+     const windowScrollAxisLength = getWindowSize()[scrollAxis];
+     layout = windowScrollAxisLength > 0 ? { ...layoutParam, [scrollAxis]: windowScrollAxisLength } : layoutParam;
+   }
++  {
++    verifyExactInitialLayoutOnMeasure(ctx, layout);
++  }
+   const measuredLength = layout[scrollAxis];
+   const previousLength = state.scrollLength;
+   const scrollLength = measuredLength > 0 ? measuredLength : previousLength;
+@@ -6512,6 +6791,9 @@ function onScroll(ctx, event) {
+   }
+   state.lastNativeScroll = newScroll;
+   state.lastNativeScrollTime = Date.now();
++  {
++    recordExactInitialLayoutNativeOffset(ctx, newScroll);
++  }
+   if (state.scrollingTo && state.scrollingTo.offset >= newScroll) {
+     const maxOffset = clampScrollOffset(ctx, newScroll, state.scrollingTo);
+     if (newScroll !== maxOffset && Math.abs(newScroll - maxOffset) > 1) {
+@@ -7251,6 +7533,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     initialScrollIndex: initialScrollIndexProp,
+     initialScrollOffset: initialScrollOffsetProp,
+     experimental_adaptiveRender,
++    experimental_exactInitialLayout,
+     experimental_hideItemsUntilMeasured,
+     itemsAreEqual,
+     keyExtractor: keyExtractorProp,
+@@ -7358,7 +7641,38 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     index: 0,
+     viewOffset: 0
+   } : void 0;
+-  const [canRender, setCanRender] = React2__namespace.useState(!IsNewArchitecture);
++  const [canRender, setCanRender] = React2__namespace.useState(
++    useExactInitialLayoutFirstCommit(() => ({
++      alignItemsAtEnd,
++      anchoredEndSpace,
++      // Read the gaps without `createColumnWrapperStyle`, which strips them from the
++      // content container style it is given.
++      columnWrapperStyle: columnWrapperStyle != null ? columnWrapperStyle : contentContainerStyle,
++      contentInset,
++      contentInsetAdjustmentBehavior: rest.contentInsetAdjustmentBehavior,
++      contentInsetEndAdjustment,
++      data: dataProp,
++      exactInitialLayout: experimental_exactInitialLayout,
++      getFixedItemSize,
++      getItemType,
++      hasActiveRefreshControl: !!refreshControl || !!onRefresh && !!refreshing,
++      hasItemSeparator: !!props.ItemSeparatorComponent,
++      hasListFooter: !!ListFooterComponent,
++      hasListHeader: !!ListHeaderComponent,
++      horizontal: !!horizontal,
++      initialScroll: initialScrollProp,
++      isNewArchitecture: IsNewArchitecture,
++      isRTL: isHorizontalRTLProps({ horizontal, rtl }),
++      numColumns: numColumnsProp,
++      overrideItemLayout,
++      renderScrollComponent,
++      scrollAxisPaddingEnd: horizontal ? stylePaddingRightState : stylePaddingBottomState,
++      scrollAxisPaddingStart: horizontal ? stylePaddingLeftState : stylePaddingTopState,
++      snapToIndices,
++      stickyHeaderIndices: stickyHeaderIndicesProp,
++      useWindowScroll: !!useWindowScroll
++    })) || !IsNewArchitecture
++  ) ;
+   const [, scheduleImperativeScrollCommit] = React2__namespace.useReducer((value) => value + 1, 0);
+   const ctx = useStateContext();
+   ctx.columnWrapperStyle = columnWrapperStyle || (contentContainerStyle ? createColumnWrapperStyle(contentContainerStyle) : void 0);
+@@ -7457,6 +7771,9 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+         totalSize: 0,
+         viewabilityConfigCallbackPairs: void 0
+       };
++      {
++        attachExactInitialLayout(ctx);
++      }
+       const internalState = ctx.state;
+       ctx.scrollToEnd = (options) => scrollToEnd(ctx, options);
+       internalState.triggerCalculateItemsInView = (params) => calculateItemsInView(ctx, params);
+@@ -7588,6 +7905,9 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+   if (isFirstLocal) {
+     initializeStateVars(false);
+     resetLayoutCachesForDataChange(state);
++    {
++      seedExactInitialLayoutState(ctx);
++    }
+     updateItemPositions(
+       ctx,
+       /*dataChanged*/
+@@ -7600,6 +7920,12 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     if (!initialScroll) {
+       return void 0;
+     }
++    {
++      const exactContentOffset = getExactInitialContentOffset(ctx);
++      if (exactContentOffset !== void 0) {
++        return exactContentOffset;
++      }
++    }
+     const resolvedOffset = (_a4 = initialScroll.contentOffset) != null ? _a4 : resolveInitialScrollOffset(ctx, initialScroll);
+     return usesBootstrapInitialScroll && ((_b2 = state.initialScrollSession) == null ? void 0 : _b2.kind) === "bootstrap" && Platform.OS === "web" ? void 0 : resolvedOffset;
+   }, [usesBootstrapInitialScroll]);
+@@ -7800,6 +8126,16 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     }
+   }, [viewabilityConfig, viewabilityConfigCallbackPairs, onViewableItemsChanged]);
+   useInit(() => {
++    if (isExactInitialLayoutActive(ctx)) {
++      if (doInitialAllocateContainers(ctx)) {
++        calculateItemsInView(ctx, {
++          dataChanged: true,
++          doMVCP: true,
++          suppressInitialScrollSideEffects: true
++        });
++      }
++      return;
++    }
+     if (!IsNewArchitecture) {
+       doInitialAllocateContainers(ctx);
+     }
+diff --git a/node_modules/@legendapp/list/react-native.mjs b/node_modules/@legendapp/list/react-native.mjs
+index 0752a4d..4658934 100644
+--- a/node_modules/@legendapp/list/react-native.mjs
++++ b/node_modules/@legendapp/list/react-native.mjs
+@@ -437,6 +437,286 @@ var EDGE_POSITION_EPSILON = 1;
+ var ENABLE_DEVMODE = IS_DEV && false;
+ var ENABLE_DEBUG_VIEW = IS_DEV && false;
+
++// src/utils/helpers.ts
++function isFunction(obj) {
++  return typeof obj === "function";
++}
++function isArray(obj) {
++  return Array.isArray(obj);
++}
++var warned = /* @__PURE__ */ new Set();
++function warnDevOnce(id, text) {
++  if (IS_DEV && !warned.has(id)) {
++    warned.add(id);
++    console.warn(`[legend-list] ${text}`);
++  }
++}
++function roundSize(size) {
++  return Math.floor(size * 8) / 8;
++}
++function isNullOrUndefined(value) {
++  return value === null || value === void 0;
++}
++function getPadding(s, type) {
++  var _a3, _b, _c;
++  const axisPadding = type === "Left" || type === "Right" ? s.paddingHorizontal : s.paddingVertical;
++  return (_c = (_b = (_a3 = s[`padding${type}`]) != null ? _a3 : axisPadding) != null ? _b : s.padding) != null ? _c : 0;
++}
++function extractPadding(style, contentContainerStyle, type) {
++  return getPadding(style, type) + getPadding(contentContainerStyle, type);
++}
++function findContainerId(ctx, key) {
++  var _a3, _b;
++  const directMatch = (_b = (_a3 = ctx.state) == null ? void 0 : _a3.containerItemKeys) == null ? void 0 : _b.get(key);
++  if (directMatch !== void 0) {
++    return directMatch;
++  }
++  const numContainers = peek$(ctx, "numContainers");
++  for (let i = 0; i < numContainers; i++) {
++    const itemKey = peek$(ctx, `containerItemKey${i}`);
++    if (itemKey === key) {
++      return i;
++    }
++  }
++  return -1;
++}
++
++// src/core/exactInitialLayout.native.ts
++var EXACT_INITIAL_LAYOUT_EPSILON = 1;
++function isPositiveFinite(value) {
++  return value !== void 0 && Number.isFinite(value) && value > 0;
++}
++function hasContentInset(contentInset) {
++  return !!((contentInset == null ? void 0 : contentInset.top) || (contentInset == null ? void 0 : contentInset.right) || (contentInset == null ? void 0 : contentInset.bottom) || (contentInset == null ? void 0 : contentInset.left));
++}
++function getScrollAxisGap(options) {
++  var _a3, _b;
++  const { columnWrapperStyle, horizontal } = options;
++  const gap = horizontal ? (_a3 = columnWrapperStyle == null ? void 0 : columnWrapperStyle.columnGap) != null ? _a3 : columnWrapperStyle == null ? void 0 : columnWrapperStyle.gap : (_b = columnWrapperStyle == null ? void 0 : columnWrapperStyle.rowGap) != null ? _b : columnWrapperStyle == null ? void 0 : columnWrapperStyle.gap;
++  return typeof gap === "number" && Number.isFinite(gap) ? gap : 0;
++}
++function hasUnsupportedLayoutModifier(options) {
++  var _a3, _b;
++  return options.alignItemsAtEnd || !!options.anchoredEndSpace || options.hasActiveRefreshControl || options.hasItemSeparator || options.hasListFooter || options.hasListHeader || !!options.overrideItemLayout || !!options.renderScrollComponent || !!((_a3 = options.snapToIndices) == null ? void 0 : _a3.length) || !!((_b = options.stickyHeaderIndices) == null ? void 0 : _b.length) || options.useWindowScroll || getScrollAxisGap(options) !== 0 || options.scrollAxisPaddingStart !== 0 || options.scrollAxisPaddingEnd !== 0 || hasContentInset(options.contentInset) || options.contentInsetAdjustmentBehavior !== void 0 && options.contentInsetAdjustmentBehavior !== "never" || !!options.contentInsetEndAdjustment;
++}
++function createExactInitialLayoutSnapshot(options, layout, targetIndex) {
++  var _a3;
++  const { data, getFixedItemSize, getItemType, horizontal, initialScroll } = options;
++  const viewportLength = horizontal ? layout.width : layout.height;
++  const dataLength = data.length;
++  const positions = new Array(dataLength);
++  const sizes = new Array(dataLength);
++  let totalSize = 0;
++  let targetPosition = 0;
++  let targetSize = 0;
++  for (let index = 0; index < dataLength; index++) {
++    const item = data[index];
++    const itemType = getItemType ? (_a3 = getItemType(item, index)) != null ? _a3 : "" : "";
++    const size = getFixedItemSize(item, index, itemType);
++    if (!isPositiveFinite(size)) {
++      return {
++        reason: "experimental_exactInitialLayout requires a positive finite getFixedItemSize result for every initial item."
++      };
++    }
++    positions[index] = totalSize;
++    sizes[index] = size;
++    if (index === targetIndex) {
++      targetPosition = totalSize;
++      targetSize = size;
++    }
++    totalSize += size;
++  }
++  let targetOffset = targetPosition;
++  const viewOffset = initialScroll == null ? void 0 : initialScroll.viewOffset;
++  const viewPosition = initialScroll == null ? void 0 : initialScroll.viewPosition;
++  if (viewOffset) {
++    targetOffset -= viewOffset;
++  }
++  if (viewPosition !== void 0) {
++    targetOffset -= viewPosition * (viewportLength - targetSize);
++  }
++  const extraEndOffset = typeof viewOffset === "number" && viewOffset < 0 ? -viewOffset : 0;
++  const maxOffset = Math.max(0, totalSize - viewportLength) + extraEndOffset;
++  targetOffset = Math.max(0, Math.min(targetOffset, maxOffset));
++  return {
++    snapshot: {
++      averageItemSize: totalSize / dataLength,
++      height: layout.height,
++      positions,
++      sizes,
++      targetIndex,
++      targetOffset,
++      totalSize,
++      viewportLength,
++      width: layout.width
++    }
++  };
++}
++function resolveExactInitialLayout(options) {
++  const { exactInitialLayout } = options;
++  if (!exactInitialLayout) {
++    return void 0;
++  }
++  if (!options.isNewArchitecture) {
++    return { reason: "experimental_exactInitialLayout requires the new architecture (Fabric)." };
++  }
++  if (!isPositiveFinite(exactInitialLayout.width) || !isPositiveFinite(exactInitialLayout.height)) {
++    return { reason: "experimental_exactInitialLayout requires positive finite width and height." };
++  }
++  if (options.data.length === 0) {
++    return { reason: "experimental_exactInitialLayout requires non-empty initial data." };
++  }
++  if (options.numColumns !== 1) {
++    return { reason: "experimental_exactInitialLayout currently supports single-column lists only." };
++  }
++  if (options.horizontal && options.isRTL) {
++    return { reason: "experimental_exactInitialLayout does not yet support horizontal RTL lists." };
++  }
++  if (hasUnsupportedLayoutModifier(options)) {
++    return {
++      reason: "experimental_exactInitialLayout does not support layout modifiers whose initial contribution is measured after mount."
++    };
++  }
++  if (!options.getFixedItemSize) {
++    return { reason: "experimental_exactInitialLayout requires getFixedItemSize." };
++  }
++  const initialScroll = options.initialScroll;
++  const targetIndex = (initialScroll == null ? void 0 : initialScroll.contentOffset) === void 0 ? initialScroll == null ? void 0 : initialScroll.index : void 0;
++  if (targetIndex === void 0 || !Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= options.data.length) {
++    return { reason: "experimental_exactInitialLayout requires an in-range integer initialScrollIndex." };
++  }
++  return createExactInitialLayoutSnapshot(options, exactInitialLayout, targetIndex);
++}
++function useExactInitialLayoutFirstCommit(getOptions) {
++  var _a3;
++  const ctx = useStateContext();
++  if (ctx.exactInitialLayout === void 0) {
++    const options = getOptions();
++    const resolution = resolveExactInitialLayout(options);
++    ctx.exactInitialLayout = (_a3 = resolution == null ? void 0 : resolution.snapshot) != null ? _a3 : null;
++    if (IS_DEV && (resolution == null ? void 0 : resolution.reason)) {
++      warnDevOnce(
++        `exact-initial-layout-${resolution.reason}`,
++        `${resolution.reason} Falling back to the normal initial-scroll path.`
++      );
++    }
++  }
++  return !!ctx.exactInitialLayout;
++}
++function attachExactInitialLayout(ctx) {
++  const snapshot = ctx.exactInitialLayout;
++  if (snapshot) {
++    ctx.state.exactInitialLayout = { snapshot };
++    ctx.values.set("initialContentVisible", true);
++  }
++}
++function getActiveExactInitialLayout(ctx) {
++  var _a3;
++  const exactInitialLayout = (_a3 = ctx.state) == null ? void 0 : _a3.exactInitialLayout;
++  return exactInitialLayout && !exactInitialLayout.invalidated ? exactInitialLayout : void 0;
++}
++function isExactInitialLayoutActive(ctx) {
++  return !!getActiveExactInitialLayout(ctx);
++}
++function seedExactInitialLayoutState(ctx) {
++  const exactInitialLayout = getActiveExactInitialLayout(ctx);
++  if (!exactInitialLayout) {
++    return;
++  }
++  const state = ctx.state;
++  const { positions, sizes, targetOffset, totalSize, viewportLength } = exactInitialLayout.snapshot;
++  const data = state.props.data;
++  const keyExtractor = state.props.keyExtractor;
++  state.scrollLength = viewportLength;
++  for (let index = 0; index < data.length; index++) {
++    const id = keyExtractor ? keyExtractor(data[index], index) : index;
++    state.idCache[index] = id;
++    state.indexByKey.set(id, index);
++    state.sizes.set(id, sizes[index]);
++    state.sizesKnown.set(id, sizes[index]);
++    state.positions[index] = positions[index];
++  }
++  state.totalSize = totalSize;
++  set$(ctx, "totalSize", totalSize);
++  state.scroll = targetOffset;
++  state.scrollPending = targetOffset;
++  state.scrollPrev = targetOffset;
++}
++function getExactInitialContentOffset(ctx) {
++  var _a3;
++  return (_a3 = getActiveExactInitialLayout(ctx)) == null ? void 0 : _a3.snapshot.targetOffset;
++}
++function getExactInitialAverageItemSize(ctx) {
++  return getActiveExactInitialLayout(ctx).snapshot.averageItemSize;
++}
++function recordExactInitialLayoutNativeOffset(ctx, offset) {
++  const exactInitialLayout = getActiveExactInitialLayout(ctx);
++  if (exactInitialLayout && Number.isFinite(offset)) {
++    exactInitialLayout.observedNativeOffset = offset;
++  }
++}
++function invalidateExactInitialLayout(ctx) {
++  var _a3;
++  const exactInitialLayout = (_a3 = ctx.state) == null ? void 0 : _a3.exactInitialLayout;
++  if (!exactInitialLayout) {
++    return;
++  }
++  exactInitialLayout.invalidated = true;
++  exactInitialLayout.verified = false;
++  exactInitialLayout.observedNativeOffset = void 0;
++  hideExactInitialContent(ctx);
++}
++function hideExactInitialContent(ctx) {
++  if (peek$(ctx, "initialContentVisible")) {
++    set$(ctx, "initialContentVisible", false);
++  }
++}
++function verifyExactInitialLayoutOnMeasure(ctx, layout) {
++  const exactInitialLayout = getActiveExactInitialLayout(ctx);
++  if (!exactInitialLayout || layout.width <= 0 || layout.height <= 0) {
++    return;
++  }
++  const { height, width } = exactInitialLayout.snapshot;
++  const matchesDeclaredLayout = Math.abs(layout.width - width) <= EXACT_INITIAL_LAYOUT_EPSILON && Math.abs(layout.height - height) <= EXACT_INITIAL_LAYOUT_EPSILON;
++  if (matchesDeclaredLayout) {
++    exactInitialLayout.verified = true;
++    return;
++  }
++  invalidateExactInitialLayout(ctx);
++  if (IS_DEV) {
++    warnDevOnce(
++      "exact-initial-layout-mismatch",
++      `experimental_exactInitialLayout declared ${width}x${height}, but the first measured layout was ${layout.width}x${layout.height}. Falling back to the normal initial-scroll path.`
++    );
++  }
++}
++function shouldFinishExactInitialScrollWithoutScroll(ctx, resolvedOffset, options) {
++  const exactInitialLayout = getActiveExactInitialLayout(ctx);
++  if (!(exactInitialLayout == null ? void 0 : exactInitialLayout.verified)) {
++    return false;
++  }
++  if (!options.areMountedBufferedIndicesMeasured || !options.areVisibleIndicesMeasured) {
++    return false;
++  }
++  const observedNativeOffset = exactInitialLayout.observedNativeOffset;
++  if (observedNativeOffset === void 0 || !Number.isFinite(observedNativeOffset)) {
++    return false;
++  }
++  const didExactSeedSettle = Math.abs(exactInitialLayout.snapshot.targetOffset - resolvedOffset) <= EXACT_INITIAL_LAYOUT_EPSILON && Math.abs(observedNativeOffset - resolvedOffset) <= EXACT_INITIAL_LAYOUT_EPSILON;
++  if (!didExactSeedSettle) {
++    const seededOffset = exactInitialLayout.snapshot.targetOffset;
++    invalidateExactInitialLayout(ctx);
++    if (IS_DEV) {
++      warnDevOnce(
++        "exact-initial-layout-offset-mismatch",
++        `experimental_exactInitialLayout seeded offset ${seededOffset}, but the list settled at ${resolvedOffset} with a native offset of ${observedNativeOffset}. Falling back to the normal initial-scroll path.`
++      );
++    }
++    return false;
++  }
++  return Platform.OS !== "android";
++}
++
+ // src/core/cancelImperativeScroll.ts
+ function cancelScrollCompletionChecks({ scheduledWork }) {
+   scheduledWork.cancel("checkFinishedScrollFrame");
+@@ -922,6 +1202,9 @@ function resetInitialRenderState(ctx, {
+   if (resetInitialScroll) {
+     state.didFinishInitialScroll = false;
+   }
++  if ((resetLayout || resetInitialScroll)) {
++    invalidateExactInitialLayout(ctx);
++  }
+   set$(ctx, "readyToRender", false);
+   resetAdaptiveRender(ctx);
+ }
+@@ -1026,6 +1309,9 @@ function finishInitialScroll(ctx, options) {
+     } else {
+       clearPreservedInitialScrollTarget(state);
+     }
++    if ((options == null ? void 0 : options.setInitialScrollFinishedBeforeRecalculate)) {
++      setInitialRenderState(ctx, { didInitialScroll: true });
++    }
+     if (options == null ? void 0 : options.recalculateItems) {
+       recalculateSettledScroll(ctx);
+     }
+@@ -1140,50 +1426,6 @@ function setSize(ctx, itemKey, size, notifyTotalSize = true) {
+   sizes.set(itemKey, size);
+ }
+
+-// src/utils/helpers.ts
+-function isFunction(obj) {
+-  return typeof obj === "function";
+-}
+-function isArray(obj) {
+-  return Array.isArray(obj);
+-}
+-var warned = /* @__PURE__ */ new Set();
+-function warnDevOnce(id, text) {
+-  if (IS_DEV && !warned.has(id)) {
+-    warned.add(id);
+-    console.warn(`[legend-list] ${text}`);
+-  }
+-}
+-function roundSize(size) {
+-  return Math.floor(size * 8) / 8;
+-}
+-function isNullOrUndefined(value) {
+-  return value === null || value === void 0;
+-}
+-function getPadding(s, type) {
+-  var _a3, _b, _c;
+-  const axisPadding = type === "Left" || type === "Right" ? s.paddingHorizontal : s.paddingVertical;
+-  return (_c = (_b = (_a3 = s[`padding${type}`]) != null ? _a3 : axisPadding) != null ? _b : s.padding) != null ? _c : 0;
+-}
+-function extractPadding(style, contentContainerStyle, type) {
+-  return getPadding(style, type) + getPadding(contentContainerStyle, type);
+-}
+-function findContainerId(ctx, key) {
+-  var _a3, _b;
+-  const directMatch = (_b = (_a3 = ctx.state) == null ? void 0 : _a3.containerItemKeys) == null ? void 0 : _b.get(key);
+-  if (directMatch !== void 0) {
+-    return directMatch;
+-  }
+-  const numContainers = peek$(ctx, "numContainers");
+-  for (let i = 0; i < numContainers; i++) {
+-    const itemKey = peek$(ctx, `containerItemKey${i}`);
+-    if (itemKey === key) {
+-      return i;
+-    }
+-  }
+-  return -1;
+-}
+-
+ // src/utils/getItemSize.ts
+ function getKnownOrFixedSize(ctx, key, index, data, resolved) {
+   var _a3, _b;
+@@ -3029,6 +3271,13 @@ function evaluateBootstrapInitialScroll(ctx) {
+     const id = (_a4 = state.idCache[index]) != null ? _a4 : getId(state, index);
+     return state.sizesKnown.has(id);
+   });
++  if (shouldFinishExactInitialScrollWithoutScroll(ctx, resolvedOffset, {
++    areMountedBufferedIndicesMeasured,
++    areVisibleIndicesMeasured
++  })) {
++    finishExactInitialScrollWithoutScroll(ctx, resolvedOffset);
++    return;
++  }
+   const previousResolvedOffset = bootstrapInitialScroll.previousResolvedOffset;
+   const previousVisibleIndices = bootstrapInitialScroll.visibleIndices;
+   bootstrapInitialScroll.previousResolvedOffset = resolvedOffset;
+@@ -3070,6 +3319,19 @@ function finishBootstrapInitialScrollWithoutScroll(ctx, resolvedOffset) {
+     schedulePreservedTargetClear: shouldPreserveResizeTarget
+   });
+ }
++function finishExactInitialScrollWithoutScroll(ctx, resolvedOffset) {
++  var _a3;
++  const state = ctx.state;
++  clearBootstrapInitialScrollSession(state);
++  const shouldPreserveResizeTarget = !state.clearPreservedInitialScrollOnNextFinish && state.props.data.length > 0 && ((_a3 = state.initialScroll) == null ? void 0 : _a3.viewPosition) === 1;
++  finishInitialScroll(ctx, {
++    preserveTarget: shouldPreserveResizeTarget,
++    recalculateItems: true,
++    resolvedOffset,
++    schedulePreservedTargetClear: shouldPreserveResizeTarget,
++    setInitialScrollFinishedBeforeRecalculate: true
++  });
++}
+ function abortBootstrapInitialScroll(ctx) {
+   var _a3, _b, _c, _d;
+   const state = ctx.state;
+@@ -4263,7 +4525,7 @@ function calculateItemsInView(ctx, params = {}) {
+     const drawDistance = getEffectiveDrawDistance(ctx, params.drawDistanceMode);
+     const { dataChanged, doMVCP, forceFullItemPositions, mvcpAdjustmentSource } = params;
+     const bootstrapInitialScrollState = ((_a3 = state.initialScrollSession) == null ? void 0 : _a3.kind) === "bootstrap" ? state.initialScrollSession.bootstrap : void 0;
+-    const suppressInitialScrollSideEffects = !!bootstrapInitialScrollState;
++    const suppressInitialScrollSideEffects = !!bootstrapInitialScrollState || !!params.suppressInitialScrollSideEffects ;
+     const prevNumContainers = peek$(ctx, "numContainers");
+     if (!data || scrollLength === 0 || !prevNumContainers) {
+       return;
+@@ -4676,6 +4938,9 @@ function calculateItemsInView(ctx, params = {}) {
+       set$(ctx, "lastPositionUpdate", Date.now());
+     }
+     if (suppressInitialScrollSideEffects) {
++      if (!bootstrapInitialScrollState) {
++        return;
++      }
+       evaluateBootstrapInitialScroll(ctx);
+       return;
+     }
+@@ -5849,8 +6114,17 @@ var ContainersLayer = typedMemo(function ContainersLayer2({
+   const ctx = useStateContext();
+   const columnWrapperStyle = ctx.columnWrapperStyle;
+   const animSize = useValue$("totalSize");
+-  const [readyToRender, numColumns, otherAxisSize = 0] = useArr$(["readyToRender", "numColumns", "otherAxisSize"]);
+-  const isVisible = useFreshDataTransitionVisibility(!!readyToRender, freshDataTransitionEpoch);
++  const [initialContentVisible, readyToRender, numColumns, otherAxisSize = 0] = useArr$([
++    "initialContentVisible",
++    "readyToRender",
++    "numColumns",
++    "otherAxisSize"
++  ]);
++  const isVisible = useFreshDataTransitionVisibility(
++    !!initialContentVisible || !!readyToRender,
++    freshDataTransitionEpoch
++  );
++  const isInteractive = isVisible && !!readyToRender;
+   const style = horizontal ? {
+     height: otherAxisSize || "100%",
+     minHeight: otherAxisSize,
+@@ -5877,7 +6151,7 @@ var ContainersLayer = typedMemo(function ContainersLayer2({
+       }
+     }
+   }
+-  return /* @__PURE__ */ React2.createElement(Animated.View, { pointerEvents: isVisible ? void 0 : "none", style }, /* @__PURE__ */ React2.createElement(ContainerLayoutCoordinator, null, children));
++  return /* @__PURE__ */ React2.createElement(Animated.View, { pointerEvents: isInteractive ? void 0 : "none", style }, /* @__PURE__ */ React2.createElement(ContainerLayoutCoordinator, null, children));
+ });
+ var Containers = typedMemo(function Containers2({
+   freshDataTransitionEpoch,
+@@ -6336,7 +6610,9 @@ function doInitialAllocateContainers(ctx) {
+   const hasContainers = peek$(ctx, "numContainers");
+   if (scrollLength > 0 && data.length > 0 && !hasContainers) {
+     let averageItemSize;
+-    if (getFixedItemSize) {
++    if (isExactInitialLayoutActive(ctx)) {
++      averageItemSize = getExactInitialAverageItemSize(ctx);
++    } else if (getFixedItemSize) {
+       let totalSize = 0;
+       const num = Math.min(20, data.length);
+       for (let i = 0; i < num; i++) {
+@@ -6392,6 +6668,9 @@ function handleLayout(ctx, layoutParam, setCanRender) {
+     const windowScrollAxisLength = getWindowSize()[scrollAxis];
+     layout = windowScrollAxisLength > 0 ? { ...layoutParam, [scrollAxis]: windowScrollAxisLength } : layoutParam;
+   }
++  {
++    verifyExactInitialLayoutOnMeasure(ctx, layout);
++  }
+   const measuredLength = layout[scrollAxis];
+   const previousLength = state.scrollLength;
+   const scrollLength = measuredLength > 0 ? measuredLength : previousLength;
+@@ -6491,6 +6770,9 @@ function onScroll(ctx, event) {
+   }
+   state.lastNativeScroll = newScroll;
+   state.lastNativeScrollTime = Date.now();
++  {
++    recordExactInitialLayoutNativeOffset(ctx, newScroll);
++  }
+   if (state.scrollingTo && state.scrollingTo.offset >= newScroll) {
+     const maxOffset = clampScrollOffset(ctx, newScroll, state.scrollingTo);
+     if (newScroll !== maxOffset && Math.abs(newScroll - maxOffset) > 1) {
+@@ -7230,6 +7512,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     initialScrollIndex: initialScrollIndexProp,
+     initialScrollOffset: initialScrollOffsetProp,
+     experimental_adaptiveRender,
++    experimental_exactInitialLayout,
+     experimental_hideItemsUntilMeasured,
+     itemsAreEqual,
+     keyExtractor: keyExtractorProp,
+@@ -7337,7 +7620,38 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     index: 0,
+     viewOffset: 0
+   } : void 0;
+-  const [canRender, setCanRender] = React2.useState(!IsNewArchitecture);
++  const [canRender, setCanRender] = React2.useState(
++    useExactInitialLayoutFirstCommit(() => ({
++      alignItemsAtEnd,
++      anchoredEndSpace,
++      // Read the gaps without `createColumnWrapperStyle`, which strips them from the
++      // content container style it is given.
++      columnWrapperStyle: columnWrapperStyle != null ? columnWrapperStyle : contentContainerStyle,
++      contentInset,
++      contentInsetAdjustmentBehavior: rest.contentInsetAdjustmentBehavior,
++      contentInsetEndAdjustment,
++      data: dataProp,
++      exactInitialLayout: experimental_exactInitialLayout,
++      getFixedItemSize,
++      getItemType,
++      hasActiveRefreshControl: !!refreshControl || !!onRefresh && !!refreshing,
++      hasItemSeparator: !!props.ItemSeparatorComponent,
++      hasListFooter: !!ListFooterComponent,
++      hasListHeader: !!ListHeaderComponent,
++      horizontal: !!horizontal,
++      initialScroll: initialScrollProp,
++      isNewArchitecture: IsNewArchitecture,
++      isRTL: isHorizontalRTLProps({ horizontal, rtl }),
++      numColumns: numColumnsProp,
++      overrideItemLayout,
++      renderScrollComponent,
++      scrollAxisPaddingEnd: horizontal ? stylePaddingRightState : stylePaddingBottomState,
++      scrollAxisPaddingStart: horizontal ? stylePaddingLeftState : stylePaddingTopState,
++      snapToIndices,
++      stickyHeaderIndices: stickyHeaderIndicesProp,
++      useWindowScroll: !!useWindowScroll
++    })) || !IsNewArchitecture
++  ) ;
+   const [, scheduleImperativeScrollCommit] = React2.useReducer((value) => value + 1, 0);
+   const ctx = useStateContext();
+   ctx.columnWrapperStyle = columnWrapperStyle || (contentContainerStyle ? createColumnWrapperStyle(contentContainerStyle) : void 0);
+@@ -7436,6 +7750,9 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+         totalSize: 0,
+         viewabilityConfigCallbackPairs: void 0
+       };
++      {
++        attachExactInitialLayout(ctx);
++      }
+       const internalState = ctx.state;
+       ctx.scrollToEnd = (options) => scrollToEnd(ctx, options);
+       internalState.triggerCalculateItemsInView = (params) => calculateItemsInView(ctx, params);
+@@ -7567,6 +7884,9 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+   if (isFirstLocal) {
+     initializeStateVars(false);
+     resetLayoutCachesForDataChange(state);
++    {
++      seedExactInitialLayoutState(ctx);
++    }
+     updateItemPositions(
+       ctx,
+       /*dataChanged*/
+@@ -7579,6 +7899,12 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     if (!initialScroll) {
+       return void 0;
+     }
++    {
++      const exactContentOffset = getExactInitialContentOffset(ctx);
++      if (exactContentOffset !== void 0) {
++        return exactContentOffset;
++      }
++    }
+     const resolvedOffset = (_a4 = initialScroll.contentOffset) != null ? _a4 : resolveInitialScrollOffset(ctx, initialScroll);
+     return usesBootstrapInitialScroll && ((_b2 = state.initialScrollSession) == null ? void 0 : _b2.kind) === "bootstrap" && Platform.OS === "web" ? void 0 : resolvedOffset;
+   }, [usesBootstrapInitialScroll]);
+@@ -7779,6 +8105,16 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     }
+   }, [viewabilityConfig, viewabilityConfigCallbackPairs, onViewableItemsChanged]);
+   useInit(() => {
++    if (isExactInitialLayoutActive(ctx)) {
++      if (doInitialAllocateContainers(ctx)) {
++        calculateItemsInView(ctx, {
++          dataChanged: true,
++          doMVCP: true,
++          suppressInitialScrollSideEffects: true
++        });
++      }
++      return;
++    }
+     if (!IsNewArchitecture) {
+       doInitialAllocateContainers(ctx);
+     }
+diff --git a/node_modules/@legendapp/list/react-native.web.d.ts b/node_modules/@legendapp/list/react-native.web.d.ts
+index c424d3c..a543356 100644
+--- a/node_modules/@legendapp/list/react-native.web.d.ts
++++ b/node_modules/@legendapp/list/react-native.web.d.ts
+@@ -31,7 +31,7 @@ interface MaintainVisibleContentPositionNormalized<ItemT = any> {
+     shouldRestorePosition?: (item: ItemT, index: number, data: readonly ItemT[]) => boolean;
+ }
+
+-type ListenerType = "activeStickyIndex" | "alignItemsAtEndPadding" | "anchoredEndSpaceSize" | "containerLayoutEpoch" | "debugComputedScroll" | "debugRawScroll" | "extraData" | "footerSize" | "headerSize" | "lastItemKeys" | "lastPositionUpdate" | "maintainVisibleContentPosition" | "numColumns" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "scrollAdjust" | "scrollAdjustPending" | "scrollAdjustUserOffset" | "scrollSize" | "snapToOffsets" | "stylePaddingTop" | "totalSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | `containerColumn${number}` | `containerSpan${number}` | `containerItemData${number}` | `containerItemIndex${number}` | `containerItemKey${number}` | `containerLayoutReady${number}` | `containerPosition${number}` | `containerSticky${number}`;
++type ListenerType = "activeStickyIndex" | "alignItemsAtEndPadding" | "anchoredEndSpaceSize" | "containerLayoutEpoch" | "debugComputedScroll" | "debugRawScroll" | "extraData" | "footerSize" | "headerSize" | "initialContentVisible" | "lastItemKeys" | "lastPositionUpdate" | "maintainVisibleContentPosition" | "numColumns" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "scrollAdjust" | "scrollAdjustPending" | "scrollAdjustUserOffset" | "scrollSize" | "snapToOffsets" | "stylePaddingTop" | "totalSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | `containerColumn${number}` | `containerSpan${number}` | `containerItemData${number}` | `containerItemIndex${number}` | `containerItemKey${number}` | `containerLayoutReady${number}` | `containerPosition${number}` | `containerSticky${number}`;
+ type LegendListListenerType = Extract<ListenerType, "activeStickyIndex" | "anchoredEndSpaceSize" | "footerSize" | "headerSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | "lastItemKeys" | "lastPositionUpdate" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "snapToOffsets" | "totalSize">;
+ type ListenerTypeValueMap = {
+     activeStickyIndex: number;
+@@ -44,6 +44,7 @@ type ListenerTypeValueMap = {
+     extraData: any;
+     footerSize: number;
+     headerSize: number;
++    initialContentVisible: boolean;
+     isAtEnd: boolean;
+     isAtStart: boolean;
+     isNearEnd: boolean;
+@@ -373,6 +374,25 @@ interface LegendListSpecificProps<ItemT, TItemType extends string | undefined> {
+      * Configures the adaptive render signal. Items can use this to render a lighter version while scrolling quickly.
+      */
+     experimental_adaptiveRender?: AdaptiveRenderConfig;
++    /**
++     * Declares the exact initial viewport so a native Fabric list can render its initial scroll
++     * target in the first commit instead of waiting for measurement and bootstrap convergence.
++     *
++     * This is a correctness guarantee, not a hint: the declared size must match the measured
++     * layout, `getFixedItemSize` must return an exact size for every initial item, and an
++     * index-based `initialScrollIndex` (or `initialScrollAtEnd`) must be set. It is intentionally
++     * separate from `estimatedListSize`, which stays a performance hint.
++     *
++     * Unsupported configurations, the old architecture and web keep the existing behavior and warn
++     * once in development. A declared size that does not match the measured layout falls back to
++     * the normal initial-scroll path, but it cannot retract a frame that was already presented.
++     *
++     * @default undefined
++     */
++    experimental_exactInitialLayout?: {
++        height: number;
++        width: number;
++    };
+     /**
+      * Keeps a newly recycled item laid out but invisible until its size has been measured, so it is never painted at
+      * the estimated position it was recycled to. Only applies on the new architecture.
+diff --git a/node_modules/@legendapp/list/react-native.web.js b/node_modules/@legendapp/list/react-native.web.js
+index 5b171eb..33e6fef 100644
+--- a/node_modules/@legendapp/list/react-native.web.js
++++ b/node_modules/@legendapp/list/react-native.web.js
+@@ -7856,6 +7856,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     initialScrollIndex: initialScrollIndexProp,
+     initialScrollOffset: initialScrollOffsetProp,
+     experimental_adaptiveRender,
++    experimental_exactInitialLayout,
+     experimental_hideItemsUntilMeasured,
+     itemsAreEqual,
+     keyExtractor: keyExtractorProp,
+diff --git a/node_modules/@legendapp/list/react-native.web.mjs b/node_modules/@legendapp/list/react-native.web.mjs
+index cf549ca..251cb2b 100644
+--- a/node_modules/@legendapp/list/react-native.web.mjs
++++ b/node_modules/@legendapp/list/react-native.web.mjs
+@@ -7835,6 +7835,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     initialScrollIndex: initialScrollIndexProp,
+     initialScrollOffset: initialScrollOffsetProp,
+     experimental_adaptiveRender,
++    experimental_exactInitialLayout,
+     experimental_hideItemsUntilMeasured,
+     itemsAreEqual,
+     keyExtractor: keyExtractorProp,
+diff --git a/node_modules/@legendapp/list/react.d.ts b/node_modules/@legendapp/list/react.d.ts
+index c424d3c..a543356 100644
+--- a/node_modules/@legendapp/list/react.d.ts
++++ b/node_modules/@legendapp/list/react.d.ts
+@@ -31,7 +31,7 @@ interface MaintainVisibleContentPositionNormalized<ItemT = any> {
+     shouldRestorePosition?: (item: ItemT, index: number, data: readonly ItemT[]) => boolean;
+ }
+
+-type ListenerType = "activeStickyIndex" | "alignItemsAtEndPadding" | "anchoredEndSpaceSize" | "containerLayoutEpoch" | "debugComputedScroll" | "debugRawScroll" | "extraData" | "footerSize" | "headerSize" | "lastItemKeys" | "lastPositionUpdate" | "maintainVisibleContentPosition" | "numColumns" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "scrollAdjust" | "scrollAdjustPending" | "scrollAdjustUserOffset" | "scrollSize" | "snapToOffsets" | "stylePaddingTop" | "totalSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | `containerColumn${number}` | `containerSpan${number}` | `containerItemData${number}` | `containerItemIndex${number}` | `containerItemKey${number}` | `containerLayoutReady${number}` | `containerPosition${number}` | `containerSticky${number}`;
++type ListenerType = "activeStickyIndex" | "alignItemsAtEndPadding" | "anchoredEndSpaceSize" | "containerLayoutEpoch" | "debugComputedScroll" | "debugRawScroll" | "extraData" | "footerSize" | "headerSize" | "initialContentVisible" | "lastItemKeys" | "lastPositionUpdate" | "maintainVisibleContentPosition" | "numColumns" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "scrollAdjust" | "scrollAdjustPending" | "scrollAdjustUserOffset" | "scrollSize" | "snapToOffsets" | "stylePaddingTop" | "totalSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | `containerColumn${number}` | `containerSpan${number}` | `containerItemData${number}` | `containerItemIndex${number}` | `containerItemKey${number}` | `containerLayoutReady${number}` | `containerPosition${number}` | `containerSticky${number}`;
+ type LegendListListenerType = Extract<ListenerType, "activeStickyIndex" | "anchoredEndSpaceSize" | "footerSize" | "headerSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | "lastItemKeys" | "lastPositionUpdate" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "snapToOffsets" | "totalSize">;
+ type ListenerTypeValueMap = {
+     activeStickyIndex: number;
+@@ -44,6 +44,7 @@ type ListenerTypeValueMap = {
+     extraData: any;
+     footerSize: number;
+     headerSize: number;
++    initialContentVisible: boolean;
+     isAtEnd: boolean;
+     isAtStart: boolean;
+     isNearEnd: boolean;
+@@ -373,6 +374,25 @@ interface LegendListSpecificProps<ItemT, TItemType extends string | undefined> {
+      * Configures the adaptive render signal. Items can use this to render a lighter version while scrolling quickly.
+      */
+     experimental_adaptiveRender?: AdaptiveRenderConfig;
++    /**
++     * Declares the exact initial viewport so a native Fabric list can render its initial scroll
++     * target in the first commit instead of waiting for measurement and bootstrap convergence.
++     *
++     * This is a correctness guarantee, not a hint: the declared size must match the measured
++     * layout, `getFixedItemSize` must return an exact size for every initial item, and an
++     * index-based `initialScrollIndex` (or `initialScrollAtEnd`) must be set. It is intentionally
++     * separate from `estimatedListSize`, which stays a performance hint.
++     *
++     * Unsupported configurations, the old architecture and web keep the existing behavior and warn
++     * once in development. A declared size that does not match the measured layout falls back to
++     * the normal initial-scroll path, but it cannot retract a frame that was already presented.
++     *
++     * @default undefined
++     */
++    experimental_exactInitialLayout?: {
++        height: number;
++        width: number;
++    };
+     /**
+      * Keeps a newly recycled item laid out but invisible until its size has been measured, so it is never painted at
+      * the estimated position it was recycled to. Only applies on the new architecture.
+diff --git a/node_modules/@legendapp/list/react.js b/node_modules/@legendapp/list/react.js
+index 5b171eb..33e6fef 100644
+--- a/node_modules/@legendapp/list/react.js
++++ b/node_modules/@legendapp/list/react.js
+@@ -7856,6 +7856,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     initialScrollIndex: initialScrollIndexProp,
+     initialScrollOffset: initialScrollOffsetProp,
+     experimental_adaptiveRender,
++    experimental_exactInitialLayout,
+     experimental_hideItemsUntilMeasured,
+     itemsAreEqual,
+     keyExtractor: keyExtractorProp,
+diff --git a/node_modules/@legendapp/list/react.mjs b/node_modules/@legendapp/list/react.mjs
+index cf549ca..251cb2b 100644
+--- a/node_modules/@legendapp/list/react.mjs
++++ b/node_modules/@legendapp/list/react.mjs
+@@ -7835,6 +7835,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     initialScrollIndex: initialScrollIndexProp,
+     initialScrollOffset: initialScrollOffsetProp,
+     experimental_adaptiveRender,
++    experimental_exactInitialLayout,
+     experimental_hideItemsUntilMeasured,
+     itemsAreEqual,
+     keyExtractor: keyExtractorProp,
+diff --git a/node_modules/@legendapp/list/reanimated.d.ts b/node_modules/@legendapp/list/reanimated.d.ts
+index 69f7e84..60e507e 100644
+--- a/node_modules/@legendapp/list/reanimated.d.ts
++++ b/node_modules/@legendapp/list/reanimated.d.ts
+@@ -9,7 +9,7 @@ interface MaintainVisibleContentPositionNormalized<ItemT = any> {
+     shouldRestorePosition?: (item: ItemT, index: number, data: readonly ItemT[]) => boolean;
+ }
+
+-type ListenerType = "activeStickyIndex" | "alignItemsAtEndPadding" | "anchoredEndSpaceSize" | "containerLayoutEpoch" | "debugComputedScroll" | "debugRawScroll" | "extraData" | "footerSize" | "headerSize" | "lastItemKeys" | "lastPositionUpdate" | "maintainVisibleContentPosition" | "numColumns" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "scrollAdjust" | "scrollAdjustPending" | "scrollAdjustUserOffset" | "scrollSize" | "snapToOffsets" | "stylePaddingTop" | "totalSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | `containerColumn${number}` | `containerSpan${number}` | `containerItemData${number}` | `containerItemIndex${number}` | `containerItemKey${number}` | `containerLayoutReady${number}` | `containerPosition${number}` | `containerSticky${number}`;
++type ListenerType = "activeStickyIndex" | "alignItemsAtEndPadding" | "anchoredEndSpaceSize" | "containerLayoutEpoch" | "debugComputedScroll" | "debugRawScroll" | "extraData" | "footerSize" | "headerSize" | "initialContentVisible" | "lastItemKeys" | "lastPositionUpdate" | "maintainVisibleContentPosition" | "numColumns" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "scrollAdjust" | "scrollAdjustPending" | "scrollAdjustUserOffset" | "scrollSize" | "snapToOffsets" | "stylePaddingTop" | "totalSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | `containerColumn${number}` | `containerSpan${number}` | `containerItemData${number}` | `containerItemIndex${number}` | `containerItemKey${number}` | `containerLayoutReady${number}` | `containerPosition${number}` | `containerSticky${number}`;
+ type LegendListListenerType = Extract<ListenerType, "activeStickyIndex" | "anchoredEndSpaceSize" | "footerSize" | "headerSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | "lastItemKeys" | "lastPositionUpdate" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "snapToOffsets" | "totalSize">;
+ type ListenerTypeValueMap = {
+     activeStickyIndex: number;
+@@ -22,6 +22,7 @@ type ListenerTypeValueMap = {
+     extraData: any;
+     footerSize: number;
+     headerSize: number;
++    initialContentVisible: boolean;
+     isAtEnd: boolean;
+     isAtStart: boolean;
+     isNearEnd: boolean;
+@@ -351,6 +352,25 @@ interface LegendListSpecificProps<ItemT, TItemType extends string | undefined> {
+      * Configures the adaptive render signal. Items can use this to render a lighter version while scrolling quickly.
+      */
+     experimental_adaptiveRender?: AdaptiveRenderConfig;
++    /**
++     * Declares the exact initial viewport so a native Fabric list can render its initial scroll
++     * target in the first commit instead of waiting for measurement and bootstrap convergence.
++     *
++     * This is a correctness guarantee, not a hint: the declared size must match the measured
++     * layout, `getFixedItemSize` must return an exact size for every initial item, and an
++     * index-based `initialScrollIndex` (or `initialScrollAtEnd`) must be set. It is intentionally
++     * separate from `estimatedListSize`, which stays a performance hint.
++     *
++     * Unsupported configurations, the old architecture and web keep the existing behavior and warn
++     * once in development. A declared size that does not match the measured layout falls back to
++     * the normal initial-scroll path, but it cannot retract a frame that was already presented.
++     *
++     * @default undefined
++     */
++    experimental_exactInitialLayout?: {
++        height: number;
++        width: number;
++    };
+     /**
+      * Keeps a newly recycled item laid out but invisible until its size has been measured, so it is never painted at
+      * the estimated position it was recycled to. Only applies on the new architecture.
+diff --git a/node_modules/@legendapp/list/section-list.d.ts b/node_modules/@legendapp/list/section-list.d.ts
+index 7fefd46..e966c18 100644
+--- a/node_modules/@legendapp/list/section-list.d.ts
++++ b/node_modules/@legendapp/list/section-list.d.ts
+@@ -65,7 +65,7 @@ interface MaintainVisibleContentPositionNormalized<ItemT = any> {
+     shouldRestorePosition?: (item: ItemT, index: number, data: readonly ItemT[]) => boolean;
+ }
+
+-type ListenerType = "activeStickyIndex" | "alignItemsAtEndPadding" | "anchoredEndSpaceSize" | "containerLayoutEpoch" | "debugComputedScroll" | "debugRawScroll" | "extraData" | "footerSize" | "headerSize" | "lastItemKeys" | "lastPositionUpdate" | "maintainVisibleContentPosition" | "numColumns" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "scrollAdjust" | "scrollAdjustPending" | "scrollAdjustUserOffset" | "scrollSize" | "snapToOffsets" | "stylePaddingTop" | "totalSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | `containerColumn${number}` | `containerSpan${number}` | `containerItemData${number}` | `containerItemIndex${number}` | `containerItemKey${number}` | `containerLayoutReady${number}` | `containerPosition${number}` | `containerSticky${number}`;
++type ListenerType = "activeStickyIndex" | "alignItemsAtEndPadding" | "anchoredEndSpaceSize" | "containerLayoutEpoch" | "debugComputedScroll" | "debugRawScroll" | "extraData" | "footerSize" | "headerSize" | "initialContentVisible" | "lastItemKeys" | "lastPositionUpdate" | "maintainVisibleContentPosition" | "numColumns" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "scrollAdjust" | "scrollAdjustPending" | "scrollAdjustUserOffset" | "scrollSize" | "snapToOffsets" | "stylePaddingTop" | "totalSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | `containerColumn${number}` | `containerSpan${number}` | `containerItemData${number}` | `containerItemIndex${number}` | `containerItemKey${number}` | `containerLayoutReady${number}` | `containerPosition${number}` | `containerSticky${number}`;
+ type LegendListListenerType = Extract<ListenerType, "activeStickyIndex" | "anchoredEndSpaceSize" | "footerSize" | "headerSize" | "isAtEnd" | "isAtStart" | "isNearEnd" | "isNearStart" | "isWithinMaintainScrollAtEndThreshold" | "adaptiveRender" | "lastItemKeys" | "lastPositionUpdate" | "numContainers" | "numContainersPooled" | "otherAxisSize" | "readyToRender" | "snapToOffsets" | "totalSize">;
+ type ListenerTypeValueMap = {
+     activeStickyIndex: number;
+@@ -78,6 +78,7 @@ type ListenerTypeValueMap = {
+     extraData: any;
+     footerSize: number;
+     headerSize: number;
++    initialContentVisible: boolean;
+     isAtEnd: boolean;
+     isAtStart: boolean;
+     isNearEnd: boolean;
+@@ -407,6 +408,25 @@ interface LegendListSpecificProps<ItemT, TItemType extends string | undefined> {
+      * Configures the adaptive render signal. Items can use this to render a lighter version while scrolling quickly.
+      */
+     experimental_adaptiveRender?: AdaptiveRenderConfig;
++    /**
++     * Declares the exact initial viewport so a native Fabric list can render its initial scroll
++     * target in the first commit instead of waiting for measurement and bootstrap convergence.
++     *
++     * This is a correctness guarantee, not a hint: the declared size must match the measured
++     * layout, `getFixedItemSize` must return an exact size for every initial item, and an
++     * index-based `initialScrollIndex` (or `initialScrollAtEnd`) must be set. It is intentionally
++     * separate from `estimatedListSize`, which stays a performance hint.
++     *
++     * Unsupported configurations, the old architecture and web keep the existing behavior and warn
++     * once in development. A declared size that does not match the measured layout falls back to
++     * the normal initial-scroll path, but it cannot retract a frame that was already presented.
++     *
++     * @default undefined
++     */
++    experimental_exactInitialLayout?: {
++        height: number;
++        width: number;
++    };
+     /**
+      * Keeps a newly recycled item laid out but invisible until its size has been measured, so it is never painted at
+      * the estimated position it was recycled to. Only applies on the new architecture.

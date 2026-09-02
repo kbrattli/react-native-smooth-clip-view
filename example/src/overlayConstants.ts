@@ -36,8 +36,9 @@ export const CLOSE_TIMING_CONFIG = {
 /**
  * Native counterparts of the JS timings above. `ClipEasings.easeOutCubic` is
  * the exact single-Bézier form of `Easing.out(Easing.cubic)`, so the native
- * clip and the RN `progress` channel run one identical curve — that lossless
- * pairing is what keeps the headers phase-locked to the window.
+ * clip and the RN `progress` channel use the same duration and curve shape.
+ * They still run on independent Core Animation and Reanimated clocks, so this
+ * configuration does not establish a shared start epoch.
  */
 export const NATIVE_TIMING = {
   type: 'timing',

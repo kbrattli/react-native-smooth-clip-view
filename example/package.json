@@ -4,7 +4,7 @@
   "main": "expo-router/entry",
   "dependencies": {
     "@expo/metro-runtime": "~57.0.10",
-    "@legendapp/list": "3.0.0",
+    "@legendapp/list": "3.3.10",
     "@shopify/react-native-skia": "2.6.2",
     "expo": "~57.0.13",
     "expo-constants": "~57.0.11",
@@ -23,6 +23,7 @@
     "react-native-worklets": "0.10.4"
   },
   "scripts": {
+    "postinstall": "npm run --prefix .. patch:legend-list",
     "start": "expo start --dev-client",
     "android": "expo run:android",
     "ios": "expo run:ios",

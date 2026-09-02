@@ -36,6 +36,7 @@
   "scripts": {
     "example": "npm run --workspace react-native-smooth-clip-view-example",
     "clean": "del-cli lib",
+    "patch:legend-list": "patch-package",
     "prepare": "bob build",
     "typecheck": "tsc",
     "lint": "eslint \"**/*.{js,ts,tsx}\"",
@@ -89,6 +90,7 @@
     "hermes-eslint": "^0.37.0",
     "jest": "^29.7.0",
     "lefthook": "^2.1.9",
+    "patch-package": "^8.0.1",
     "prettier": "^3.8.3",
     "react": "19.2.3",
     "react-native": "0.86.2",

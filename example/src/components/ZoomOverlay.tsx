@@ -243,6 +243,10 @@ const OverlayPager = memo(function OverlayPagerView({
       drawDistance={25}
       estimatedItemSize={SCREEN_WIDTH}
       estimatedListSize={{ width: SCREEN_WIDTH, height: SCREEN_HEIGHT }}
+      experimental_exactInitialLayout={{
+        width: SCREEN_WIDTH,
+        height: SCREEN_HEIGHT,
+      }}
       getFixedItemSize={getFixedItemSize}
       horizontal
       initialScrollIndex={openingIndex}
