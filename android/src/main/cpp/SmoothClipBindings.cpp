@@ -29,7 +29,6 @@ namespace {
 constexpr double kMaxSafeJavaScriptInteger = 9007199254740991.0;
 constexpr size_t kPresentationStride = 21;
 constexpr size_t kSnapshotStride = kPresentationStride + 1;
-constexpr size_t kKeyframeStride = kPresentationStride + 1;
 constexpr size_t kMotionEntryStride = kPresentationStride * 2 + 2;
 
 bool validDriverId(double value) {
@@ -224,11 +223,6 @@ Array snapshotsArray(
   return result;
 }
 
-bool validSuspensionPolicy(double value) {
-  return value == static_cast<double>(GroupSuspensionPolicy::Pause) ||
-      value == static_cast<double>(GroupSuspensionPolicy::Finish);
-}
-
 std::vector<uint64_t> driverIdsFromArray(Runtime &runtime, const Array &values) {
   std::vector<uint64_t> driverIds;
   const size_t length = values.size(runtime);
@@ -271,69 +265,9 @@ bool parseGroupMotionEntries(
       return false;
     }
     entries.push_back(
-        {static_cast<uint64_t>(driverId), hasFromValue == 1.0, from, target, {}});
+        {static_cast<uint64_t>(driverId), hasFromValue == 1.0, from, target});
   }
   return true;
-}
-
-bool parseGroupKeyframeEntries(
-    Runtime &runtime,
-    const Array &values,
-    std::vector<GroupMotionEntry> &entries) {
-  const size_t length = values.size(runtime);
-  size_t index = 0;
-  while (index < length) {
-    constexpr size_t prefix = kMotionEntryStride + 1;
-    if (length - index < prefix) return false;
-    double driverId;
-    double hasFromValue;
-    double frameCountValue;
-    Presentation from;
-    Presentation target;
-    if (!numberAt(runtime, values, index, driverId) ||
-        !numberAt(runtime, values, index + 1, hasFromValue) ||
-        !numberAt(
-            runtime, values, index + kMotionEntryStride, frameCountValue) ||
-        !presentationAt(runtime, values, index + 2, from) ||
-        !presentationAt(
-            runtime, values, index + 2 + kPresentationStride, target) ||
-        !validDriverId(driverId) ||
-        (hasFromValue != 0.0 && hasFromValue != 1.0) ||
-        !finitePresentation(from) || !finitePresentation(target) ||
-        !std::isfinite(frameCountValue) || frameCountValue < 2 ||
-        std::floor(frameCountValue) != frameCountValue) {
-      return false;
-    }
-    const size_t frameCount = static_cast<size_t>(frameCountValue);
-    index += prefix;
-    if (frameCount > (length - index) / kKeyframeStride) return false;
-    std::vector<Keyframe> keyframes;
-    keyframes.reserve(frameCount);
-    double previousOffset = -1;
-    for (size_t frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
-      double offset;
-      Presentation presentation;
-      if (!numberAt(runtime, values, index, offset) ||
-          !presentationAt(runtime, values, index + 1, presentation) ||
-          offset < 0 || offset > 1 || offset <= previousOffset ||
-          !finitePresentation(presentation)) {
-        return false;
-      }
-      previousOffset = offset;
-      keyframes.push_back({offset, presentation});
-      index += kKeyframeStride;
-    }
-    if (keyframes.front().offset != 0 || keyframes.back().offset != 1) {
-      return false;
-    }
-    entries.push_back({
-        static_cast<uint64_t>(driverId),
-        hasFromValue == 1.0,
-        from,
-        target,
-        std::move(keyframes)});
-  }
-  return !entries.empty();
 }
 
 struct BindingsState {
@@ -382,10 +316,15 @@ void installBindings(
 
   setCompletionCallback(
       state.get(),
-      [state](uint64_t driverId, int32_t animationId, bool finished) {
+      [state](
+          uint64_t driverId,
+          int32_t animationId,
+          int32_t completionTag,
+          bool finished) {
         auto invoker = state->callInvoker;
         if (!invoker) return;
-        invoker->invokeAsync([state, driverId, animationId, finished]() {
+        invoker->invokeAsync(
+            [state, driverId, animationId, completionTag, finished]() {
           if (state->runtime == nullptr) return;
           Runtime &rt = *state->runtime;
           std::vector<std::shared_ptr<Function>> snapshot;
@@ -397,6 +336,7 @@ void installBindings(
             Object result(rt);
             result.setProperty(rt, "driverId", static_cast<double>(driverId));
             result.setProperty(rt, "animationId", animationId);
+            result.setProperty(rt, "completionTag", completionTag);
             result.setProperty(rt, "finished", finished);
             listener->call(rt, std::move(result));
           }
@@ -408,13 +348,14 @@ void installBindings(
       [state](
           uint64_t controllerId,
           int32_t groupId,
+          int32_t completionTag,
           bool finished,
-          std::vector<uint64_t> driverIds) {
+          std::vector<DriverSnapshot> snapshots) {
         auto invoker = state->callInvoker;
         if (!invoker) return;
         invoker->invokeAsync(
-            [state, controllerId, groupId, finished,
-             driverIds = std::move(driverIds)]() {
+            [state, controllerId, groupId, completionTag, finished,
+             snapshots = std::move(snapshots)]() {
               if (state->runtime == nullptr) return;
               Runtime &rt = *state->runtime;
               std::vector<std::shared_ptr<Function>> snapshot;
@@ -427,13 +368,10 @@ void installBindings(
                 result.setProperty(
                     rt, "controllerId", static_cast<double>(controllerId));
                 result.setProperty(rt, "groupId", groupId);
+                result.setProperty(rt, "completionTag", completionTag);
                 result.setProperty(rt, "finished", finished);
-                Array ids(rt, driverIds.size());
-                for (size_t index = 0; index < driverIds.size(); index += 1) {
-                  ids.setValueAtIndex(
-                      rt, index, static_cast<double>(driverIds[index]));
-                }
-                result.setProperty(rt, "driverIds", std::move(ids));
+                result.setProperty(
+                    rt, "snapshots", snapshotsArray(rt, snapshots));
                 listener->call(rt, std::move(result));
               }
             });
@@ -507,7 +445,7 @@ void installBindings(
   setHostFunction(
       runtime, bindings, "animateTimingGroup", 10,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 9 || !args[1].isObject() ||
+        if (count < 10 || !args[1].isObject() ||
             !args[1].getObject(rt).isArray(rt)) {
           return Value(0);
         }
@@ -518,7 +456,6 @@ void installBindings(
             args[2].asNumber(), args[3].asNumber(), args[4].asNumber(),
             args[5].asNumber(), args[6].asNumber(),
             static_cast<int32_t>(args[7].asNumber())};
-        const double suspension = args[8].asNumber();
         if (!validDriverId(controllerId) ||
             !parseGroupMotionEntries(rt, values, entries) ||
             !std::isfinite(animation.durationMs) ||
@@ -526,22 +463,21 @@ void installBindings(
             !std::isfinite(animation.controlPoint1Y) ||
             !std::isfinite(animation.controlPoint2X) ||
             !std::isfinite(animation.controlPoint2Y) ||
-            !validSuspensionPolicy(suspension)) {
+            !std::isfinite(args[8].asNumber())) {
           return Value(0);
         }
         return Value(animateTimingGroup(
             static_cast<uint64_t>(controllerId),
             std::move(entries),
             animation,
-            static_cast<GroupSuspensionPolicy>(
-                static_cast<int32_t>(suspension)),
+            static_cast<int32_t>(args[8].asNumber()),
             startStampArg(args, count, 9)));
       });
 
   setHostFunction(
       runtime, bindings, "animateSpringGroup", 10,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 9 || !args[1].isObject() ||
+        if (count < 10 || !args[1].isObject() ||
             !args[1].getObject(rt).isArray(rt)) {
           return Value(0);
         }
@@ -550,55 +486,26 @@ void installBindings(
         std::vector<GroupMotionEntry> entries;
         const SpringAnimation animation{
             args[2].asNumber(), args[3].asNumber(), args[4].asNumber(),
-            args[5].asNumber(), boolArg(args, count, 6),
-            static_cast<int32_t>(args[7].asNumber())};
-        const double suspension = args[8].asNumber();
+            args[5].asNumber(), false,
+            static_cast<int32_t>(args[7].asNumber()),
+            args[6].asNumber()};
         if (!validDriverId(controllerId) ||
             !parseGroupMotionEntries(rt, values, entries) ||
             !std::isfinite(animation.mass) ||
             !std::isfinite(animation.stiffness) ||
             !std::isfinite(animation.damping) ||
             !std::isfinite(animation.initialVelocity) || animation.mass <= 0 ||
-            animation.stiffness <= 0 || animation.damping < 0 ||
-            !validSuspensionPolicy(suspension)) {
+            !std::isfinite(animation.energyThreshold) ||
+            !std::isfinite(args[8].asNumber()) || animation.stiffness <= 0 ||
+            animation.damping < 0 || animation.energyThreshold <= 0) {
           return Value(0);
         }
         return Value(animateSpringGroup(
             static_cast<uint64_t>(controllerId),
             std::move(entries),
             animation,
-            static_cast<GroupSuspensionPolicy>(
-                static_cast<int32_t>(suspension)),
+            static_cast<int32_t>(args[8].asNumber()),
             startStampArg(args, count, 9)));
-      });
-
-  setHostFunction(
-      runtime, bindings, "animateKeyframesGroup", 6,
-      [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 5 || !args[1].isObject() ||
-            !args[1].getObject(rt).isArray(rt)) {
-          return Value(0);
-        }
-        const double controllerId = args[0].asNumber();
-        Array values = args[1].getObject(rt).getArray(rt);
-        std::vector<GroupMotionEntry> entries;
-        const double durationMs = args[2].asNumber();
-        const int32_t reduceMotion = static_cast<int32_t>(args[3].asNumber());
-        const double suspension = args[4].asNumber();
-        if (!validDriverId(controllerId) ||
-            !parseGroupKeyframeEntries(rt, values, entries) ||
-            !std::isfinite(durationMs) ||
-            !validSuspensionPolicy(suspension)) {
-          return Value(0);
-        }
-        return Value(animateKeyframesGroup(
-            static_cast<uint64_t>(controllerId),
-            std::move(entries),
-            durationMs,
-            reduceMotion,
-            static_cast<GroupSuspensionPolicy>(
-                static_cast<int32_t>(suspension)),
-            startStampArg(args, count, 5)));
       });
 
   setHostFunction(
@@ -644,9 +551,9 @@ void installBindings(
       });
 
   setHostFunction(
-      runtime, bindings, "setClipPresentationScalars", 15,
+      runtime, bindings, "setClipFrameScalars", 22,
       [](Runtime &, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 15) return Value::undefined();
+        if (count < 22) return Value::undefined();
         const double driverId = args[0].asNumber();
         Geometry geometry{
             args[1].asNumber(), args[2].asNumber(), args[3].asNumber(),
@@ -662,16 +569,27 @@ void installBindings(
             geometry.topLeftRadius == geometry.bottomLeftRadius) {
           geometry.radius = geometry.topLeftRadius;
         }
-        const Presentation parsed{
-            geometry, args[10].asNumber(), args[11].asNumber(),
-            args[12].asNumber()};
+        const Presentation presentation{
+            geometry,
+            args[10].asNumber(),
+            args[11].asNumber(),
+            args[12].asNumber(),
+            {
+                boolArg(args, count, 13),
+                args[14].asNumber(),
+                args[15].asNumber(),
+                args[16].asNumber(),
+                args[17].asNumber(),
+                args[18].asNumber(),
+                args[19].asNumber(),
+                args[20].asNumber(),
+                args[21].asNumber(),
+            }};
         if (validDriverId(driverId) && validCurve(args[9].asNumber()) &&
-            finitePresentation(parsed)) {
-          setScalars(
-              static_cast<uint64_t>(driverId), geometry,
-              parsed.contentTranslateX, parsed.contentTranslateY,
-              parsed.contentScale, boolArg(args, count, 13),
-              boolArg(args, count, 14));
+            finitePresentation(presentation)) {
+          setPresentation(
+              static_cast<uint64_t>(driverId), presentation,
+              true, false, true);
         }
         return Value::undefined();
       });
@@ -699,11 +617,12 @@ void installBindings(
       });
 
   setHostFunction(
-      runtime, bindings, "animateTiming", 10,
+      runtime, bindings, "animateTiming", 11,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 9 || !args[0].isNumber() || !args[1].isObject() ||
+        if (count < 10 || !args[0].isNumber() || !args[1].isObject() ||
             !args[1].getObject(rt).isArray(rt) || !args[2].isObject() ||
-            !args[2].getObject(rt).isArray(rt)) {
+            !args[2].getObject(rt).isArray(rt) || !args[9].isNumber() ||
+            !std::isfinite(args[9].asNumber())) {
           return Value(0);
         }
         const double driverId = args[0].asNumber();
@@ -727,17 +646,19 @@ void installBindings(
         }
         return Value(animateTiming(
             static_cast<uint64_t>(driverId),
-            {hasInteractiveStart, start, startStampArg(args, count, 9)},
+            {hasInteractiveStart, start, startStampArg(args, count, 10)},
             target,
-            animation));
+            animation,
+            static_cast<int32_t>(args[9].asNumber())));
       });
 
   setHostFunction(
-      runtime, bindings, "animateSpring", 10,
+      runtime, bindings, "animateSpring", 11,
       [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 9 || !args[0].isNumber() || !args[1].isObject() ||
+        if (count < 10 || !args[0].isNumber() || !args[1].isObject() ||
             !args[1].getObject(rt).isArray(rt) || !args[2].isObject() ||
-            !args[2].getObject(rt).isArray(rt)) {
+            !args[2].getObject(rt).isArray(rt) || !args[9].isNumber() ||
+            !std::isfinite(args[9].asNumber())) {
           return Value(0);
         }
         const double driverId = args[0].asNumber();
@@ -765,64 +686,10 @@ void installBindings(
         }
         return Value(animateSpring(
             static_cast<uint64_t>(driverId),
-            {hasInteractiveStart, start, startStampArg(args, count, 9)},
+            {hasInteractiveStart, start, startStampArg(args, count, 10)},
             target,
-            animation));
-      });
-
-  setHostFunction(
-      runtime, bindings, "animateKeyframes", 7,
-      [](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 6 || !args[0].isNumber() || !args[1].isObject() ||
-            !args[1].getObject(rt).isArray(rt) || !args[2].isObject() ||
-            !args[2].getObject(rt).isArray(rt) || !args[4].isObject() ||
-            !args[4].getObject(rt).isArray(rt)) {
-          return Value(0);
-        }
-        const double driverId = args[0].asNumber();
-        const Array startValues = args[1].getObject(rt).getArray(rt);
-        const Array targetValues = args[2].getObject(rt).getArray(rt);
-        const bool hasInteractiveStart = startValues.size(rt) != 0;
-        Presentation start{};
-        Presentation target;
-        const double durationMs = args[3].asNumber();
-        const int32_t reduceMotion = static_cast<int32_t>(args[5].asNumber());
-        Array frames = args[4].getObject(rt).getArray(rt);
-        const size_t length = frames.size(rt);
-        if (!validDriverId(driverId) ||
-            (hasInteractiveStart &&
-             (startValues.size(rt) != kPresentationStride ||
-              !presentationAt(rt, startValues, 0, start))) ||
-            targetValues.size(rt) != kPresentationStride ||
-            !presentationAt(rt, targetValues, 0, target) ||
-            !std::isfinite(durationMs) ||
-            length < kKeyframeStride * 2 || length % kKeyframeStride != 0) {
-          return Value(0);
-        }
-        std::vector<Keyframe> keyframes;
-        keyframes.reserve(length / kKeyframeStride);
-        double previousOffset = -1;
-        for (size_t index = 0; index < length; index += kKeyframeStride) {
-          double offset;
-          Presentation frame;
-          if (!numberAt(rt, frames, index, offset) ||
-              !presentationAt(rt, frames, index + 1, frame) ||
-              offset < 0 || offset > 1 || offset <= previousOffset) {
-            return Value(0);
-          }
-          previousOffset = offset;
-          keyframes.push_back({offset, frame});
-        }
-        if (keyframes.front().offset != 0 || keyframes.back().offset != 1) {
-          return Value(0);
-        }
-        return Value(animateKeyframes(
-            static_cast<uint64_t>(driverId),
-            {hasInteractiveStart, start, startStampArg(args, count, 6)},
-            target,
-            durationMs,
-            std::move(keyframes),
-            reduceMotion));
+            animation,
+            static_cast<int32_t>(args[9].asNumber())));
       });
 
   setHostFunction(
@@ -1034,6 +901,13 @@ void nativeUnregisterView(
   smoothclip::unregisterViewAndroid(static_cast<uint64_t>(driverId), view);
 }
 
+void nativeDestroyDriver(
+    jni::alias_ref<jni::JObject>,
+    jdouble driverId) {
+  if (driverId <= 0 || !std::isfinite(driverId)) return;
+  smoothclip::destroyDriver(static_cast<uint64_t>(driverId));
+}
+
 void nativeSetViewLifecycleVisibility(
     jni::alias_ref<jni::JObject>,
     jdouble driverId,
@@ -1064,6 +938,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) {
             makeNativeMethod(
                 "nativeSetViewHostGeometry", nativeSetViewHostGeometry),
             makeNativeMethod("nativeUnregisterView", nativeUnregisterView),
+            makeNativeMethod("nativeDestroyDriver", nativeDestroyDriver),
             makeNativeMethod(
                 "nativeSetViewLifecycleVisibility",
                 nativeSetViewLifecycleVisibility),

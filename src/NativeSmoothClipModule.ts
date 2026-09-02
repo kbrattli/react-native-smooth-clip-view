@@ -6,6 +6,7 @@ export interface Spec extends TurboModule {
     Readonly<{
       driverId: CodegenTypes.Double;
       animationId: CodegenTypes.Int32;
+      completionTag: CodegenTypes.Int32;
       finished: boolean;
     }>
   >;
@@ -13,8 +14,9 @@ export interface Spec extends TurboModule {
     Readonly<{
       controllerId: CodegenTypes.Double;
       groupId: CodegenTypes.Int32;
+      completionTag: CodegenTypes.Int32;
       finished: boolean;
-      driverIds: ReadonlyArray<CodegenTypes.Double>;
+      snapshots: ReadonlyArray<CodegenTypes.Double>;
     }>
   >;
   supportsAutonomousComplexPathAnimation(): boolean;
@@ -36,7 +38,8 @@ export interface Spec extends TurboModule {
     controlPoint2X: CodegenTypes.Double,
     controlPoint2Y: CodegenTypes.Double,
     reduceMotion: CodegenTypes.Int32,
-    suspensionPolicy: CodegenTypes.Int32
+    completionTag: CodegenTypes.Int32,
+    startTimestamp: CodegenTypes.Double
   ): CodegenTypes.Int32;
   animateSpringGroup(
     controllerId: CodegenTypes.Double,
@@ -44,17 +47,11 @@ export interface Spec extends TurboModule {
     mass: CodegenTypes.Double,
     stiffness: CodegenTypes.Double,
     damping: CodegenTypes.Double,
-    initialVelocity: CodegenTypes.Double,
-    inheritVelocity: boolean,
+    velocity: CodegenTypes.Double,
+    energyThreshold: CodegenTypes.Double,
     reduceMotion: CodegenTypes.Int32,
-    suspensionPolicy: CodegenTypes.Int32
-  ): CodegenTypes.Int32;
-  animateKeyframesGroup(
-    controllerId: CodegenTypes.Double,
-    entries: ReadonlyArray<CodegenTypes.Double>,
-    durationMs: CodegenTypes.Double,
-    reduceMotion: CodegenTypes.Int32,
-    suspensionPolicy: CodegenTypes.Int32
+    completionTag: CodegenTypes.Int32,
+    startTimestamp: CodegenTypes.Double
   ): CodegenTypes.Int32;
   cancelAnimationGroup(
     groupId: CodegenTypes.Int32,
@@ -66,7 +63,7 @@ export interface Spec extends TurboModule {
     takeOwnership: boolean,
     overridePendingAnimation: boolean
   ): void;
-  setClipPresentationScalars(
+  setClipFrameScalars(
     driverId: CodegenTypes.Double,
     x: CodegenTypes.Double,
     y: CodegenTypes.Double,
@@ -80,8 +77,15 @@ export interface Spec extends TurboModule {
     contentTranslateX: CodegenTypes.Double,
     contentTranslateY: CodegenTypes.Double,
     contentScale: CodegenTypes.Double,
-    overridePendingAnimation: boolean,
-    recordVelocity: boolean
+    shadowEnabled: boolean,
+    shadowRed: CodegenTypes.Double,
+    shadowGreen: CodegenTypes.Double,
+    shadowBlue: CodegenTypes.Double,
+    shadowAlpha: CodegenTypes.Double,
+    shadowOffsetX: CodegenTypes.Double,
+    shadowOffsetY: CodegenTypes.Double,
+    shadowBlurRadius: CodegenTypes.Double,
+    shadowSpreadDistance: CodegenTypes.Double
   ): void;
   beginInteraction(
     driverId: CodegenTypes.Double
@@ -98,7 +102,8 @@ export interface Spec extends TurboModule {
     controlPoint1Y: CodegenTypes.Double,
     controlPoint2X: CodegenTypes.Double,
     controlPoint2Y: CodegenTypes.Double,
-    reduceMotion: CodegenTypes.Int32
+    reduceMotion: CodegenTypes.Int32,
+    completionTag: CodegenTypes.Int32
   ): CodegenTypes.Int32;
   animateSpring(
     driverId: CodegenTypes.Double,
@@ -109,15 +114,8 @@ export interface Spec extends TurboModule {
     damping: CodegenTypes.Double,
     initialVelocity: CodegenTypes.Double,
     inheritVelocity: boolean,
-    reduceMotion: CodegenTypes.Int32
-  ): CodegenTypes.Int32;
-  animateKeyframes(
-    driverId: CodegenTypes.Double,
-    start: ReadonlyArray<CodegenTypes.Double>,
-    target: ReadonlyArray<CodegenTypes.Double>,
-    durationMs: CodegenTypes.Double,
-    frames: ReadonlyArray<CodegenTypes.Double>,
-    reduceMotion: CodegenTypes.Int32
+    reduceMotion: CodegenTypes.Int32,
+    completionTag: CodegenTypes.Int32
   ): CodegenTypes.Int32;
   rejectAnimation(driverId: CodegenTypes.Double): CodegenTypes.Int32;
   cancelAnimation(

@@ -8,11 +8,13 @@ import {
 } from 'react-native-reanimated';
 import {
   ClipEasings,
+  type SmoothClipCompletion,
   type SmoothClipPresentation,
   SmoothClipView,
-  useSmoothClipDriver,
+  useSmoothClipController,
 } from 'react-native-smooth-clip-view';
 import { scheduleOnRN, scheduleOnUI } from 'react-native-worklets';
+import { completeAfterNativeLandingWithValue } from '../completeAfterNativeLanding';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -28,15 +30,11 @@ const OPEN_MS = 350;
 const DRAG_MS = 600;
 const DRAG_TRANSLATE_Y = 180;
 const CLOSE_MS = 400;
-const CLOSE_KEYFRAME_COUNT = 31;
-
-// How the close is dispatched and what runs beside it. 'keyframes' is the
-// legacy 31-frame list; 'timing' is the exact-curve replacement (all harness
-// channels are affine in closeProgress, so from→landing under easeOutCubic IS
-// the keyframe list without the linearization); 'timing-stall' additionally
+const CLOSE_COMPLETION_TAG = 1;
+// How the close is dispatched and what runs beside it. 'timing-stall'
 // blocks the MAIN thread for 500 ms mid-close to prove the animation rides the
-// render server; 'bench' skips the cycle and times setScalars calls.
-export type HarnessMode = 'keyframes' | 'timing' | 'timing-stall' | 'bench';
+// render server; 'bench' skips the cycle and times frame calls.
+export type HarnessMode = 'timing' | 'timing-stall' | 'bench';
 
 // progress 1 = fullscreen, 0 = card rect; ty shifts the clip downward the
 // way the drag translation does in the reference overlay.
@@ -51,23 +49,6 @@ function presentationAt(progress: number, ty: number): SmoothClipPresentation {
     contentTranslateX: x,
     contentTranslateY: y,
   };
-}
-
-// Mirrors the reference overlay's close: ease-out cubic baked into the
-// keyframe positions, translation decaying with the same progress channel.
-function createCloseKeyframes(releaseTy: number) {
-  'worklet';
-  const frames = [];
-  for (let index = 0; index < CLOSE_KEYFRAME_COUNT; index += 1) {
-    const offset = index / (CLOSE_KEYFRAME_COUNT - 1);
-    const inverse = 1 - offset;
-    const closeProgress = inverse * inverse * inverse;
-    frames.push({
-      offset,
-      presentation: presentationAt(closeProgress, releaseTy * closeProgress),
-    });
-  }
-  return frames;
 }
 
 function logHarness(message: string) {
@@ -86,27 +67,36 @@ function HarnessOverlay({
     dispatchRef.current = { label, at };
     console.log(`[harness] dispatch label=${label} t=${at}`);
   }, []);
-  const driver = useSmoothClipDriver(
+  const dragging = useSharedValue(0);
+  const dragTy = useSharedValue(0);
+  const openProgress = useSharedValue(0);
+
+  const completeClose = useCallback(
+    (finished: boolean) => {
+      const { label, at } = dispatchRef.current;
+      logHarness(
+        `complete label=${label} finished=${finished} elapsed=${Date.now() - at}ms`
+      );
+      onDone();
+    },
+    [onDone]
+  );
+  const onNativeAnimationComplete = useCallback(
+    (result: SmoothClipCompletion) => {
+      if (result.completionTag === CLOSE_COMPLETION_TAG) {
+        completeAfterNativeLandingWithValue(completeClose, result.finished);
+      }
+    },
+    [completeClose]
+  );
+  const clip = useSmoothClipController(
     {
       clip: { ...CARD },
       contentTranslateX: CARD.x,
       contentTranslateY: CARD.y,
     },
-    {
-      onAnimationComplete: (result) => {
-        const now = Date.now();
-        const { label, at } = dispatchRef.current;
-        console.log(
-          `[harness] complete label=${label} finished=${result.finished} ` +
-            `elapsed=${now - at}ms`
-        );
-        if (label.startsWith('close')) onDone();
-      },
-    }
+    { onAnimationComplete: onNativeAnimationComplete }
   );
-  const dragging = useSharedValue(0);
-  const dragTy = useSharedValue(0);
-  const openProgress = useSharedValue(0);
 
   // Blocks the MAIN thread (the worklets UI runtime runs inline on main on
   // iOS) 100 ms into the close, for 500 ms of a 400 ms animation. A
@@ -145,22 +135,9 @@ function HarnessOverlay({
     (ty) => {
       if (ty === null) return;
       const presentation = presentationAt(1, ty);
-      driver.ui.setScalars(
-        presentation.clip.x,
-        presentation.clip.y,
-        presentation.clip.width,
-        presentation.clip.height,
-        presentation.clip.radius,
-        presentation.clip.radius,
-        presentation.clip.radius,
-        presentation.clip.radius,
-        presentation.clip.curve === 'continuous' ? 1 : 0,
-        presentation.contentTranslateX,
-        presentation.contentTranslateY,
-        presentation.contentScale ?? 1
-      );
+      clip.ui.setFrame(presentation);
     },
-    [dragTy, dragging, driver]
+    [clip, dragTy, dragging]
   );
 
   useEffect(() => {
@@ -168,32 +145,28 @@ function HarnessOverlay({
       'worklet';
       dragging.set(0);
       const releaseTy = dragTy.get();
-      if (mode === 'keyframes') {
-        const frames = createCloseKeyframes(releaseTy);
-        const target = frames[frames.length - 1]!.presentation;
-        scheduleOnRN(markDispatch, 'close-keyframes', Date.now());
-        driver.ui.animateTo(target, {
-          type: 'keyframes',
-          duration: CLOSE_MS,
-          frames,
-          from: frames[0]!.presentation,
-        });
-      } else {
-        scheduleOnRN(markDispatch, `close-${mode}`, Date.now());
-        driver.ui.animateTo(presentationAt(0, 0), {
+      const label = `close-${mode}`;
+      const startedAt = Date.now();
+      scheduleOnRN(markDispatch, label, startedAt);
+      clip.ui.setFrame(presentationAt(1, releaseTy));
+      clip.ui.beginInteraction();
+      const run = clip.ui.animateTo(
+        presentationAt(0, 0),
+        {
           type: 'timing',
           duration: CLOSE_MS,
           controlPoints: ClipEasings.easeOutCubic,
-          from: presentationAt(1, releaseTy),
-        });
-        if (mode === 'timing-stall') {
-          scheduleOnRN(armMainThreadStall);
-        }
+        },
+        CLOSE_COMPLETION_TAG
+      );
+      if (run === null) scheduleOnRN(completeClose, false);
+      if (mode === 'timing-stall') {
+        scheduleOnRN(armMainThreadStall);
       }
     };
     const startDrag = () => {
       'worklet';
-      driver.ui.beginInteraction();
+      clip.ui.beginInteraction();
       dragging.set(1);
       dragTy.set(0);
       dragTy.set(
@@ -209,7 +182,7 @@ function HarnessOverlay({
     scheduleOnUI(() => {
       'worklet';
       scheduleOnRN(markDispatch, 'open', Date.now());
-      driver.ui.animateTo(presentationAt(1, 0), {
+      clip.ui.animateTo(presentationAt(1, 0), {
         type: 'timing',
         duration: OPEN_MS,
         controlPoints: ClipEasings.easeOutCubic,
@@ -222,9 +195,10 @@ function HarnessOverlay({
     });
   }, [
     armMainThreadStall,
+    completeClose,
     dragTy,
     dragging,
-    driver,
+    clip,
     markDispatch,
     mode,
     openProgress,
@@ -233,7 +207,7 @@ function HarnessOverlay({
   return (
     <View pointerEvents="none" style={styles.overlay}>
       <SmoothClipView
-        driver={driver}
+        controller={clip}
         style={styles.host}
         testID="harness-clip-host"
       >
@@ -245,7 +219,7 @@ function HarnessOverlay({
   );
 }
 
-// Times driver.ui.setScalars on the UI runtime against a mounted host:
+// Times controller.ui.setFrame on the UI runtime against a mounted host:
 // alternating values that differ on every animated channel except the
 // constant radius — position, bounds, and content translation all move, so
 // each call lands live CALayer writes — vs a repeated value (the dedupe fast
@@ -253,7 +227,7 @@ function HarnessOverlay({
 // numbers cover the JSI + registry + property-write path and exclude the
 // CATransaction commit that a real per-frame stream would also pay.
 function BenchProbe({ onDone }: { onDone: () => void }) {
-  const driver = useSmoothClipDriver({
+  const clip = useSmoothClipController({
     clip: { ...CARD },
     contentTranslateX: CARD.x,
     contentTranslateY: CARD.y,
@@ -277,20 +251,7 @@ function BenchProbe({ onDone }: { onDone: () => void }) {
         const a = presentationAt(1, 0);
         const b = presentationAt(0.9, 40);
         const apply = (p: SmoothClipPresentation) => {
-          driver.ui.setScalars(
-            p.clip.x,
-            p.clip.y,
-            p.clip.width,
-            p.clip.height,
-            p.clip.radius,
-            p.clip.radius,
-            p.clip.radius,
-            p.clip.radius,
-            p.clip.curve === 'continuous' ? 1 : 0,
-            p.contentTranslateX,
-            p.contentTranslateY,
-            p.contentScale ?? 1
-          );
+          clip.ui.setFrame(p);
         };
         const ITERATIONS = 10000;
         for (let index = 0; index < 500; index += 1) {
@@ -320,13 +281,13 @@ function BenchProbe({ onDone }: { onDone: () => void }) {
       });
     }, 300);
     return () => clearTimeout(timer);
-  }, [driver, onDone]);
+  }, [clip, onDone]);
 
   return (
     <View pointerEvents="none" style={styles.overlay}>
-      <SmoothClipView driver={driver} style={styles.host} testID="bench-host">
+      <SmoothClipView controller={clip} style={styles.host} testID="bench-host">
         <View style={styles.sheet}>
-          <Text style={styles.sheetLabel}>setScalars bench</Text>
+          <Text style={styles.sheetLabel}>setFrame bench</Text>
         </View>
       </SmoothClipView>
     </View>
@@ -334,10 +295,9 @@ function BenchProbe({ onDone }: { onDone: () => void }) {
 }
 
 const MODES: ReadonlyArray<{ mode: HarnessMode; label: string }> = [
-  { mode: 'keyframes', label: 'Close: keyframes' },
   { mode: 'timing', label: 'Close: timing' },
   { mode: 'timing-stall', label: 'Close: timing + main stall' },
-  { mode: 'bench', label: 'setScalars bench' },
+  { mode: 'bench', label: 'setFrame bench' },
 ];
 
 export function DismissHarness() {

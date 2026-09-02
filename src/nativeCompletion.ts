@@ -1,18 +1,18 @@
-import { scheduleOnUI } from 'react-native-worklets';
-import { deliverDriverCompletion } from './driverState';
 import NativeSmoothClipModule from './smoothClipNative';
 
 type DriverCompletion = Readonly<{
   driverId: number;
   animationId: number;
+  completionTag: number;
   finished: boolean;
 }>;
 
 type GroupCompletion = Readonly<{
   controllerId: number;
   groupId: number;
+  completionTag: number;
   finished: boolean;
-  driverIds: readonly number[];
+  snapshots: readonly number[];
 }>;
 
 const driverListeners = new Map<
@@ -54,10 +54,6 @@ export function subscribeDriverCompletion(
   return () => {
     listeners.delete(listener);
     if (listeners.size === 0) driverListeners.delete(driverId);
-    if (driverListeners.size === 0) {
-      driverSubscription?.remove();
-      driverSubscription = undefined;
-    }
   };
 }
 
@@ -72,44 +68,5 @@ export function subscribeGroupCompletion(
   return () => {
     listeners.delete(listener);
     if (listeners.size === 0) groupListeners.delete(controllerId);
-    if (groupListeners.size === 0) {
-      groupSubscription?.remove();
-      groupSubscription = undefined;
-    }
   };
-}
-
-export function completeNativeAnimation(
-  driverId: number,
-  animationId: number,
-  finished: boolean
-): void {
-  deliverDriverCompletion(driverId, animationId, finished);
-}
-
-export function synchronizeNativeCompletion(
-  activeAnimationId: { value: number },
-  ownership: { value: number },
-  animationId: number,
-  _finished: boolean
-): void {
-  // Unfinished completions must also release ownership: native emits
-  // finished:false when the last participating view unmounts or the system
-  // strips the animation. Superseded ids are already filtered by the
-  // active-id comparison below, so no finished-based gate is needed.
-  scheduleOnUI(
-    (
-      active: { value: number },
-      owner: { value: number },
-      completedId: number
-    ) => {
-      'worklet';
-      if (active.value !== completedId) return;
-      active.value = 0;
-      owner.value = 0;
-    },
-    activeAnimationId,
-    ownership,
-    animationId
-  );
 }

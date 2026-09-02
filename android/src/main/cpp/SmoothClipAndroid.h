@@ -23,6 +23,7 @@ struct JSmoothClipView : facebook::jni::JavaClass<JSmoothClipView> {
       double contentTranslateYPx,
       double contentScale,
       const Shadow &shadowPx) const;
+  void setAutonomousMotion(bool active) const;
 };
 
 // Called from Kotlin (SmoothClipViewManager) on the UI thread when a Fabric

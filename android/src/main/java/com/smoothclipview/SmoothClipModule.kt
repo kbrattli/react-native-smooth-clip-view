@@ -3,6 +3,7 @@ package com.smoothclipview
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReadableArray
+import com.facebook.react.bridge.UiThreadUtil
 import com.facebook.react.bridge.WritableArray
 import com.facebook.react.module.annotations.ReactModule
 import com.facebook.react.turbomodule.core.interfaces.BindingsInstallerHolder
@@ -51,7 +52,8 @@ class SmoothClipModule(context: ReactApplicationContext) :
         controlPoint2X: Double,
         controlPoint2Y: Double,
         reduceMotion: Double,
-        suspensionPolicy: Double,
+        completionTag: Double,
+        startTimestamp: Double,
     ): Double = 0.0
 
     override fun animateSpringGroup(
@@ -60,18 +62,11 @@ class SmoothClipModule(context: ReactApplicationContext) :
         mass: Double,
         stiffness: Double,
         damping: Double,
-        initialVelocity: Double,
-        inheritVelocity: Boolean,
+        velocity: Double,
+        energyThreshold: Double,
         reduceMotion: Double,
-        suspensionPolicy: Double,
-    ): Double = 0.0
-
-    override fun animateKeyframesGroup(
-        controllerId: Double,
-        entries: ReadableArray,
-        durationMs: Double,
-        reduceMotion: Double,
-        suspensionPolicy: Double,
+        completionTag: Double,
+        startTimestamp: Double,
     ): Double = 0.0
 
     override fun cancelAnimationGroup(
@@ -86,7 +81,7 @@ class SmoothClipModule(context: ReactApplicationContext) :
         overridePendingAnimation: Boolean,
     ) = Unit
 
-    override fun setClipPresentationScalars(
+    override fun setClipFrameScalars(
         driverId: Double,
         x: Double,
         y: Double,
@@ -100,8 +95,15 @@ class SmoothClipModule(context: ReactApplicationContext) :
         contentTranslateX: Double,
         contentTranslateY: Double,
         contentScale: Double,
-        overridePendingAnimation: Boolean,
-        recordVelocity: Boolean,
+        shadowEnabled: Boolean,
+        shadowRed: Double,
+        shadowGreen: Double,
+        shadowBlue: Double,
+        shadowAlpha: Double,
+        shadowOffsetX: Double,
+        shadowOffsetY: Double,
+        shadowBlurRadius: Double,
+        shadowSpreadDistance: Double,
     ) = Unit
 
     override fun beginInteraction(driverId: Double): WritableArray =
@@ -120,6 +122,7 @@ class SmoothClipModule(context: ReactApplicationContext) :
         controlPoint2X: Double,
         controlPoint2Y: Double,
         reduceMotion: Double,
+        completionTag: Double,
     ): Double = 0.0
 
     override fun animateSpring(
@@ -132,15 +135,7 @@ class SmoothClipModule(context: ReactApplicationContext) :
         initialVelocity: Double,
         inheritVelocity: Boolean,
         reduceMotion: Double,
-    ): Double = 0.0
-
-    override fun animateKeyframes(
-        driverId: Double,
-        start: ReadableArray,
-        target: ReadableArray,
-        durationMs: Double,
-        frames: ReadableArray,
-        reduceMotion: Double,
+        completionTag: Double,
     ): Double = 0.0
 
     override fun rejectAnimation(driverId: Double): Double = 0.0
@@ -151,5 +146,9 @@ class SmoothClipModule(context: ReactApplicationContext) :
         behavior: Double,
     ): WritableArray = Arguments.createArray()
 
-    override fun destroyDriver(driverId: Double) = Unit
+    override fun destroyDriver(driverId: Double) {
+        UiThreadUtil.runOnUiThread {
+            SmoothClipBindings.nativeDestroyDriver(driverId)
+        }
+    }
 }

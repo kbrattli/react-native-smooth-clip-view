@@ -1,2 +1,6 @@
-export { sanitizeSmoothClipStyle, SmoothClipView } from './SmoothClipView.ios';
+export {
+  renderSmoothClipView,
+  sanitizeSmoothClipStyle,
+  SmoothClipView,
+} from './SmoothClipView.ios';
 export type { SmoothClipViewProps } from './SmoothClipView.ios';

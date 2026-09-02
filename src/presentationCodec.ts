@@ -3,7 +3,7 @@ import type { CanonicalSmoothClipPresentation } from './geometry';
 
 /**
  * Versionless native packet layout. Keep this as the single JS codec used by
- * drivers, groups, snapshots, cancellation, and keyframes.
+ * drivers, groups, snapshots, and cancellation.
  */
 export const PRESENTATION_STRIDE = 21;
 

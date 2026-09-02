@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -26,8 +27,8 @@ using facebook::jni::alias_ref;
 using facebook::jni::global_ref;
 
 enum class Ownership { Interactive, Native };
-enum class AnimationKind { Timing, Spring, Keyframes };
-enum class ViewParticipation { Deferred, Active, Suspended };
+enum class AnimationKind { Timing, Spring };
+enum class ViewParticipation { Deferred, Active };
 
 // Load-bearing invariant, not just a convenience clock: advance()'s frame-clock
 // anchor compares this value ABSOLUTELY against a choreographer frame stamp
@@ -51,14 +52,13 @@ double nowSeconds() {
 
 struct ActiveAnimation {
   int32_t id = 0;
+  int32_t completionTag = 0;
   AnimationKind kind = AnimationKind::Timing;
   Presentation start{{0, 0, 0, 0, 0}, 0, 0};
   Presentation target{{0, 0, 0, 0, 0}, 0, 0};
   Presentation current{{0, 0, 0, 0, 0}, 0, 0};
   TimingAnimation timing{};
   SpringAnimation spring{};
-  // Owns the segment-linear keyframes and a cursor into the active segment.
-  KeyframeCurve keyframes;
   double durationS = 0;
   double startedAtS = 0;
   // Integrated spring state. Shadow channels are skipped when neither endpoint
@@ -67,18 +67,13 @@ struct ActiveAnimation {
   Channels springVelocity{};
   std::size_t springChannelCount = kBaseChannelCount;
   double lastFrameS = 0;
-  bool finished = true;
-  // False while the animation is latched, and held out of animatingDrivers()
-  // so it cannot tick. Two ways in: built before any host view could display
-  // (pre-registration, or a detached/unsized host), or re-latched by
-  // unregisterViewAndroid when the last DISPLAYABLE host left mid-flight.
-  // Started by whichever lifecycle/geometry update first sees a displayable
-  // entry; each rebases the clock through startLatchedAnimation.
+  ScalarSpringState scalarSpring{0, 0};
+  // False only while a pre-ready animation waits for its first displayable
+  // host. Once started, host loss freezes the visible presentation.
   bool started = false;
   // False until the first advance() translates the wall-clock start stamp
   // onto the choreographer frame-time axis (elapsed-preserving). Every
-  // startedAtS stamp clears it so a re-latched resume re-anchors too — except
-  // a start that carried the JS-captured Reanimated stamp, which arrives
+  // A start that carried the JS-captured Reanimated stamp arrives
   // pre-anchored (see startAnimation) and must not be min()'d again.
   bool frameClockAnchored = false;
 };
@@ -131,10 +126,11 @@ struct GroupMemberAnimation {
 struct ActiveGroup {
   uint64_t controllerId = 0;
   int32_t id = 0;
+  int32_t completionTag = 0;
   AnimationKind kind = AnimationKind::Timing;
-  GroupSuspensionPolicy suspensionPolicy = GroupSuspensionPolicy::Pause;
   TimingAnimation timing{};
   SpringAnimation spring{};
+  ScalarSpringState scalarSpring{0, 0};
   double durationS = 0;
   double startedAtS = 0;
   double lastFrameS = 0;
@@ -142,6 +138,8 @@ struct ActiveGroup {
   bool frameClockAnchored = false;
   std::vector<GroupMemberAnimation> members;
 };
+
+bool anyDisplayableView(const DriverState &state);
 
 std::unordered_map<uint64_t, DriverState> &registry() {
   static std::unordered_map<uint64_t, DriverState> value;
@@ -256,9 +254,9 @@ void scheduleFrame() {
 
 // --- Math (ported from SmoothClipRegistry.kt so both platforms match) -----
 //
-// clamp01, toChannels/fromChannels, interpolate, the frame-clock anchor and the
-// keyframe curve now live in cpp/SmoothClipAnimationCurve.h so a test binary can
-// reach them without linking fbjni; ios/tests pins their behavior.
+// clamp01, toChannels/fromChannels, interpolate, and the frame-clock anchor
+// live in cpp/SmoothClipAnimationCurve.h so a test binary can reach them
+// without linking fbjni; ios/tests pins their behavior.
 
 std::array<double, 11> velocityChannels(const Presentation &presentation) {
   const Channels channels = toChannels(presentation);
@@ -280,7 +278,9 @@ constexpr double kSpringMaxDurationS = 10.0;
 // stiffness/mass = 200k. Termination is settle-based: every channel must be
 // near its target and nearly stationary at the same time.
 bool advanceSpring(ActiveAnimation &animation, double now) {
-  const auto target = toChannels(animation.target);
+  const auto normalizedEndpoints = normalizeShadowEndpoints(
+      animation.start, animation.target);
+  const auto target = toChannels(normalizedEndpoints.second);
   double dt = now - animation.lastFrameS;
   animation.lastFrameS = now;
   if (dt < 0) dt = 0;
@@ -346,23 +346,42 @@ bool shouldReduceMotion(int32_t setting) {
 
 // --- State helpers --------------------------------------------------------
 
-void emitCompletion(uint64_t driverId, int32_t animationId, bool finished) {
+void emitCompletion(
+    uint64_t driverId,
+    int32_t animationId,
+    int32_t completionTag,
+    bool finished) {
   std::lock_guard<std::mutex> lock(completionSinkMutex());
   if (completionSink().callback) {
-    completionSink().callback(driverId, animationId, finished);
+    completionSink().callback(
+        driverId, animationId, completionTag, finished);
   }
 }
 
 void emitGroupCompletion(const ActiveGroup &group, bool finished) {
-  std::vector<uint64_t> driverIds;
-  driverIds.reserve(group.members.size());
+  std::vector<DriverSnapshot> snapshots;
+  snapshots.reserve(group.members.size());
   for (const GroupMemberAnimation &member : group.members) {
-    driverIds.push_back(member.driverId);
+    const auto iterator = registry().find(member.driverId);
+    if (iterator == registry().end() || iterator->second.destroyed) {
+      snapshots.push_back(
+          {member.driverId, unavailablePresentation(), false});
+    } else {
+      snapshots.push_back({
+          member.driverId,
+          iterator->second.latest,
+          anyDisplayableView(iterator->second),
+      });
+    }
   }
   std::lock_guard<std::mutex> lock(completionSinkMutex());
   if (groupCompletionSink().callback) {
     groupCompletionSink().callback(
-        group.controllerId, group.id, finished, std::move(driverIds));
+        group.controllerId,
+        group.id,
+        group.completionTag,
+        finished,
+        std::move(snapshots));
   }
 }
 
@@ -438,6 +457,12 @@ void applyToViews(DriverState &state, const Presentation &presentation) {
   }
 }
 
+void setAutonomousMotion(DriverState &state, bool active) {
+  for (const ViewEntry &entry : state.views) {
+    entry.view->setAutonomousMotion(active);
+  }
+}
+
 void applyAnimationFrameToViews(
     DriverState &state,
     const Presentation &presentation) {
@@ -464,6 +489,7 @@ std::vector<uint64_t> &animatingDrivers() {
 // visits animating drivers. Removal is eager: a stale id surviving a driver
 // erase/recreate cycle would let one frame integrate the animation twice.
 void clearActiveAnimation(uint64_t driverId, DriverState &state) {
+  setAutonomousMotion(state, false);
   state.animation.reset();
   for (ViewEntry &entry : state.views) {
     entry.participation = ViewParticipation::Deferred;
@@ -476,8 +502,9 @@ void clearActiveAnimation(uint64_t driverId, DriverState &state) {
 void finishActive(uint64_t driverId, DriverState &state, bool finished) {
   if (!state.animation.has_value()) return;
   const int32_t animationId = state.animation->id;
+  const int32_t completionTag = state.animation->completionTag;
   clearActiveAnimation(driverId, state);
-  emitCompletion(driverId, animationId, finished);
+  emitCompletion(driverId, animationId, completionTag, finished);
 }
 
 Presentation prepareAnimation(
@@ -536,13 +563,31 @@ void removeAnimatingGroup(int32_t groupId) {
 }
 
 void applyGroupCurrent(const ActiveGroup &group) {
+  // Group readiness is the participation contract. Each controller owns one
+  // host, and host loss removes the group before another frame can advance.
   for (const GroupMemberAnimation &member : group.members) {
     const auto iterator = registry().find(member.driverId);
     if (iterator != registry().end()) {
-      applyAnimationFrameToViews(
-          iterator->second, member.animation.current);
+      applyToViews(iterator->second, member.animation.current);
     }
   }
+}
+
+void startGroupFrameLoop(ActiveGroup &group) {
+  assert(group.started);
+  assert(allGroupMembersReady(group));
+  for (const GroupMemberAnimation &member : group.members) {
+    auto iterator = registry().find(member.driverId);
+    if (iterator != registry().end()) {
+      setAutonomousMotion(iterator->second, true);
+    }
+  }
+  auto &active = animatingGroups();
+  if (std::find(active.begin(), active.end(), group.id) == active.end()) {
+    active.push_back(group.id);
+  }
+  applyGroupCurrent(group);
+  scheduleFrame();
 }
 
 std::vector<DriverSnapshot> finishGroupImpl(
@@ -570,6 +615,7 @@ std::vector<DriverSnapshot> finishGroupImpl(
     state.latest = result;
     state.hasLatest = true;
     state.ownership = Ownership::Interactive;
+    setAutonomousMotion(state, false);
     applyToViews(state, result);
     snapshots.push_back(
         {member.driverId, result, !state.destroyed && anyDisplayableView(state)});
@@ -578,7 +624,7 @@ std::vector<DriverSnapshot> finishGroupImpl(
   return snapshots;
 }
 
-void startLatchedGroup(ActiveGroup &group) {
+void startPendingGroup(ActiveGroup &group) {
   const double now = nowSeconds();
   group.started = true;
   group.startedAtS = now;
@@ -589,45 +635,7 @@ void startLatchedGroup(ActiveGroup &group) {
     member.animation.lastFrameS = now;
     member.animation.frameClockAnchored = false;
   }
-  auto &active = animatingGroups();
-  if (std::find(active.begin(), active.end(), group.id) == active.end()) {
-    active.push_back(group.id);
-  }
-  applyGroupCurrent(group);
-  scheduleFrame();
-}
-
-void pauseGroup(ActiveGroup &group) {
-  if (group.kind == AnimationKind::Timing) {
-    const double rawProgress = timingFraction(
-        group.lastFrameS, group.startedAtS, group.durationS);
-    const TimingRemainder remainder = timingRemainder(group.timing, rawProgress);
-    group.timing = remainder.animation;
-    group.durationS = remainder.animation.durationMs / 1000.0;
-    for (GroupMemberAnimation &member : group.members) {
-      member.animation.start = member.animation.current;
-      member.animation.timing = remainder.animation;
-    }
-  } else if (group.kind == AnimationKind::Keyframes) {
-    double remainingDurationMs = 0;
-    for (GroupMemberAnimation &member : group.members) {
-      const KeyframeContinuation continuation = keyframeContinuationAtFrame(
-          member.animation.keyframes.frames(),
-          member.animation.current,
-          member.animation.target,
-          group.lastFrameS,
-          group.startedAtS,
-          group.durationS);
-      member.animation.start = continuation.start;
-      member.animation.current = continuation.start;
-      member.animation.keyframes.reset(continuation.frames);
-      remainingDurationMs = continuation.durationMs;
-    }
-    group.durationS = remainingDurationMs / 1000.0;
-  }
-  group.started = false;
-  group.frameClockAnchored = false;
-  removeAnimatingGroup(group.id);
+  startGroupFrameLoop(group);
 }
 
 void reconcileGroupReadiness(uint64_t driverId) {
@@ -644,27 +652,20 @@ void reconcileGroupReadiness(uint64_t driverId) {
   ActiveGroup &group = groupIterator->second;
   const bool ready = allGroupMembersReady(group);
   if (!group.started) {
-    if (ready) startLatchedGroup(group);
+    if (ready) startPendingGroup(group);
     return;
   }
   if (ready) return;
-  if (group.suspensionPolicy == GroupSuspensionPolicy::Finish) {
-    finishGroupImpl(groupId, true, true);
-  } else {
-    pauseGroup(group);
-  }
+  finishGroupImpl(groupId, false, false);
 }
 
-// Starts a latched animation: rebases the clock so no progress was burned
-// while no view could display, then joins the choreographer loop.
-void startLatchedAnimation(uint64_t driverId, DriverState &state) {
+// Starts a pre-ready animation with its full duration, then joins the
+// choreographer loop.
+void startPendingAnimation(uint64_t driverId, DriverState &state) {
   auto &animation = *state.animation;
   animation.started = true;
   animation.startedAtS = nowSeconds();
   animation.lastFrameS = animation.startedAtS;
-  // Load-bearing for re-latch resumes: unregisterViewAndroid rewrites this
-  // ActiveAnimation in place, so a stale anchor would replay the fraction-0
-  // first frame the anchor exists to remove.
   animation.frameClockAnchored = false;
   auto &active = animatingDrivers();
   if (std::find(active.begin(), active.end(), driverId) == active.end()) {
@@ -675,6 +676,7 @@ void startLatchedAnimation(uint64_t driverId, DriverState &state) {
       entry.participation = ViewParticipation::Active;
     }
   }
+  setAutonomousMotion(state, true);
   applyToViews(state, animation.start);
   scheduleFrame();
 }
@@ -690,16 +692,16 @@ int32_t startAnimation(
   // animation arrives pre-anchored and advance() must not min() it against
   // the dispatching frame, which for a CALLBACK_INPUT start is EARLIER than
   // the call and would re-open the intra-frame lead the hint closes. Without
-  // a hint (NaN: latch-less callers, tests, iOS ignoring the field)
+  // a hint (NaN: unstamped callers, tests, iOS ignoring the field)
   // this reduces exactly to the old nowSeconds() + min() anchor path.
   const double wallNow = nowSeconds();
   const StartStamp stamp = resolveStartStamp(startedAtHintS, wallNow);
   animation.startedAtS = stamp.startedAtS;
   animation.lastFrameS = stamp.startedAtS;
   animation.frameClockAnchored = stamp.frameClockAnchored;
-  // current = start even while latched is load-bearing: cancelAnimation,
+  // current = start while pre-ready is load-bearing: cancelAnimation,
   // beginInteraction, prepareAnimation's visibleBefore and registerView's
-  // visible all read animation->current, giving a never-rendered latch
+  // visible all read animation->current, giving a never-rendered pending-run
   // freeze-at-start / replace-from-start semantics with no extra branches.
   animation.current = animation.start;
   animation.started = anyDisplayableView(state);
@@ -710,9 +712,9 @@ int32_t startAnimation(
         : ViewParticipation::Deferred;
   }
   if (!state.animation->started) {
-    // Latch: no host view can display yet (animateTo raced the mount, or
-    // every host is detached/unsized). The first displayable registration,
-    // host-geometry push, or window attach rebases the clock, joins
+    // No host can display yet (animateTo raced the mount, or the host is
+    // detached/unsized). The first displayable registration, host-geometry
+    // push, or window attach starts the full clock, joins
     // animatingDrivers() and schedules the frame loop. Non-zero id is still
     // returned so the JS side does not treat this as rejection.
     return state.animation->id;
@@ -721,60 +723,23 @@ int32_t startAnimation(
   if (std::find(active.begin(), active.end(), driverId) == active.end()) {
     active.push_back(driverId);
   }
+  setAutonomousMotion(state, true);
   applyToViews(state, state.animation->start);
   scheduleFrame();
   return state.animation->id;
 }
 
-void relatchIfNoDisplayable(uint64_t driverId, DriverState &state) {
+void finishIfHostUnavailable(uint64_t driverId, DriverState &state) {
   if (!state.animation.has_value() || !state.animation->started ||
       anyDisplayableView(state)) {
     return;
   }
-  auto &animation = *state.animation;
-  for (ViewEntry &entry : state.views) {
-    if (entry.participation == ViewParticipation::Active) {
-      entry.participation = ViewParticipation::Suspended;
-    }
-  }
-
-  if (animation.kind == AnimationKind::Timing) {
-    const TimingContinuation continuation = timingContinuationAtFrame(
-        animation.timing,
-        animation.start,
-        animation.target,
-        animation.lastFrameS,
-        animation.startedAtS,
-        animation.durationS);
-    animation.current = continuation.start;
-    animation.timing = continuation.animation;
-    animation.durationS = continuation.animation.durationMs / 1000.0;
-  } else if (animation.kind == AnimationKind::Keyframes) {
-    const KeyframeContinuation continuation = keyframeContinuationAtFrame(
-        animation.keyframes.frames(),
-        animation.current,
-        animation.target,
-        animation.lastFrameS,
-        animation.startedAtS,
-        animation.durationS);
-    animation.current = continuation.start;
-    animation.keyframes.reset(continuation.frames);
-    animation.durationS = continuation.durationMs / 1000.0;
-  }
-
-  if (state.destroyed ||
-      (animation.kind != AnimationKind::Spring && animation.durationS <= 0)) {
-    state.ownership = Ownership::Interactive;
-    finishActive(driverId, state, false);
-    return;
-  }
-
-  animation.start = animation.current;
-  animation.started = false;
-  animation.frameClockAnchored = false;
-  auto &active = animatingDrivers();
-  active.erase(
-      std::remove(active.begin(), active.end(), driverId), active.end());
+  const Presentation target = state.animation->target;
+  state.latest = target;
+  state.hasLatest = true;
+  state.ownership = Ownership::Interactive;
+  applyToViews(state, target);
+  finishActive(driverId, state, true);
 }
 
 void reconcileViewDisplayability(
@@ -783,7 +748,7 @@ void reconcileViewDisplayability(
     ViewEntry &entry) {
   if (!state.animation.has_value()) return;
   if (!state.animation->started) {
-    if (entryDisplayable(entry)) startLatchedAnimation(driverId, state);
+    if (entryDisplayable(entry)) startPendingAnimation(driverId, state);
     return;
   }
 
@@ -793,20 +758,20 @@ void reconcileViewDisplayability(
       deliverToView(entry, state.animation->current);
     }
   } else if (entry.participation == ViewParticipation::Active) {
-    entry.participation = ViewParticipation::Suspended;
+    entry.participation = ViewParticipation::Deferred;
   }
-  relatchIfNoDisplayable(driverId, state);
+  finishIfHostUnavailable(driverId, state);
 }
 
 void advance(uint64_t driverId, DriverState &state, double now) {
   ActiveAnimation &animation = *state.animation;
 
   if (!animation.frameClockAnchored) {
-    // This is the stamp-less/latch fallback. Worklet-issued animations carry
+    // This is the unstamped/pre-ready fallback. Worklet-issued animations carry
     // Reanimated's exact `__frameTimestamp || _getAnimationTimestamp()` value
     // and arrive pre-anchored, so they skip this approximation — including the
     // CALLBACK_INPUT case where the current frame stamp predates the call.
-    // Here startedAtS/lastFrameS hold nowSeconds() sampled at native latch
+    // Here startedAtS/lastFrameS hold nowSeconds() sampled at native
     // attach or by an older caller, while `now` is the frame's vsync stamp on
     // the same CLOCK_MONOTONIC timebase. Taking the earlier stamp prevents a
     // mid-frame native start from duplicating fraction zero.
@@ -830,22 +795,16 @@ void advance(uint64_t driverId, DriverState &state, double now) {
   if (animation.kind == AnimationKind::Spring) {
     done = advanceSpring(animation, now);
   } else {
-    // This is the frame whose presentation is delivered below. Lifecycle
-    // re-latch must trim from this timestamp, never from a later wall sample.
     animation.lastFrameS = now;
     const double fraction =
         timingFraction(now, animation.startedAtS, animation.durationS);
-    if (animation.kind == AnimationKind::Keyframes) {
-      animation.current = animation.keyframes.evaluate(fraction);
-    } else {
-      const double eased = cubicBezier(
-          animation.timing.controlPoint1X,
-          animation.timing.controlPoint1Y,
-          animation.timing.controlPoint2X,
-          animation.timing.controlPoint2Y,
-          fraction);
-      animation.current = interpolate(animation.start, animation.target, eased);
-    }
+    const double eased = cubicBezier(
+        animation.timing.controlPoint1X,
+        animation.timing.controlPoint1Y,
+        animation.timing.controlPoint2X,
+        animation.timing.controlPoint2Y,
+        fraction);
+    animation.current = interpolate(animation.start, animation.target, eased);
     const bool canonical = canonicalizePresentation(animation.current);
     if (!canonical) {
       animation.current = animation.target;
@@ -858,20 +817,14 @@ void advance(uint64_t driverId, DriverState &state, double now) {
 
   if (done) {
     const int32_t animationId = animation.id;
-    bool finished = animation.finished;
-    for (const ViewEntry &entry : state.views) {
-      if (entry.participation == ViewParticipation::Suspended) {
-        finished = false;
-        break;
-      }
-    }
+    const int32_t completionTag = animation.completionTag;
     const Presentation target = animation.target;
     clearActiveAnimation(driverId, state);
     state.latest = target;
     state.hasLatest = true;
     state.ownership = Ownership::Interactive;
     applyToViews(state, target);
-    emitCompletion(driverId, animationId, finished);
+    emitCompletion(driverId, animationId, completionTag, true);
   }
 }
 
@@ -889,30 +842,37 @@ void advanceGroup(int32_t groupId, ActiveGroup &group, double now) {
 
   bool done = false;
   if (group.kind == AnimationKind::Spring) {
-    done = true;
+    const double deltaTime = now - group.lastFrameS;
+    group.lastFrameS = now;
+    group.scalarSpring = advanceScalarSpring(
+        group.scalarSpring, group.spring, deltaTime);
+    done = relativeSpringEnergy(group.scalarSpring, group.spring) <=
+        group.spring.energyThreshold;
     for (GroupMemberAnimation &member : group.members) {
-      if (!advanceSpring(member.animation, now)) done = false;
+      member.animation.current = interpolate(
+          member.animation.start,
+          member.animation.target,
+          done ? 1.0 : group.scalarSpring.position);
+      if (!canonicalizePresentation(member.animation.current)) {
+        member.animation.current = member.animation.target;
+        done = true;
+      }
     }
   } else {
     group.lastFrameS = now;
     const double fraction =
         timingFraction(now, group.startedAtS, group.durationS);
+    const double eased = cubicBezier(
+        group.timing.controlPoint1X,
+        group.timing.controlPoint1Y,
+        group.timing.controlPoint2X,
+        group.timing.controlPoint2Y,
+        fraction);
     bool canonical = true;
     for (GroupMemberAnimation &member : group.members) {
       member.animation.lastFrameS = now;
-      if (group.kind == AnimationKind::Keyframes) {
-        member.animation.current =
-            member.animation.keyframes.evaluate(fraction);
-      } else {
-        const double eased = cubicBezier(
-            group.timing.controlPoint1X,
-            group.timing.controlPoint1Y,
-            group.timing.controlPoint2X,
-            group.timing.controlPoint2Y,
-            fraction);
-        member.animation.current = interpolate(
-            member.animation.start, member.animation.target, eased);
-      }
+      member.animation.current = interpolate(
+          member.animation.start, member.animation.target, eased);
       if (!canonicalizePresentation(member.animation.current)) {
         member.animation.current = member.animation.target;
         canonical = false;
@@ -1076,12 +1036,13 @@ std::vector<DriverSnapshot> beginGroupInteraction(
     DriverState &state = registry().at(driverId);
     if (state.animation.has_value()) {
       const int32_t animationId = state.animation->id;
+      const int32_t completionTag = state.animation->completionTag;
       const Presentation current = state.animation->current;
       clearActiveAnimation(driverId, state);
       state.latest = current;
       state.hasLatest = true;
       applyToViews(state, current);
-      emitCompletion(driverId, animationId, false);
+      emitCompletion(driverId, animationId, completionTag, false);
     }
     state.ownership = Ownership::Interactive;
   }
@@ -1151,17 +1112,14 @@ int32_t startGroupCommon(
     SpringAnimation spring,
     double durationMs,
     int32_t reduceMotion,
-    GroupSuspensionPolicy suspensionPolicy,
+    int32_t completionTag,
     double startedAtHintS) {
-  if (!isOnMainThread() || controllerId == 0 || entries.empty() ||
-      (suspensionPolicy != GroupSuspensionPolicy::Pause &&
-       suspensionPolicy != GroupSuspensionPolicy::Finish)) {
+  if (!isOnMainThread() || controllerId == 0 || entries.empty()) {
     return 0;
   }
   for (GroupMotionEntry &entry : entries) {
     if ((entry.hasFrom && !canonicalizePresentation(entry.from)) ||
-        !canonicalizePresentation(entry.target) ||
-        !canonicalizeKeyframes(entry.keyframes)) {
+        !canonicalizePresentation(entry.target)) {
       return 0;
     }
   }
@@ -1170,12 +1128,7 @@ int32_t startGroupCommon(
     return 0;
   }
   if (kind == AnimationKind::Spring &&
-      !isValidSpring(spring)) {
-    return 0;
-  }
-  if (kind == AnimationKind::Keyframes &&
-      (!std::isfinite(durationMs) || durationMs < 0 ||
-       !isValidReduceMotionCode(reduceMotion))) {
+      (!isValidSpring(spring) || spring.inheritVelocity)) {
     return 0;
   }
   const bool reduce = shouldReduceMotion(reduceMotion) ||
@@ -1207,24 +1160,16 @@ int32_t startGroupCommon(
         : visiblePresentation(entry.driverId, iterator->second);
     if (!isFinitePresentation(resolvedStart) ||
         !isFinitePresentation(entry.target) ||
-        resolvedStart.clip.curve != entry.target.clip.curve) {
+        !isAutonomousUniformCircular(resolvedStart) ||
+        !isAutonomousUniformCircular(entry.target)) {
       return 0;
     }
-    if (kind == AnimationKind::Spring &&
-        !springScaleIsProvablyPositive(
-            resolvedStart, entry.target, spring)) {
-      return 0;
-    }
-    if (kind == AnimationKind::Keyframes) {
-      if (!isValidKeyframes(
-              entry.keyframes,
-              resolvedStart,
-              entry.target,
-              entry.hasFrom)) {
+    if (kind == AnimationKind::Spring) {
+      const double velocity = spring.initialVelocity;
+      if (!springScaleStaysPositive(
+              resolvedStart, entry.target, spring, velocity)) {
         return 0;
       }
-    } else if (!entry.keyframes.empty()) {
-      return 0;
     }
     resolvedStarts.push_back(resolvedStart);
     unique.push_back(entry.driverId);
@@ -1240,10 +1185,11 @@ int32_t startGroupCommon(
   ActiveGroup group;
   group.controllerId = controllerId;
   group.id = allocateAnimationId();
+  group.completionTag = completionTag;
   group.kind = kind;
-  group.suspensionPolicy = suspensionPolicy;
   group.timing = timing;
   group.spring = spring;
+  group.scalarSpring = {0, spring.initialVelocity};
   group.durationS = durationMs / 1000.0;
   group.members.reserve(entries.size());
   const double wallNow = nowSeconds();
@@ -1269,40 +1215,13 @@ int32_t startGroupCommon(
     member.animation.timing = timing;
     member.animation.spring = spring;
     member.animation.durationS = group.durationS;
-    if (kind == AnimationKind::Keyframes) {
-      if (!entry.hasFrom) {
-        entry.keyframes.front().presentation = resolvedStart;
-      }
-      member.animation.keyframes.reset(std::move(entry.keyframes));
-    } else if (kind == AnimationKind::Spring) {
-      const double velocity = spring.inheritVelocity
-          ? inheritedVelocity(
-                state.samples, velocityChannels(entry.target), wallNow)
-          : spring.initialVelocity;
-      member.animation.spring.initialVelocity = velocity;
-      member.animation.spring.inheritVelocity = false;
-      const Channels startChannels = toChannels(resolvedStart);
-      const Channels targetChannels = toChannels(entry.target);
-      member.animation.springChannelCount =
-          (resolvedStart.shadow.enabled && resolvedStart.shadow.alpha > 0) ||
-              (entry.target.shadow.enabled && entry.target.shadow.alpha > 0)
-          ? kChannelCount
-          : kBaseChannelCount;
-      member.animation.springPosition = startChannels;
-      for (std::size_t index = 0;
-           index < member.animation.springChannelCount;
-           index += 1) {
-        member.animation.springVelocity[index] =
-            velocity * (targetChannels[index] - startChannels[index]);
-      }
-    }
     group.members.push_back(std::move(member));
   }
 
   // Apply every explicit start after the whole participant set has passed
   // preflight and acquired the new immutable group id. This remains one
   // synchronous main-thread transaction even when the initial readiness
-  // barrier is latched; ready hosts must not keep displaying their old frame
+  // barrier is pending; ready hosts must not keep displaying their old frame
   // while snapshots already report `from`.
   for (std::size_t entryIndex = 0; entryIndex < entries.size(); entryIndex += 1) {
     if (!entries[entryIndex].hasFrom) continue;
@@ -1329,9 +1248,7 @@ int32_t startGroupCommon(
   }
   ActiveGroup &stored = groupRegistry().at(groupId);
   if (stored.started) {
-    animatingGroups().push_back(groupId);
-    applyGroupCurrent(stored);
-    scheduleFrame();
+    startGroupFrameLoop(stored);
   }
   return groupId;
 }
@@ -1342,7 +1259,7 @@ int32_t animateTimingGroup(
     uint64_t controllerId,
     std::vector<GroupMotionEntry> entries,
     TimingAnimation animation,
-    GroupSuspensionPolicy suspensionPolicy,
+    int32_t completionTag,
     double startedAtHintS) {
   return startGroupCommon(
       controllerId,
@@ -1352,7 +1269,7 @@ int32_t animateTimingGroup(
       {},
       animation.durationMs,
       animation.reduceMotion,
-      suspensionPolicy,
+      completionTag,
       startedAtHintS);
 }
 
@@ -1360,7 +1277,7 @@ int32_t animateSpringGroup(
     uint64_t controllerId,
     std::vector<GroupMotionEntry> entries,
     SpringAnimation animation,
-    GroupSuspensionPolicy suspensionPolicy,
+    int32_t completionTag,
     double startedAtHintS) {
   return startGroupCommon(
       controllerId,
@@ -1370,26 +1287,7 @@ int32_t animateSpringGroup(
       animation,
       kSpringMaxDurationS * 1000.0,
       animation.reduceMotion,
-      suspensionPolicy,
-      startedAtHintS);
-}
-
-int32_t animateKeyframesGroup(
-    uint64_t controllerId,
-    std::vector<GroupMotionEntry> entries,
-    double durationMs,
-    int32_t reduceMotion,
-    GroupSuspensionPolicy suspensionPolicy,
-    double startedAtHintS) {
-  return startGroupCommon(
-      controllerId,
-      std::move(entries),
-      AnimationKind::Keyframes,
-      {},
-      {},
-      durationMs,
-      reduceMotion,
-      suspensionPolicy,
+      completionTag,
       startedAtHintS);
 }
 
@@ -1431,7 +1329,7 @@ void setPresentation(
     state.destroyed = false;
     // Passive seeds and public setters must not displace newer pending intent.
     // The fused animation.from write is different: it is the caller's newest,
-    // authoritative start and explicitly opts in to cancelling the old latch.
+    // authoritative start and explicitly cancels the pending run.
     if (state.animation.has_value() && !state.animation->started &&
         !overridePendingAnimation) {
       return;
@@ -1451,24 +1349,6 @@ void setPresentation(
   applyToViews(state, presentation);
 }
 
-void setScalars(
-    uint64_t driverId,
-    Geometry geometry,
-    double contentTranslateX,
-    double contentTranslateY,
-    double contentScale,
-    bool overridePendingAnimation,
-    bool recordVelocity) {
-  Presentation presentation = snapshotCurrentAndroid(driverId);
-  if (!isFinitePresentation(presentation)) return;
-  presentation.clip = geometry;
-  presentation.contentTranslateX = contentTranslateX;
-  presentation.contentTranslateY = contentTranslateY;
-  presentation.contentScale = contentScale;
-  setPresentation(
-      driverId, presentation, true, overridePendingAnimation, recordVelocity);
-}
-
 Presentation beginInteraction(uint64_t driverId) {
   if (!isOnMainThread()) return unavailablePresentation();
   auto iterator = registry().find(driverId);
@@ -1483,6 +1363,7 @@ Presentation beginInteraction(uint64_t driverId) {
     return state.latest;
   }
   const int32_t animationId = state.animation->id;
+  const int32_t completionTag = state.animation->completionTag;
   const Presentation current = state.animation->current;
   clearActiveAnimation(driverId, state);
   state.latest = current;
@@ -1491,7 +1372,7 @@ Presentation beginInteraction(uint64_t driverId) {
   // The frozen frame came from native animation movement, not an interactive
   // write. Do not let it become a later `initialVelocity: inherit` sample.
   applyToViews(state, current);
-  emitCompletion(driverId, animationId, false);
+  emitCompletion(driverId, animationId, completionTag, false);
   return current;
 }
 
@@ -1499,7 +1380,8 @@ int32_t animateTiming(
     uint64_t driverId,
     AnimationStart start,
     Presentation presentation,
-    TimingAnimation animation) {
+    TimingAnimation animation,
+    int32_t completionTag) {
   const bool validAnimation = isValidTiming(animation);
   if (!canonicalizePresentation(presentation) ||
       (start.hasInteractiveStart &&
@@ -1543,11 +1425,12 @@ int32_t animateTiming(
       prepareAnimation(driverId, state, start, presentation);
   if (reduce) {
     applyPresentation(state, presentation);
-    emitCompletion(driverId, animationId, true);
+    emitCompletion(driverId, animationId, completionTag, true);
     return animationId;
   }
   ActiveAnimation active;
   active.id = animationId;
+  active.completionTag = completionTag;
   active.kind = AnimationKind::Timing;
   active.timing = animation;
   active.start = resolvedStart;
@@ -1560,7 +1443,8 @@ int32_t animateSpring(
     uint64_t driverId,
     AnimationStart start,
     Presentation presentation,
-    SpringAnimation animation) {
+    SpringAnimation animation,
+    int32_t completionTag) {
   const bool validAnimation = isValidSpring(animation);
   if (!canonicalizePresentation(presentation) ||
       (start.hasInteractiveStart &&
@@ -1585,9 +1469,17 @@ int32_t animateSpring(
         ? start.interactiveStart
         : visiblePresentation(driverId, iterator->second);
   }
+  const double velocity = animation.inheritVelocity &&
+          iterator != registry().end()
+      ? inheritedVelocity(
+            iterator->second.samples,
+            velocityChannels(presentation),
+            nowSeconds())
+      : animation.initialVelocity;
   if (!isFinitePresentation(preflightStart) ||
       preflightStart.clip.curve != presentation.clip.curve ||
-      !springScaleIsProvablyPositive(preflightStart, presentation, animation)) {
+      !springScaleStaysPositive(
+          preflightStart, presentation, animation, velocity)) {
     return 0;
   }
   if (iterator == registry().end()) {
@@ -1602,19 +1494,16 @@ int32_t animateSpring(
   // Scalar velocity along the current-to-target trajectory; each channel is
   // seeded with velocity·displacement to match the iOS CASpringAnimation
   // per-keypath behavior.
-  const double velocity = animation.inheritVelocity
-      ? inheritedVelocity(
-            state.samples, velocityChannels(presentation), nowSeconds())
-      : animation.initialVelocity;
   const Presentation resolvedStart =
       prepareAnimation(driverId, state, start, presentation);
   if (shouldReduceMotion(animation.reduceMotion)) {
     applyPresentation(state, presentation);
-    emitCompletion(driverId, animationId, true);
+    emitCompletion(driverId, animationId, completionTag, true);
     return animationId;
   }
   ActiveAnimation active;
   active.id = animationId;
+  active.completionTag = completionTag;
   active.kind = AnimationKind::Spring;
   active.spring = animation;
   active.spring.initialVelocity = velocity;
@@ -1622,8 +1511,10 @@ int32_t animateSpring(
   active.start = resolvedStart;
   active.target = presentation;
   active.durationS = kSpringMaxDurationS;
-  const auto startChannels = toChannels(resolvedStart);
-  const auto targetChannels = toChannels(presentation);
+  const auto normalizedEndpoints = normalizeShadowEndpoints(
+      resolvedStart, presentation);
+  const auto startChannels = toChannels(normalizedEndpoints.first);
+  const auto targetChannels = toChannels(normalizedEndpoints.second);
   active.springChannelCount =
       (resolvedStart.shadow.enabled && resolvedStart.shadow.alpha > 0) ||
           (presentation.shadow.enabled && presentation.shadow.alpha > 0)
@@ -1639,81 +1530,12 @@ int32_t animateSpring(
   return startAnimation(driverId, state, std::move(active), start.startedAtHintS);
 }
 
-int32_t animateKeyframes(
-    uint64_t driverId,
-    AnimationStart start,
-    Presentation presentation,
-    double durationMs,
-    std::vector<Keyframe> keyframes,
-    int32_t reduceMotion) {
-  const bool finiteDuration = std::isfinite(durationMs);
-  if (!canonicalizePresentation(presentation) ||
-      (start.hasInteractiveStart &&
-       !canonicalizePresentation(start.interactiveStart)) ||
-      !canonicalizeKeyframes(keyframes)) {
-    return 0;
-  }
-  if (!isOnMainThread() || driverId == 0 ||
-      !isFinitePresentation(presentation) ||
-      !finiteDuration || durationMs < 0 ||
-      !isValidReduceMotionCode(reduceMotion)) {
-    return 0;
-  }
-  auto iterator = registry().find(driverId);
-  Presentation preflightStart;
-  if (iterator == registry().end()) {
-    if (!start.hasInteractiveStart ||
-        !isFinitePresentation(start.interactiveStart)) {
-      return 0;
-    }
-    preflightStart = start.interactiveStart;
-  } else {
-    if (iterator->second.destroyed && !start.hasInteractiveStart) return 0;
-    preflightStart = start.hasInteractiveStart
-        ? start.interactiveStart
-        : visiblePresentation(driverId, iterator->second);
-  }
-  const bool validKeyframes = isValidKeyframes(
-      keyframes, preflightStart, presentation, start.hasInteractiveStart);
-  if (!isFinitePresentation(preflightStart) || !validKeyframes) {
-    return 0;
-  }
-  const bool reduce = shouldReduceMotion(reduceMotion) || durationMs <= 0;
-  if (iterator == registry().end()) {
-    iterator = registry().try_emplace(driverId).first;
-    iterator->second.latest = start.interactiveStart;
-    iterator->second.hasLatest = true;
-  }
-  auto &state = iterator->second;
-  if (state.groupId != 0) finishGroupImpl(state.groupId, false, false);
-  state.destroyed = false;
-  const int32_t animationId = allocateAnimationId();
-  const Presentation resolvedStart =
-      prepareAnimation(driverId, state, start, presentation);
-  if (reduce) {
-    applyPresentation(state, presentation);
-    emitCompletion(driverId, animationId, true);
-    return animationId;
-  }
-  if (!start.hasInteractiveStart) {
-    keyframes.front().presentation = resolvedStart;
-  }
-  ActiveAnimation active;
-  active.id = animationId;
-  active.kind = AnimationKind::Keyframes;
-  active.keyframes.reset(std::move(keyframes));
-  active.start = resolvedStart;
-  active.target = presentation;
-  active.durationS = durationMs / 1000.0;
-  return startAnimation(driverId, state, std::move(active), start.startedAtHintS);
-}
-
 int32_t rejectAnimation(uint64_t driverId) {
   if (!isOnMainThread()) return 0;
   auto iterator = registry().find(driverId);
   if (iterator == registry().end()) return 0;
   const int32_t animationId = allocateAnimationId();
-  emitCompletion(driverId, animationId, false);
+  emitCompletion(driverId, animationId, 0, false);
   return animationId;
 }
 
@@ -1747,12 +1569,13 @@ CancelResult cancelAnimation(
   const Presentation result =
       useTarget ? state.animation->target : state.animation->current;
   const int32_t activeId = state.animation->id;
+  const int32_t completionTag = state.animation->completionTag;
   clearActiveAnimation(driverId, state);
   state.latest = result;
   state.hasLatest = true;
   state.ownership = Ownership::Interactive;
   applyToViews(state, result);
-  emitCompletion(driverId, activeId, false);
+  emitCompletion(driverId, activeId, completionTag, false);
   return {true, result};
 }
 
@@ -1891,6 +1714,12 @@ void JSmoothClipView::applyClipPx(
       static_cast<jfloat>(shadowPx.spreadDistance));
 }
 
+void JSmoothClipView::setAutonomousMotion(bool active) const {
+  static const auto method =
+      javaClassStatic()->getMethod<void(jboolean)>("setAutonomousMotion");
+  method(self(), active);
+}
+
 void registerViewAndroid(
     uint64_t driverId,
     alias_ref<JSmoothClipView> view,
@@ -1920,6 +1749,10 @@ void registerViewAndroid(
       return;
     }
   }
+  // The public controller contract permits one simultaneous host. The React
+  // wrapper reports this as a development error; native also refuses a second
+  // host so release behavior cannot silently fan one controller out.
+  if (!state.views.empty()) return;
   ViewEntry entry{
       facebook::jni::make_global(view),
       density,
@@ -1927,8 +1760,7 @@ void registerViewAndroid(
       hostHeightPx,
       lifecycleVisible,
       ViewParticipation::Deferred};
-  // `visible` above already delivered animation->current (= start) to the
-  // registering view — the correct first frame for a latched animation.
+  // `visible` already contains the start of a pre-ready animation.
   deliverToView(entry, visible);
   state.views.push_back(std::move(entry));
   reconcileViewDisplayability(driverId, state, state.views.back());
@@ -1985,12 +1817,9 @@ void unregisterViewAndroid(
   if (iterator == registry().end()) return;
   auto &state = iterator->second;
   bool removed = false;
-  bool removedParticipant = false;
   JNIEnv *env = facebook::jni::Environment::current();
   for (auto view_it = state.views.begin(); view_it != state.views.end();) {
     if (env->IsSameObject(view_it->view.get(), view.get())) {
-      removedParticipant = removedParticipant ||
-          view_it->participation != ViewParticipation::Deferred;
       view_it = state.views.erase(view_it);
       removed = true;
     } else {
@@ -1998,10 +1827,6 @@ void unregisterViewAndroid(
     }
   }
   if (removed && state.animation.has_value()) {
-    // Only a host that actually joined (or is unresolved after suspension)
-    // affects completion. A detached/unsized registration that stayed deferred
-    // never installed or rendered this animation.
-    if (removedParticipant) state.animation->finished = false;
     if (!isOnMainThread()) {
       // Blast-radius reduction, NOT a synchronization fix — be clear about
       // which. Both call sites (SmoothClipViewManager.onAfterUpdateTransaction
@@ -2015,7 +1840,7 @@ void unregisterViewAndroid(
       // for the next main-thread event (attach, host geometry, destroy) to
       // resolve.
     } else {
-      relatchIfNoDisplayable(driverId, state);
+      finishIfHostUnavailable(driverId, state);
     }
   }
   if (removed && state.groupId != 0 && isOnMainThread()) {

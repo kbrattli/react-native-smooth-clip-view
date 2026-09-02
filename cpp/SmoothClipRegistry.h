@@ -46,11 +46,6 @@ struct Presentation {
   Shadow shadow{};
 };
 
-struct Keyframe {
-  double offset;
-  Presentation presentation;
-};
-
 struct TimingAnimation {
   double durationMs;
   double controlPoint1X;
@@ -67,6 +62,7 @@ struct SpringAnimation {
   double initialVelocity;
   bool inheritVelocity;
   int32_t reduceMotion;
+  double energyThreshold = 6e-9;
 };
 
 struct AnimationStart {
@@ -103,12 +99,6 @@ struct GroupMotionEntry {
   bool hasFrom;
   Presentation from;
   Presentation target;
-  std::vector<Keyframe> keyframes;
-};
-
-enum class GroupSuspensionPolicy : int32_t {
-  Pause = 0,
-  Finish = 1,
 };
 
 enum class GroupCancelBehavior : int32_t {
@@ -117,9 +107,10 @@ enum class GroupCancelBehavior : int32_t {
 };
 
 using CompletionCallback =
-    std::function<void(uint64_t, int32_t, bool)>;
+    std::function<void(uint64_t, int32_t, int32_t, bool)>;
 using GroupCompletionCallback =
-    std::function<void(uint64_t, int32_t, bool, std::vector<uint64_t>)>;
+    std::function<
+        void(uint64_t, int32_t, int32_t, bool, std::vector<DriverSnapshot>)>;
 
 void setCompletionCallback(
     const void *owner,
@@ -130,23 +121,12 @@ void setGroupCompletionCallback(
     GroupCompletionCallback callback);
 void clearGroupCompletionCallback(const void *owner);
 
-// recordVelocity gates the 'inherit' velocity-sample recording for this write.
-// Default true (the pre-flag behavior); Android's JS layer passes false for
-// setScalars hot writes on drivers without SmoothClipDriverOptions
-// .velocityTracking, so the per-frame drag stream skips the clock read and
-// channel copies. iOS callers never pass it and keep recording always.
+// Interactive writes always keep the two samples needed by a later
+// `initialVelocity: "inherit"` spring.
 void setPresentation(
     uint64_t driverId,
     Presentation presentation,
     bool takeOwnership,
-    bool overridePendingAnimation = false,
-    bool recordVelocity = true);
-void setScalars(
-    uint64_t driverId,
-    Geometry geometry,
-    double contentTranslateX,
-    double contentTranslateY,
-    double contentScale,
     bool overridePendingAnimation = false,
     bool recordVelocity = true);
 Presentation beginInteraction(uint64_t driverId);
@@ -160,20 +140,13 @@ int32_t animateTimingGroup(
     uint64_t controllerId,
     std::vector<GroupMotionEntry> entries,
     TimingAnimation animation,
-    GroupSuspensionPolicy suspensionPolicy,
+    int32_t completionTag = 0,
     double startedAtHintS = std::numeric_limits<double>::quiet_NaN());
 int32_t animateSpringGroup(
     uint64_t controllerId,
     std::vector<GroupMotionEntry> entries,
     SpringAnimation animation,
-    GroupSuspensionPolicy suspensionPolicy,
-    double startedAtHintS = std::numeric_limits<double>::quiet_NaN());
-int32_t animateKeyframesGroup(
-    uint64_t controllerId,
-    std::vector<GroupMotionEntry> entries,
-    double durationMs,
-    int32_t reduceMotion,
-    GroupSuspensionPolicy suspensionPolicy,
+    int32_t completionTag = 0,
     double startedAtHintS = std::numeric_limits<double>::quiet_NaN());
 std::vector<DriverSnapshot> cancelAnimationGroup(
     int32_t groupId,
@@ -182,19 +155,14 @@ int32_t animateTiming(
     uint64_t driverId,
     AnimationStart start,
     Presentation presentation,
-    TimingAnimation animation);
+    TimingAnimation animation,
+    int32_t completionTag = 0);
 int32_t animateSpring(
     uint64_t driverId,
     AnimationStart start,
     Presentation presentation,
-    SpringAnimation animation);
-int32_t animateKeyframes(
-    uint64_t driverId,
-    AnimationStart start,
-    Presentation presentation,
-    double durationMs,
-    std::vector<Keyframe> keyframes,
-    int32_t reduceMotion);
+    SpringAnimation animation,
+    int32_t completionTag = 0);
 int32_t rejectAnimation(uint64_t driverId);
 CancelResult cancelAnimation(
     uint64_t driverId,

@@ -9,14 +9,16 @@ namespace facebook::react {
 struct SmoothClipAnimationCompletion {
   double driverId;
   int32_t animationId;
+  int32_t completionTag;
   bool finished;
 };
 
 struct SmoothClipGroupAnimationCompletion {
   double controllerId;
   int32_t groupId;
+  int32_t completionTag;
   bool finished;
-  std::vector<double> driverIds;
+  std::vector<double> snapshots;
 };
 
 template <>
@@ -28,6 +30,8 @@ struct Bridging<SmoothClipAnimationCompletion> {
         value.getProperty(runtime, "driverId").asNumber(),
         static_cast<int32_t>(
             value.getProperty(runtime, "animationId").asNumber()),
+        static_cast<int32_t>(
+            value.getProperty(runtime, "completionTag").asNumber()),
         value.getProperty(runtime, "finished").getBool()};
   }
 
@@ -37,6 +41,7 @@ struct Bridging<SmoothClipAnimationCompletion> {
     jsi::Object result(runtime);
     result.setProperty(runtime, "driverId", value.driverId);
     result.setProperty(runtime, "animationId", value.animationId);
+    result.setProperty(runtime, "completionTag", value.completionTag);
     result.setProperty(runtime, "finished", value.finished);
     return result;
   }
@@ -48,18 +53,20 @@ struct Bridging<SmoothClipGroupAnimationCompletion> {
       jsi::Runtime &runtime,
       const jsi::Object &value) {
     const jsi::Array ids =
-        value.getProperty(runtime, "driverIds").asObject(runtime).asArray(runtime);
-    std::vector<double> driverIds;
-    driverIds.reserve(ids.size(runtime));
+        value.getProperty(runtime, "snapshots").asObject(runtime).asArray(runtime);
+    std::vector<double> snapshots;
+    snapshots.reserve(ids.size(runtime));
     for (size_t index = 0; index < ids.size(runtime); index += 1) {
-      driverIds.push_back(ids.getValueAtIndex(runtime, index).asNumber());
+      snapshots.push_back(ids.getValueAtIndex(runtime, index).asNumber());
     }
     return {
         value.getProperty(runtime, "controllerId").asNumber(),
         static_cast<int32_t>(
             value.getProperty(runtime, "groupId").asNumber()),
+        static_cast<int32_t>(
+            value.getProperty(runtime, "completionTag").asNumber()),
         value.getProperty(runtime, "finished").getBool(),
-        std::move(driverIds),
+        std::move(snapshots),
     };
   }
 
@@ -69,12 +76,13 @@ struct Bridging<SmoothClipGroupAnimationCompletion> {
     jsi::Object result(runtime);
     result.setProperty(runtime, "controllerId", value.controllerId);
     result.setProperty(runtime, "groupId", value.groupId);
+    result.setProperty(runtime, "completionTag", value.completionTag);
     result.setProperty(runtime, "finished", value.finished);
-    jsi::Array driverIds(runtime, value.driverIds.size());
-    for (size_t index = 0; index < value.driverIds.size(); index += 1) {
-      driverIds.setValueAtIndex(runtime, index, value.driverIds[index]);
+    jsi::Array snapshots(runtime, value.snapshots.size());
+    for (size_t index = 0; index < value.snapshots.size(); index += 1) {
+      snapshots.setValueAtIndex(runtime, index, value.snapshots[index]);
     }
-    result.setProperty(runtime, "driverIds", std::move(driverIds));
+    result.setProperty(runtime, "snapshots", std::move(snapshots));
     return result;
   }
 };
@@ -105,7 +113,8 @@ class SmoothClipTurboModule final
       double controlPoint2X,
       double controlPoint2Y,
       int32_t reduceMotion,
-      int32_t suspensionPolicy);
+      int32_t completionTag,
+      double startTimestamp);
   int32_t animateSpringGroup(
       jsi::Runtime &runtime,
       double controllerId,
@@ -113,17 +122,11 @@ class SmoothClipTurboModule final
       double mass,
       double stiffness,
       double damping,
-      double initialVelocity,
-      bool inheritVelocity,
+      double velocity,
+      double energyThreshold,
       int32_t reduceMotion,
-      int32_t suspensionPolicy);
-  int32_t animateKeyframesGroup(
-      jsi::Runtime &runtime,
-      double controllerId,
-      jsi::Array entries,
-      double durationMs,
-      int32_t reduceMotion,
-      int32_t suspensionPolicy);
+      int32_t completionTag,
+      double startTimestamp);
   jsi::Array cancelAnimationGroup(
       jsi::Runtime &runtime,
       int32_t groupId,
@@ -134,7 +137,7 @@ class SmoothClipTurboModule final
       jsi::Array presentation,
       bool takeOwnership,
       bool overridePendingAnimation);
-  void setClipPresentationScalars(
+  void setClipFrameScalars(
       jsi::Runtime &runtime,
       double driverId,
       double x,
@@ -149,8 +152,15 @@ class SmoothClipTurboModule final
       double contentTranslateX,
       double contentTranslateY,
       double contentScale,
-      bool overridePendingAnimation,
-      bool recordVelocity);
+      bool shadowEnabled,
+      double shadowRed,
+      double shadowGreen,
+      double shadowBlue,
+      double shadowAlpha,
+      double shadowOffsetX,
+      double shadowOffsetY,
+      double shadowBlurRadius,
+      double shadowSpreadDistance);
   jsi::Array beginInteraction(jsi::Runtime &runtime, double driverId);
   jsi::Array snapshotCurrent(jsi::Runtime &runtime, double driverId);
 
@@ -164,7 +174,8 @@ class SmoothClipTurboModule final
       double controlPoint1Y,
       double controlPoint2X,
       double controlPoint2Y,
-      int32_t reduceMotion);
+      int32_t reduceMotion,
+      int32_t completionTag);
   int32_t animateSpring(
       jsi::Runtime &runtime,
       double driverId,
@@ -175,15 +186,8 @@ class SmoothClipTurboModule final
       double damping,
       double initialVelocity,
       bool inheritVelocity,
-      int32_t reduceMotion);
-  int32_t animateKeyframes(
-      jsi::Runtime &runtime,
-      double driverId,
-      jsi::Array start,
-      jsi::Array target,
-      double durationMs,
-      jsi::Array frames,
-      int32_t reduceMotion);
+      int32_t reduceMotion,
+      int32_t completionTag);
   int32_t rejectAnimation(jsi::Runtime &runtime, double driverId);
   jsi::Array cancelAnimation(
       jsi::Runtime &runtime,

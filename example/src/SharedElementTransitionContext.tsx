@@ -3,6 +3,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -99,10 +100,9 @@ export function SharedElementTransitionProvider({
   }, []);
 
   const closeOverlay = useCallback(() => {
-    originIndex.set(-1);
     setActiveIndex(null);
     setInitialOriginRect(null);
-  }, [originIndex]);
+  }, []);
 
   const [galleryState, setGalleryState] = useState<GalleryOpenState | null>(
     null
@@ -134,9 +134,17 @@ export function SharedElementTransitionProvider({
 
   const closeGallery = useCallback(() => {
     gallerySessionRef.current = false;
-    originIndex.set(-1);
     setGalleryState(null);
-  }, [originIndex]);
+  }, []);
+
+  // Completion callbacks update React state only. Reset UI-runtime source
+  // visibility from the resulting commit, outside the native event task and
+  // before React Native paints the frame without an overlay.
+  useLayoutEffect(() => {
+    if (activeIndex !== null || galleryState !== null) return;
+    hiddenIndex.set(-1);
+    originIndex.set(-1);
+  }, [activeIndex, galleryState, hiddenIndex, originIndex]);
 
   const measureItem = useCallback(
     (itemId: string, index?: number) => {

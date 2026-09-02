@@ -23,12 +23,13 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   SmoothClipView,
-  useSmoothClipDriver,
-  type ClipAnimationResult,
-  type SmoothClipDriver,
+  useSmoothClipController,
+  type SmoothClipCompletion,
+  type SmoothClipController,
   type SmoothClipPresentation,
 } from 'react-native-smooth-clip-view';
 import { scheduleOnRN, scheduleOnUI } from 'react-native-worklets';
+import { revealSourceAfterNativeLanding } from '../completeAfterNativeLanding';
 import {
   resolveAspectFitFrame,
   resolveDraggedGalleryFrame,
@@ -36,7 +37,6 @@ import {
   resolveGalleryDismissProgress,
   resolveGalleryFrameProgress,
   resolveGalleryPresentation,
-  resolveGalleryPresentationScalars,
   type GalleryFrame,
   type GalleryPresentation,
 } from '../galleryGeometry';
@@ -63,6 +63,7 @@ const GALLERY_PHASE_OPEN = 1;
 const GALLERY_PHASE_CLOSING = 2;
 const DISMISS_DISTANCE = SCREEN_HEIGHT * 0.5;
 const MAX_DRAG_TRANSLATE_Y = SCREEN_HEIGHT;
+const CLOSE_COMPLETION_TAG = 1;
 
 type DismissGestureState = Readonly<{
   activated: boolean;
@@ -89,12 +90,12 @@ function frameFromPresentation(
   };
 }
 
-function applyPresentationScalars(
-  driver: SmoothClipDriver,
+function applyPresentationFrame(
+  clip: SmoothClipController,
   presentation: GalleryPresentation
 ): GalleryPresentation {
   'worklet';
-  driver.ui.setScalars(...resolveGalleryPresentationScalars(presentation));
+  clip.ui.setFrame(presentation);
   return presentation;
 }
 
@@ -272,25 +273,16 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
     startX: 0,
     startY: 0,
   });
-
   const onNativeAnimationComplete = useCallback(
-    (result: ClipAnimationResult) => {
-      if (!result.finished) return;
-
-      scheduleOnUI(() => {
-        'worklet';
-        if (phase.get() === GALLERY_PHASE_OPENING) {
-          phase.set(GALLERY_PHASE_OPEN);
-        } else if (phase.get() === GALLERY_PHASE_CLOSING) {
-          hiddenIndex.set(-1);
-          // Let the tile's opacity update paint once under the landed overlay.
-          requestAnimationFrame(() => scheduleOnRN(onClosed));
-        }
-      });
+    (result: SmoothClipCompletion) => {
+      if (result.completionTag === CLOSE_COMPLETION_TAG && result.finished) {
+        revealSourceAfterNativeLanding(hiddenIndex, onClosed);
+      }
     },
-    [hiddenIndex, onClosed, phase]
+    [hiddenIndex, onClosed]
   );
-  const driver = useSmoothClipDriver(initialPresentation, {
+
+  const clip = useSmoothClipController(initialPresentation, {
     onAnimationComplete: onNativeAnimationComplete,
   });
 
@@ -317,19 +309,22 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
     openStartedRef.current = true;
     handoffStarted.set(true);
     hiddenIndex.set(openingIndex);
-    driver.react.animateTo(openPresentation, {
-      ...NATIVE_TIMING,
-      from: initialPresentation,
-    });
-    openingProgress.set(withTiming(1, TIMING_CONFIG));
+    clip.react.animateTo(openPresentation, NATIVE_TIMING);
+    openingProgress.set(
+      withTiming(1, TIMING_CONFIG, (finished) => {
+        if (finished && phase.get() === GALLERY_PHASE_OPENING) {
+          phase.set(GALLERY_PHASE_OPEN);
+        }
+      })
+    );
   }, [
-    driver,
+    clip,
     handoffStarted,
     hiddenIndex,
-    initialPresentation,
     openPresentation,
     openingIndex,
     openingProgress,
+    phase,
   ]);
 
   // The pager's initialScrollIndex offset applies a few frames late (the
@@ -361,7 +356,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
     const startPresentation = hasExplicitStart
       ? closeStartPresentation.get()
       : resolveGalleryPresentation(
-          frameFromPresentation(driver.ui.beginInteraction()),
+          frameFromPresentation(clip.ui.beginInteraction()),
           destinationFrame,
           SCREEN_WIDTH,
           SCREEN_HEIGHT
@@ -403,10 +398,18 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
     closeStartBackdropOpacity.set(
       resolveGalleryBackdropOpacity(openingProgress.get(), dismissProgress)
     );
-    driver.ui.animateTo(targetPresentation, {
-      ...NATIVE_CLOSE_TIMING,
-      from: startPresentation,
-    });
+    clip.ui.setFrame(startPresentation);
+    clip.ui.beginInteraction();
+    const run = clip.ui.animateTo(
+      targetPresentation,
+      NATIVE_CLOSE_TIMING,
+      CLOSE_COMPLETION_TAG
+    );
+    if (run === null) {
+      phase.set(GALLERY_PHASE_OPEN);
+      closingIndex.set(-1);
+      return;
+    }
     closeProgress.set(0);
     closeProgress.set(withTiming(1, CLOSE_TIMING_CONFIG));
   }, [
@@ -420,7 +423,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
     currentRestFrame,
     dragTranslateX,
     dragTranslateY,
-    driver,
+    clip,
     openingProgress,
     originRect,
     phase,
@@ -492,7 +495,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
         })
         .onStart(() => {
           const visibleFrame = frameFromPresentation(
-            driver.ui.beginInteraction()
+            clip.ui.beginInteraction()
           );
           const destinationFrame = currentRestFrame.get();
 
@@ -528,7 +531,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
 
           dragTranslateX.set(translateX);
           dragTranslateY.set(translateY);
-          applyPresentationScalars(driver, presentation);
+          applyPresentationFrame(clip, presentation);
         })
         .onEnd((event) => {
           gestureState.set({ ...gestureState.get(), activated: false });
@@ -546,8 +549,8 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
 
           dragTranslateX.set(translateX);
           dragTranslateY.set(translateY);
-          const releasePresentation = applyPresentationScalars(
-            driver,
+          const releasePresentation = applyPresentationFrame(
+            clip,
             presentation
           );
 
@@ -563,9 +566,8 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
               SCREEN_WIDTH,
               SCREEN_HEIGHT
             );
-            driver.ui.animateTo(restPresentation, {
+            clip.ui.animateTo(restPresentation, {
               ...NATIVE_FAST_TIMING,
-              from: releasePresentation,
             });
             openingProgress.set(withTiming(1, FAST_TIMING));
             dragTranslateX.set(withTiming(0, FAST_TIMING));
@@ -582,7 +584,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
       currentRestFrame,
       dragTranslateX,
       dragTranslateY,
-      driver,
+      clip,
       gestureStartFrame,
       gestureState,
       handoffStarted,
@@ -625,7 +627,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
       'worklet';
       if (phase.get() === GALLERY_PHASE_CLOSING) return;
 
-      driver.ui.beginInteraction();
+      clip.ui.beginInteraction();
       cancelAnimation(openingProgress);
       cancelAnimation(dragTranslateX);
       cancelAnimation(dragTranslateY);
@@ -634,8 +636,8 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
       openingProgress.set(1);
       dragTranslateX.set(0);
       dragTranslateY.set(0);
-      applyPresentationScalars(
-        driver,
+      applyPresentationFrame(
+        clip,
         resolveGalleryPresentation(
           FULLSCREEN_FRAME,
           FULLSCREEN_FRAME,
@@ -647,7 +649,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
   }, [
     dragTranslateX,
     dragTranslateY,
-    driver,
+    clip,
     openingProgress,
     pagingActive,
     phase,
@@ -657,8 +659,8 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
     (restFrame: GalleryFrame) => {
       scheduleOnUI(() => {
         'worklet';
-        applyPresentationScalars(
-          driver,
+        applyPresentationFrame(
+          clip,
           resolveGalleryPresentation(
             restFrame,
             restFrame,
@@ -669,7 +671,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
         pagingActive.set(false);
       });
     },
-    [driver, pagingActive]
+    [clip, pagingActive]
   );
 
   const momentumStartedRef = useRef(false);
@@ -752,9 +754,6 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
     return () => subscription.remove();
   }, [requestClose]);
 
-  // Whatever unmounts the overlay, never leave a grid tile hidden behind it.
-  useEffect(() => () => hiddenIndex.set(-1), [hiddenIndex]);
-
   return (
     <View pointerEvents="box-none" style={styles.root}>
       <Animated.View
@@ -764,7 +763,7 @@ const GalleryOverlayContent = memo(function GalleryOverlayContentView({
       />
       <GestureDetector gesture={dismissGesture}>
         <SmoothClipView
-          driver={driver}
+          controller={clip}
           style={styles.clipHost}
           testID="gallery-smooth-clip-host"
         >

@@ -8,7 +8,7 @@ import {
   type ClipGeometry,
   SmoothClipView,
   createClipPresentation,
-  useSmoothClipDriver,
+  useSmoothClipController,
 } from 'react-native-smooth-clip-view';
 import { Card } from './Card';
 
@@ -27,19 +27,19 @@ export function SmoothClipStressItem({
   initialClip,
   width,
 }: StressTestItemProps) {
-  const driver = useSmoothClipDriver(initialClip);
+  const clip = useSmoothClipController(initialClip);
   useAnimatedReaction(
     () => animatedClip.value,
     (nextClip) => {
-      driver.presentation.value = createClipPresentation(nextClip);
+      clip.ui.setFrame(createClipPresentation(nextClip));
     },
-    [animatedClip, driver.presentation]
+    [animatedClip, clip]
   );
   const maximumSize = { height, width };
   return (
     <View style={[styles.stage, maximumSize]}>
       <SmoothClipView
-        driver={driver}
+        controller={clip}
         style={[styles.maximumHost, maximumSize]}
         testID={`stress-smooth-host-${index}`}
       >

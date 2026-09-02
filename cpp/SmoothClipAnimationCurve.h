@@ -10,9 +10,8 @@
 #include <utility>
 #include <vector>
 
-// Shared animation math for the Android integrator and the iOS CoreAnimation
-// restart paths: frame-clock anchoring, timing curves/remainders, spring
-// continuation, presentation blending and keyframes. Keeping the pure math out
+// Shared animation math for the Android integrator: frame-clock anchoring,
+// timing curves, spring validation, and presentation blending. Keeping the pure math out
 // of the registry translation units also lets the XCTest binary pin every rule
 // below — see ios/tests/SmoothClipAnimationCurveTests.mm.
 namespace smoothclip {
@@ -51,7 +50,7 @@ inline double clamp01(double value) {
 // parallel Reanimated animation by the callback's intra-frame offset for the
 // whole duration. Starts that carry the JS-captured stamp resolve through
 // resolveStartStamp() below and skip this anchor entirely; min() remains for
-// latch flushes and stamp-less callers, where its two branches are exact.
+// pre-ready starts and unstamped callers, where its two branches are exact.
 inline double anchorStartTime(double startedAtS, double frameNowS) {
   return std::min(startedAtS, frameNowS);
 }
@@ -82,7 +81,7 @@ inline StartStamp resolveStartStamp(double jsStampS, double wallNowS) {
   return {wallNowS, false};
 }
 
-// Elapsed fraction of a timing/keyframe animation. A non-positive duration is
+// Elapsed fraction of a timing animation. A non-positive duration is
 // complete on its first frame rather than dividing by zero.
 inline double timingFraction(
     double nowS,
@@ -92,20 +91,7 @@ inline double timingFraction(
   return clamp01((nowS - startedAtS) / durationS);
 }
 
-// --- Timing curve continuation -------------------------------------------
-
-struct CubicBezierPoint {
-  double x;
-  double y;
-};
-
-inline CubicBezierPoint mixBezierPoint(
-    CubicBezierPoint from,
-    CubicBezierPoint to,
-    double progress) {
-  return {from.x + (to.x - from.x) * progress,
-          from.y + (to.y - from.y) * progress};
-}
+// --- Timing curve --------------------------------------------------------
 
 inline double cubicBezierParameterForX(
     double x1,
@@ -140,152 +126,6 @@ inline double cubicBezier(
   const double inverse = 1 - t;
   return 3 * inverse * inverse * t * y1 +
       3 * inverse * t * t * y2 + t * t * t;
-}
-
-struct TimingRemainder {
-  TimingAnimation animation;
-  double easedProgress;
-  bool representable;
-};
-
-struct TimingContinuation {
-  Presentation start;
-  TimingAnimation animation;
-};
-
-// Exact right-hand segment of a CSS/CoreAnimation cubic Bezier after a raw
-// time cutoff. Restarting the original controls from a frozen presentation
-// resets its slope and creates a visible velocity cusp. De Casteljau splitting
-// preserves the original curve; normalizing the right segment to (0,0)->(1,1)
-// makes it directly reusable with a shorter BasicAnimation/integrator run.
-inline TimingRemainder timingRemainder(
-    const TimingAnimation &original,
-    double rawProgress) {
-  const double progress = clamp01(rawProgress);
-  if (progress <= 0) return {original, 0, true};
-  if (progress >= 1) {
-    TimingAnimation complete = original;
-    complete.durationMs = 0;
-    complete.controlPoint1X = 0;
-    complete.controlPoint1Y = 0;
-    complete.controlPoint2X = 1;
-    complete.controlPoint2Y = 1;
-    return {complete, 1, true};
-  }
-
-  const double t = cubicBezierParameterForX(
-      original.controlPoint1X, original.controlPoint2X, progress, 30);
-  const CubicBezierPoint p0{0, 0};
-  const CubicBezierPoint p1{
-      original.controlPoint1X, original.controlPoint1Y};
-  const CubicBezierPoint p2{
-      original.controlPoint2X, original.controlPoint2Y};
-  const CubicBezierPoint p3{1, 1};
-  const CubicBezierPoint a = mixBezierPoint(p0, p1, t);
-  const CubicBezierPoint b = mixBezierPoint(p1, p2, t);
-  const CubicBezierPoint c = mixBezierPoint(p2, p3, t);
-  const CubicBezierPoint d = mixBezierPoint(a, b, t);
-  const CubicBezierPoint e = mixBezierPoint(b, c, t);
-  const CubicBezierPoint split = mixBezierPoint(d, e, t);
-
-  TimingAnimation remainder = original;
-  remainder.durationMs = original.durationMs * (1 - progress);
-  const double remainingX = 1 - split.x;
-  const double remainingY = 1 - split.y;
-  // A curve whose y reaches exactly 1 before its time endpoint and later
-  // departs cannot be represented as one endpoint-normalized BasicAnimation.
-  // Keep the result finite; ordinary monotone easings never take this branch.
-  if (std::abs(remainingX) <= 1e-12 || std::abs(remainingY) <= 1e-12) {
-    remainder.controlPoint1X = 0;
-    remainder.controlPoint1Y = 0;
-    remainder.controlPoint2X = 1;
-    remainder.controlPoint2Y = 1;
-    return {remainder, split.y, false};
-  }
-  remainder.controlPoint1X = (e.x - split.x) / remainingX;
-  remainder.controlPoint1Y = (e.y - split.y) / remainingY;
-  remainder.controlPoint2X = (c.x - split.x) / remainingX;
-  remainder.controlPoint2Y = (c.y - split.y) / remainingY;
-  return {remainder, split.y, true};
-}
-
-// --- Spring continuation --------------------------------------------------
-
-struct NormalizedSpringState {
-  // Remaining fraction of the original from->target displacement.
-  double remaining;
-  // Derivative of `remaining` in units per second.
-  double velocity;
-};
-
-// Closed-form state of the same mass/spring/damper equation CoreAnimation
-// evaluates. If p is animation progress, remaining=1-p starts at 1 and its
-// derivative starts at -initialVelocity.
-inline NormalizedSpringState normalizedSpringState(
-    const SpringAnimation &spring,
-    double elapsedS) {
-  if (!std::isfinite(elapsedS) || elapsedS <= 0) {
-    return {1, -spring.initialVelocity};
-  }
-  const double mass = spring.mass;
-  const double stiffness = spring.stiffness;
-  const double damping = spring.damping;
-  const double initialVelocity = spring.initialVelocity;
-  if (!std::isfinite(mass) || !std::isfinite(stiffness) ||
-      !std::isfinite(damping) || !std::isfinite(initialVelocity) ||
-      mass <= 0 || stiffness <= 0 || damping < 0) {
-    return {1, 0};
-  }
-
-  const double alpha = damping / (2 * mass);
-  const double omegaSquared = stiffness / mass;
-  const double discriminant = alpha * alpha - omegaSquared;
-  const double criticalScale = std::max(1.0, omegaSquared);
-  if (std::abs(discriminant) <= 1e-12 * criticalScale) {
-    const double coefficient = alpha - initialVelocity;
-    const double decay = std::exp(-alpha * elapsedS);
-    const double remaining = decay * (1 + coefficient * elapsedS);
-    const double velocity = decay *
-        (coefficient - alpha * (1 + coefficient * elapsedS));
-    return {remaining, velocity};
-  }
-  if (discriminant < 0) {
-    const double omega = std::sqrt(-discriminant);
-    const double coefficient = (alpha - initialVelocity) / omega;
-    const double angle = omega * elapsedS;
-    const double cosine = std::cos(angle);
-    const double sine = std::sin(angle);
-    const double basis = cosine + coefficient * sine;
-    const double basisVelocity =
-        -omega * sine + coefficient * omega * cosine;
-    const double decay = std::exp(-alpha * elapsedS);
-    return {decay * basis, decay * (basisVelocity - alpha * basis)};
-  }
-
-  const double root = std::sqrt(discriminant);
-  const double firstRate = -alpha + root;
-  const double secondRate = -alpha - root;
-  const double firstCoefficient =
-      (-initialVelocity - secondRate) / (firstRate - secondRate);
-  const double secondCoefficient = 1 - firstCoefficient;
-  const double first = firstCoefficient * std::exp(firstRate * elapsedS);
-  const double second = secondCoefficient * std::exp(secondRate * elapsedS);
-  return {first + second, firstRate * first + secondRate * second};
-}
-
-// CASpringAnimation.initialVelocity is normalized by the current remaining
-// distance. Re-expressing the old physical velocity against the frozen
-// current->target displacement preserves the derivative at a re-latch seam.
-inline double springContinuationVelocity(
-    const SpringAnimation &spring,
-    double elapsedS) {
-  const NormalizedSpringState state = normalizedSpringState(spring, elapsedS);
-  if (!std::isfinite(state.remaining) || !std::isfinite(state.velocity) ||
-      std::abs(state.remaining) <= 1e-9) {
-    return 0;
-  }
-  const double result = -state.velocity / state.remaining;
-  return std::isfinite(result) ? result : 0;
 }
 
 // --- Presentation channels ------------------------------------------------
@@ -374,19 +214,51 @@ inline bool canonicalizePresentation(Presentation &presentation) {
   return true;
 }
 
-inline bool canonicalizeKeyframes(std::vector<Keyframe> &keyframes) {
-  for (Keyframe &keyframe : keyframes) {
-    if (!canonicalizePresentation(keyframe.presentation)) return false;
-  }
-  return true;
-}
-
 inline bool presentationsEqual(
     const Presentation &first,
     const Presentation &second) {
   return first.clip.curve == second.clip.curve &&
       first.shadow.enabled == second.shadow.enabled &&
       toChannels(first) == toChannels(second);
+}
+
+inline bool hasVisibleShadow(const Presentation &presentation) {
+  return presentation.shadow.enabled && presentation.shadow.alpha > 0 &&
+      presentation.clip.width > 0 && presentation.clip.height > 0;
+}
+
+inline bool isAutonomousUniformCircular(
+    const Presentation &presentation) {
+  const Geometry &clip = presentation.clip;
+  return clip.curve == ClipCurve::Circular && radiiAreUniform(
+      resolvedRadius(clip.topLeftRadius, clip.radius),
+      resolvedRadius(clip.topRightRadius, clip.radius),
+      resolvedRadius(clip.bottomRightRadius, clip.radius),
+      resolvedRadius(clip.bottomLeftRadius, clip.radius));
+}
+
+/**
+ * Makes shadow appearance/disappearance a pure alpha fade. A disabled or
+ * transparent endpoint borrows the visible endpoint's style while retaining
+ * its own geometry, so path, blur, spread, and offset do not collapse during
+ * the fade. The public target remains unchanged in the registry; these copies
+ * are animation inputs only.
+ */
+inline std::pair<Presentation, Presentation> normalizeShadowEndpoints(
+    Presentation from,
+    Presentation to) {
+  const bool fromVisible = hasVisibleShadow(from);
+  const bool toVisible = hasVisibleShadow(to);
+  if (!fromVisible) from.shadow.alpha = 0;
+  if (!toVisible) to.shadow.alpha = 0;
+  if (fromVisible == toVisible) return {from, to};
+
+  Shadow &invisible = fromVisible ? to.shadow : from.shadow;
+  const Shadow &visible = fromVisible ? from.shadow : to.shadow;
+  invisible = visible;
+  invisible.enabled = true;
+  invisible.alpha = 0;
+  return {from, to};
 }
 
 inline bool isValidReduceMotionCode(int32_t value) {
@@ -409,49 +281,142 @@ inline bool isValidSpring(const SpringAnimation &animation) {
       std::isfinite(animation.stiffness) && animation.stiffness > 0 &&
       std::isfinite(animation.damping) && animation.damping >= 0 &&
       std::isfinite(animation.initialVelocity) &&
+      std::isfinite(animation.energyThreshold) &&
+      animation.energyThreshold > 0 &&
       isValidReduceMotionCode(animation.reduceMotion);
 }
 
-inline bool springScaleIsProvablyPositive(
-    const Presentation &start,
-    const Presentation &target,
-    const SpringAnimation &animation) {
-  if (start.contentScale == target.contentScale) return true;
-  // With zero initial velocity, a critically/over-damped unit response is
-  // monotone, so it remains between two positive endpoints. Inherited or
-  // under-damped velocity can overshoot through zero and must be compiled to
-  // keyframes by the caller.
-  return !animation.inheritVelocity && animation.initialVelocity == 0 &&
-      animation.damping * animation.damping >=
-      4 * animation.mass * animation.stiffness;
+struct ScalarSpringState {
+  double position;
+  double velocity;
+};
+
+/** One analytic Reanimated-compatible spring step for normalized progress. */
+inline ScalarSpringState advanceScalarSpring(
+    ScalarSpringState state,
+    const SpringAnimation &animation,
+    double deltaTimeS) {
+  const double dt = std::clamp(deltaTimeS, 0.0, 0.064);
+  if (dt == 0) return state;
+  const double omega0 = std::sqrt(animation.stiffness / animation.mass);
+  const double zeta = animation.damping /
+      (2.0 * std::sqrt(animation.stiffness * animation.mass));
+  const double displacement = state.position - 1.0;
+  const double velocity = state.velocity;
+  if (zeta < 1.0) {
+    const double omega1 = omega0 * std::sqrt(1.0 - zeta * zeta);
+    const double envelope = std::exp(-zeta * omega0 * dt);
+    const double sinTerm = std::sin(omega1 * dt);
+    const double cosTerm = std::cos(omega1 * dt);
+    const double coefficient =
+        (velocity + zeta * omega0 * displacement) / omega1;
+    const double nextDisplacement =
+        envelope * (displacement * cosTerm + coefficient * sinTerm);
+    const double nextVelocity = envelope *
+        (velocity * (cosTerm - zeta * omega0 / omega1 * sinTerm) -
+         displacement * (omega0 * omega0 / omega1) * sinTerm);
+    return {1.0 + nextDisplacement, nextVelocity};
+  }
+
+  // Reanimated deliberately uses its critical branch for zeta >= 1.
+  const double envelope = std::exp(-omega0 * dt);
+  const double coefficient = velocity + omega0 * displacement;
+  const double nextDisplacement =
+      envelope * (displacement + coefficient * dt);
+  const double nextVelocity =
+      envelope * (velocity - omega0 * coefficient * dt);
+  return {1.0 + nextDisplacement, nextVelocity};
 }
 
-inline bool isValidKeyframes(
-    const std::vector<Keyframe> &keyframes,
-    const Presentation &resolvedStart,
+inline double relativeSpringEnergy(
+    ScalarSpringState state,
+    const SpringAnimation &animation) {
+  const double displacement = state.position - 1.0;
+  const double currentEnergy =
+      animation.mass * state.velocity * state.velocity +
+      animation.stiffness * displacement * displacement;
+  const double initialEnergy =
+      animation.mass * animation.initialVelocity * animation.initialVelocity +
+      animation.stiffness;
+  return currentEnergy / initialEnergy;
+}
+
+inline bool springScaleStaysPositive(
+    const Presentation &start,
     const Presentation &target,
-    bool requireExplicitStart) {
-  if (keyframes.size() < 2 || keyframes.front().offset != 0 ||
-      keyframes.back().offset != 1 ||
-      !presentationsEqual(keyframes.back().presentation, target)) {
-    return false;
-  }
-  if (requireExplicitStart && !presentationsEqual(
-                                  keyframes.front().presentation,
-                                  resolvedStart)) {
-    return false;
-  }
-  double previousOffset = -1;
-  for (const Keyframe &keyframe : keyframes) {
-    if (!std::isfinite(keyframe.offset) || keyframe.offset <= previousOffset ||
-        keyframe.offset < 0 || keyframe.offset > 1 ||
-        !isFinitePresentation(keyframe.presentation) ||
-        keyframe.presentation.clip.curve != target.clip.curve) {
-      return false;
+    const SpringAnimation &animation,
+    double initialVelocity) {
+  if (start.contentScale == target.contentScale) return true;
+  if (!std::isfinite(initialVelocity)) return false;
+
+  const double startScale = start.contentScale;
+  const double targetScale = target.contentScale;
+  const double delta = targetScale - startScale;
+  const auto scaleForDisplacement = [&](double displacement) {
+    // displacement is q = progress - 1, so scale = target + delta*q.
+    return targetScale + delta * displacement;
+  };
+  if (startScale <= 0 || targetScale <= 0) return false;
+
+  const double naturalFrequency =
+      std::sqrt(animation.stiffness / animation.mass);
+  const double decay = animation.damping / (2 * animation.mass);
+  const double discriminant = decay * decay -
+      naturalFrequency * naturalFrequency;
+  constexpr double epsilon = 1e-12;
+  constexpr double pi = 3.14159265358979323846;
+
+  const auto isPositiveAt = [&](double time, double displacement) {
+    return time <= epsilon || scaleForDisplacement(displacement) > 0;
+  };
+
+  if (discriminant < -epsilon) {
+    const double frequency = std::sqrt(-discriminant);
+    const double a = -1;
+    const double b = (initialVelocity - decay) / frequency;
+    const double derivativeCos = initialVelocity;
+    const double derivativeSin = frequency - decay * b;
+    double phase = std::atan2(-derivativeCos, derivativeSin);
+    while (phase <= epsilon) phase += pi;
+    // Extrema alternate and their envelope only decays, so the first two
+    // positive extrema cover both signs and therefore the global minimum.
+    for (int index = 0; index < 2; index += 1) {
+      const double time = phase / frequency;
+      const double displacement = std::exp(-decay * time) *
+          (a * std::cos(phase) + b * std::sin(phase));
+      if (!isPositiveAt(time, displacement)) return false;
+      phase += pi;
     }
-    previousOffset = keyframe.offset;
+    return true;
   }
-  return resolvedStart.clip.curve == target.clip.curve;
+
+  if (std::abs(discriminant) <= epsilon) {
+    const double b = initialVelocity - decay;
+    const double denominator = decay * b;
+    if (std::abs(denominator) <= epsilon) return true;
+    const double time = initialVelocity / denominator;
+    if (time <= epsilon) return true;
+    const double displacement = std::exp(-decay * time) * (-1 + b * time);
+    return isPositiveAt(time, displacement);
+  }
+
+  const double root = std::sqrt(discriminant);
+  const double slow = -decay + root;
+  const double fast = -decay - root;
+  const double slowCoefficient =
+      (initialVelocity + fast) / (slow - fast);
+  const double fastCoefficient = -1 - slowCoefficient;
+  const double numerator = -fastCoefficient * fast;
+  const double denominator = slowCoefficient * slow;
+  if (std::abs(denominator) <= epsilon || numerator / denominator <= 0) {
+    return true;
+  }
+  const double time =
+      std::log(numerator / denominator) / (slow - fast);
+  if (time <= epsilon) return true;
+  const double displacement = slowCoefficient * std::exp(slow * time) +
+      fastCoefficient * std::exp(fast * time);
+  return isPositiveAt(time, displacement);
 }
 
 inline Presentation fromChannels(
@@ -491,11 +456,10 @@ inline Presentation interpolate(
     return start + (end - start) * progress;
   };
   Channels blended{};
-  const Channels fromChannelsValue = toChannels(from);
-  const Channels toChannelsValue = toChannels(to);
-  const bool rendersShadow =
-      (from.shadow.enabled && from.shadow.alpha > 0) ||
-      (to.shadow.enabled && to.shadow.alpha > 0);
+  const auto normalized = normalizeShadowEndpoints(from, to);
+  const Channels fromChannelsValue = toChannels(normalized.first);
+  const Channels toChannelsValue = toChannels(normalized.second);
+  const bool rendersShadow = hasVisibleShadow(from) || hasVisibleShadow(to);
   const std::size_t channelCount =
       rendersShadow ? kChannelCount : kBaseChannelCount;
   for (std::size_t index = 0; index < channelCount; index += 1) {
@@ -509,139 +473,8 @@ inline Presentation interpolate(
   }
   const bool shadowEnabled = progress >= 1
       ? to.shadow.enabled
-      : (from.shadow.enabled || to.shadow.enabled);
+      : rendersShadow;
   return fromChannels(blended, from.clip.curve, shadowEnabled);
-}
-
-// Freezes a timing animation at one already-rendered raw-time phase and
-// returns the exact right-hand Bezier segment. Keeping the presentation and
-// residual curve in one helper prevents lifecycle code from sampling one
-// timestamp for the geometry and another for the duration.
-inline TimingContinuation timingContinuation(
-    const TimingAnimation &original,
-    const Presentation &start,
-    const Presentation &target,
-    double rawProgress) {
-  const TimingRemainder remainder = timingRemainder(original, rawProgress);
-  return {
-      interpolate(start, target, remainder.easedProgress),
-      remainder.animation};
-}
-
-// Android lifecycle callbacks can arrive long after the frame whose
-// presentation was actually delivered. Keep the clock inputs at this shared
-// boundary so callers cannot accidentally trim from callback wall time while
-// calculating geometry from the last rendered frame.
-inline TimingContinuation timingContinuationAtFrame(
-    const TimingAnimation &original,
-    const Presentation &start,
-    const Presentation &target,
-    double lastRenderedS,
-    double startedAtS,
-    double durationS) {
-  return timingContinuation(
-      original,
-      start,
-      target,
-      timingFraction(lastRenderedS, startedAtS, durationS));
-}
-
-// --- Keyframe curve -------------------------------------------------------
-
-// Keyframes interpolate segment-wise linearly on every platform. This is a
-// public contract: consumers compile unsupported springs/easings into exact
-// scalar samples, and native must not reinterpret those samples as a spline.
-class KeyframeCurve {
- public:
-  void reset(std::vector<Keyframe> frames) {
-    frames_ = std::move(frames);
-    cursor_ = 1;
-  }
-
-  const std::vector<Keyframe> &frames() const { return frames_; }
-  std::size_t size() const { return frames_.size(); }
-  bool usable() const { return frames_.size() >= 2; }
-
-  Presentation evaluate(double progress) {
-    const std::size_t count = frames_.size();
-    if (count == 0) return Presentation{{0, 0, 0, 0, 0}, 0, 0, 1};
-    if (count == 1) return frames_[0].presentation;
-
-    // The scan resumes from the previous segment instead of restarting at 1.
-    // Progress is monotonic within an animation, so this is O(1) amortized
-    // where the old restart-every-frame scan was O(keyframes) per frame; the
-    // backward walk keeps it correct if progress ever moves the other way.
-    std::size_t upper = std::min(std::max<std::size_t>(cursor_, 1), count - 1);
-    while (upper > 1 && progress < frames_[upper - 1].offset) upper -= 1;
-    while (upper < count - 1 && progress > frames_[upper].offset) upper += 1;
-    cursor_ = upper;
-
-    const Keyframe &lower = frames_[upper - 1];
-    const Keyframe &higher = frames_[upper];
-    const double span = higher.offset - lower.offset;
-    if (span <= 0) return higher.presentation;
-
-    const double t = clamp01((progress - lower.offset) / span);
-    return interpolate(lower.presentation, higher.presentation, t);
-  }
-
-  private:
-  std::vector<Keyframe> frames_;
-  std::size_t cursor_ = 1;
-};
-
-struct KeyframeContinuation {
-  Presentation start;
-  std::vector<Keyframe> frames;
-  double durationMs;
-};
-
-// Trims keyframes at the same raw-time phase that produced `frozen`. The new
-// zero frame is the rendered presentation, not an analytically re-sampled
-// neighbor, so a pause/re-latch cannot jump at the seam. Strictly increasing
-// remapped offsets avoid duplicate/division-by-zero segments after repeated
-// trims or floating-point collisions near the cutoff.
-inline KeyframeContinuation keyframeContinuation(
-    const std::vector<Keyframe> &frames,
-    const Presentation &frozen,
-    const Presentation &target,
-    double durationMs,
-    double rawProgress) {
-  const double progress = clamp01(rawProgress);
-  KeyframeContinuation result{
-      frozen, {{0.0, frozen}}, std::max(0.0, durationMs * (1 - progress))};
-  if (progress < 1.0) {
-    for (const Keyframe &frame : frames) {
-      if (frame.offset <= progress) continue;
-      const double offset = clamp01(
-          (frame.offset - progress) / (1 - progress));
-      if (offset <= result.frames.back().offset + 1e-12) continue;
-      result.frames.push_back({offset, frame.presentation});
-    }
-  }
-  if (result.frames.size() == 1 ||
-      result.frames.back().offset < 1.0 - 1e-12) {
-    result.frames.push_back({1.0, target});
-  } else {
-    result.frames.back().offset = 1.0;
-    result.frames.back().presentation = target;
-  }
-  return result;
-}
-
-inline KeyframeContinuation keyframeContinuationAtFrame(
-    const std::vector<Keyframe> &frames,
-    const Presentation &frozen,
-    const Presentation &target,
-    double lastRenderedS,
-    double startedAtS,
-    double durationS) {
-  return keyframeContinuation(
-      frames,
-      frozen,
-      target,
-      std::max(0.0, durationS * 1000.0),
-      timingFraction(lastRenderedS, startedAtS, durationS));
 }
 
 } // namespace smoothclip

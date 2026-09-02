@@ -69,7 +69,7 @@ inline void recordVelocitySample(
 }
 
 // Only explicit interactive writes route through this recorder. Native
-// freeze/join/resume/static-finalization paths deliberately do not, so an
+// Native freeze and endpoint-finalization paths deliberately do not, so an
 // animation cannot manufacture a later inherited velocity. During ordinary
 // interaction, the staleness decay below is the forgetting mechanism and it
 // forgets gradually rather than all at once.

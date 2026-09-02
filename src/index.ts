@@ -1,38 +1,31 @@
 export { SmoothClipView } from './SmoothClipView';
 export type { SmoothClipViewProps } from './SmoothClipView';
-export { useSmoothClipDriver } from './drivers';
-export { useSmoothClipGroupDriver } from './groupDrivers';
+export { useSmoothClipController } from './controllers';
+export { useSmoothClipGroup } from './groups';
 export { getSmoothClipCapabilities } from './capabilities';
 export type { SmoothClipCapabilities } from './capabilityTypes';
 export type {
-  ClipAnimationResult,
   ClipReduceMotion,
-  KeyframedClipAnimation,
-  SmoothClipDriver,
-  SmoothClipDriverOptions,
-  SmoothClipReactControls,
-  SmoothClipUIControls,
-  SmoothClipAnimation,
   SpringClipAnimation,
   TimingClipAnimation,
-} from './driverTypes';
+  SmoothClipAnimation,
+  SmoothClipCompletion,
+  SmoothClipController,
+  SmoothClipControllerOptions,
+  SmoothClipControllerReact,
+  SmoothClipControllerUI,
+  SmoothClipInitialFrame,
+  SmoothClipReactRun,
+  SmoothClipRef,
+  SmoothClipRunHandle,
+} from './controllerTypes';
 export type {
-  SmoothClipBatchEntry,
-  SmoothClipGroupAnimationResult,
-  SmoothClipGroupCancelBehavior,
-  SmoothClipGroupDriver,
-  SmoothClipGroupDriverOptions,
-  SmoothClipGroupKeyframeAnimation,
-  SmoothClipGroupKeyframeEntry,
-  SmoothClipGroupMotionAnimation,
-  SmoothClipGroupMotionEntry,
-  SmoothClipGroupReactControls,
+  SmoothClipGroup,
+  SmoothClipGroupFrame,
+  SmoothClipGroupOptions,
   SmoothClipGroupSnapshot,
-  SmoothClipGroupSpringAnimation,
-  SmoothClipGroupSuspensionPolicy,
-  SmoothClipGroupTimingAnimation,
-  SmoothClipGroupUIControls,
-} from './groupDriverTypes';
+  SmoothClipGroupTarget,
+} from './groupTypes';
 export { ClipEasings } from './easings';
 export {
   canonicalizeClipGeometry,

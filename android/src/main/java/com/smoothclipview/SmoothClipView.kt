@@ -59,6 +59,7 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     private var boxShadowPaint: Paint? = null
     private var clipIsEmpty = true
     private var requestedImportantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_AUTO
+    private var autonomousMotion = false
     private var acceptingTouchStream = false
 
     /** Driver this view is registered with in the native registry (0 = none). */
@@ -606,6 +607,13 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         reapplyClipPresentation()
     }
 
+    @DoNotStrip
+    fun setAutonomousMotion(active: Boolean) {
+        if (autonomousMotion == active) return
+        autonomousMotion = active
+        reapplyClipPresentation()
+    }
+
     fun reapplyClipPresentation() {
         val apertureVisible = apertureIntersectsHost()
         val expectedVisibility = renderVisibility(
@@ -616,7 +624,7 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         }
 
         val expectedAccessibility = clipAccessibility(
-            !apertureVisible,
+            autonomousMotion || !apertureVisible,
             requestedImportantForAccessibility,
         )
         if (importantForAccessibility != expectedAccessibility) {

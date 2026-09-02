@@ -64,9 +64,12 @@ internal object SmoothClipBindings {
 
     external fun nativeUnregisterView(driverId: Double, view: SmoothClipView)
 
+    /** Destroys a controller after [SmoothClipModule] forwards teardown to main. */
+    external fun nativeDestroyDriver(driverId: Double)
+
     /**
      * Pushes both positive and negative attachment/window-visibility state.
-     * The registry combines it with real host geometry before a latch can run.
+     * The registry combines it with real host geometry before a pending run starts.
      */
     external fun nativeSetViewLifecycleVisibility(
         driverId: Double,

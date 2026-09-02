@@ -25,13 +25,11 @@ export default function ZoomOverlayRoute() {
     updateActiveIndex,
   } = useSharedElementTransition();
 
-  // Whatever unmounts this route, never leave a card hidden behind it.
+  // Whatever unmounts this route, close the React-owned overlay session. The
+  // provider resets UI-runtime source visibility from the resulting commit.
   useEffect(() => {
-    return () => {
-      hiddenIndex.set(-1);
-      closeOverlay();
-    };
-  }, [closeOverlay, hiddenIndex]);
+    return closeOverlay;
+  }, [closeOverlay]);
 
   const onClosed = useCallback(() => {
     closeOverlay();

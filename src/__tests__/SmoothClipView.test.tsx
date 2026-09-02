@@ -1,6 +1,6 @@
 import { describe, expect, it, jest } from '@jest/globals';
-import type { SmoothClipDriver } from '../driverTypes';
-import { createDriverState, setDriverState } from '../driverState';
+import type { SmoothClipController } from '../controllerTypes';
+import { createSmoothClipRef, setControllerRef } from '../controllerInternals';
 import {
   createClipPresentation,
   type CanonicalSmoothClipPresentation,
@@ -11,16 +11,10 @@ jest.mock('../SmoothClipViewNativeComponent', () => ({
   default: 'NativeSmoothClipView',
 }));
 
-import { sanitizeSmoothClipStyle, SmoothClipView } from '../SmoothClipView';
-
-const renderSmoothClipView = (
-  SmoothClipView as unknown as {
-    render: (
-      props: React.ComponentProps<typeof SmoothClipView>,
-      ref: null
-    ) => React.ReactElement;
-  }
-).render;
+import {
+  renderSmoothClipView,
+  sanitizeSmoothClipStyle,
+} from '../SmoothClipView';
 
 const initialClip = {
   x: 12,
@@ -31,41 +25,27 @@ const initialClip = {
 };
 const initialPresentation = createClipPresentation(initialClip, -12, -34);
 
-function makeDriver(
+function makeController(
   driverId = 41,
   presentation: CanonicalSmoothClipPresentation = initialPresentation
-): SmoothClipDriver {
-  const source = { value: presentation } as never;
-  const driver: SmoothClipDriver = {
-    presentation: source,
-    ui: {
-      beginInteraction: () => presentation,
-      set: () => undefined,
-      setScalars: () => undefined,
-      animateTo: () => 1,
-      cancel: () => presentation,
-    },
-    react: {
-      beginInteraction: async () => presentation,
-      set: async () => undefined,
-      animateTo: async () => 1,
-      cancel: async () => presentation,
-    },
+): SmoothClipController {
+  const controller: SmoothClipController = {
+    ref: createSmoothClipRef(driverId),
+    ui: {} as never,
+    react: {} as never,
   };
-  setDriverState(
-    driver,
-    createDriverState(driverId, presentation, source, {
-      current: undefined,
-    })
-  );
-  return driver;
+  setControllerRef(controller, {
+    ref: createSmoothClipRef(driverId),
+    initialFrame: presentation,
+  });
+  return controller;
 }
 
 describe('SmoothClipView driver boundary', () => {
   it('passes the driver id and complete initial geometry synchronously', () => {
     const element = renderSmoothClipView(
       {
-        driver: makeDriver(),
+        controller: makeController(),
         testID: 'test-clip-host',
         children: 'content',
       },
@@ -92,13 +72,11 @@ describe('SmoothClipView driver boundary', () => {
     });
   });
 
-  it('reuses one driver identity across multiple hosts', () => {
-    const driver = makeDriver(73);
-    const first = renderSmoothClipView({ driver }, null);
-    const second = renderSmoothClipView({ driver }, null);
+  it('passes one controller identity to its host', () => {
+    const controller = makeController(73);
+    const first = renderSmoothClipView({ controller }, null);
 
     expect((first.props as Record<string, unknown>).driverId).toBe(73);
-    expect((second.props as Record<string, unknown>).driverId).toBe(73);
   });
 
   it('packs the complete initial box shadow into native props', () => {
@@ -110,7 +88,7 @@ describe('SmoothClipView driver boundary', () => {
       spreadDistance: 7,
     });
     const element = renderSmoothClipView(
-      { driver: makeDriver(91, presentation) },
+      { controller: makeController(91, presentation) },
       null
     );
 

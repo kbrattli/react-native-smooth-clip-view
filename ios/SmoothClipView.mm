@@ -166,6 +166,42 @@ static bool SmoothBoxShadowVisible(
   return shadow.enabled && shadow.alpha > 0 && !CGRectIsEmpty(geometry.rect);
 }
 
+static smoothclip::Shadow SmoothBoxShadowWithEffectiveAlpha(
+    SmoothClipCanonicalGeometry geometry,
+    smoothclip::Shadow shadow) {
+  if (!SmoothBoxShadowVisible(geometry, shadow)) {
+    shadow.alpha = 0;
+  }
+  return shadow;
+}
+
+static void SmoothBoxShadowNormalizeAnimationEndpoints(
+    SmoothClipCanonicalGeometry fromGeometry,
+    smoothclip::Shadow *fromShadow,
+    SmoothClipCanonicalGeometry toGeometry,
+    smoothclip::Shadow *toShadow) {
+  const bool fromVisible = SmoothBoxShadowVisible(fromGeometry, *fromShadow);
+  const bool toVisible = SmoothBoxShadowVisible(toGeometry, *toShadow);
+  if (fromVisible == toVisible) {
+    *fromShadow = SmoothBoxShadowWithEffectiveAlpha(
+        fromGeometry, *fromShadow);
+    *toShadow = SmoothBoxShadowWithEffectiveAlpha(toGeometry, *toShadow);
+    return;
+  }
+
+  smoothclip::Shadow *invisible = fromVisible ? toShadow : fromShadow;
+  const smoothclip::Shadow &visible = fromVisible ? *fromShadow : *toShadow;
+  invisible->enabled = true;
+  invisible->red = visible.red;
+  invisible->green = visible.green;
+  invisible->blue = visible.blue;
+  invisible->alpha = 0;
+  invisible->offsetX = visible.offsetX;
+  invisible->offsetY = visible.offsetY;
+  invisible->blurRadius = visible.blurRadius;
+  invisible->spreadDistance = visible.spreadDistance;
+}
+
 static bool SmoothBoxShadowColorEqual(
     const smoothclip::Shadow &first,
     const smoothclip::Shadow &second) {
@@ -183,37 +219,6 @@ static bool SmoothBoxShadowPathInputEqual(
           firstGeometry.radii, secondGeometry.radii) &&
       firstGeometry.curve == secondGeometry.curve &&
       firstShadow.spreadDistance == secondShadow.spreadDistance;
-}
-
-static bool SmoothClipAllObjectsEqual(NSArray *values) {
-  if (values.count < 2) return true;
-  id first = values.firstObject;
-  for (NSUInteger index = 1; index < values.count; index++) {
-    if (![first isEqual:values[index]]) return false;
-  }
-  return true;
-}
-
-static bool SmoothClipAllPathsEqual(NSArray *values) {
-  if (values.count < 2) return true;
-  CGPathRef first = (__bridge CGPathRef)values.firstObject;
-  for (NSUInteger index = 1; index < values.count; index++) {
-    if (!CGPathEqualToPath(first, (__bridge CGPathRef)values[index])) {
-      return false;
-    }
-  }
-  return true;
-}
-
-static bool SmoothClipAllColorsEqual(NSArray *values) {
-  if (values.count < 2) return true;
-  CGColorRef first = (__bridge CGColorRef)values.firstObject;
-  for (NSUInteger index = 1; index < values.count; index++) {
-    if (!CGColorEqualToColor(first, (__bridge CGColorRef)values[index])) {
-      return false;
-    }
-  }
-  return true;
 }
 
 static CGFloat SmoothClipAdjustedShadowRadius(
@@ -357,18 +362,6 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
 
   int32_t _activeAnimationId;
   NSInteger _activeAnimationKind;
-  // Set when a native animation install arrived before the first layout.
-  // The install is deferred and re-run through the registry at first layout
-  // so it joins from live presentation geometry with the true remaining time.
-  BOOL _pendingAnimationInstall;
-  CFTimeInterval _animationStartedAt;
-  CFTimeInterval _animationDuration;
-  // Bumped on every CA install. updateLayoutMetrics captures it on entry so a
-  // registry-driven install that happens inside its own lifecycle notification
-  // (a latch resume during that very layout pass) is detectable: the local
-  // rebuild must then be skipped, because its captured remaining time predates
-  // the suspension and would shorten — or zero out — the fresh install.
-  uint32_t _animationInstallGeneration;
   smoothclip::TimingAnimation _timingAnimation;
   smoothclip::SpringAnimation _springAnimation;
   SmoothClipAnimationDelegate *_animationDelegate;
@@ -452,8 +445,6 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
     _ignoreAnimationCallback = NO;
     _activeAnimationId = 0;
     _activeAnimationKind = 0;
-    _pendingAnimationInstall = NO;
-    _animationInstallGeneration = 0;
     smoothclip::clearVelocitySamples(_velocitySamples);
     // App-state transitions are observed by the registry itself (see
     // installApplicationStateObservers): the active flag is process-global,
@@ -537,24 +528,31 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   return _shadowLayer;
 }
 
-- (void)writeShadow:(const smoothclip::Shadow &)shadow
-            geometry:(SmoothClipCanonicalGeometry)geometry {
-  _canonicalShadow = shadow;
-  if (!shadow.enabled || CGRectIsEmpty(geometry.rect) || shadow.alpha <= 0) {
-    if (_shadowLayer != nil) _shadowLayer.shadowOpacity = 0;
-    return;
-  }
-  CALayer *shadowLayer = [self ensureShadowLayer];
+- (void)writeShadowModel:(const smoothclip::Shadow &)shadow
+                 geometry:(SmoothClipCanonicalGeometry)geometry {
+  const smoothclip::Shadow effectiveShadow =
+      SmoothBoxShadowWithEffectiveAlpha(geometry, shadow);
+  const BOOL visible = SmoothBoxShadowVisible(geometry, effectiveShadow);
+  if (_shadowLayer == nil && !visible) return;
+
+  CALayer *shadowLayer = visible ? [self ensureShadowLayer] : _shadowLayer;
   shadowLayer.bounds = self.bounds;
   shadowLayer.position = CGPointMake(
       CGRectGetMidX(self.bounds), CGRectGetMidY(self.bounds));
-  CGPathRef path = SmoothClipCreateShadowPath(geometry, shadow);
+  CGPathRef path = SmoothClipCreateShadowPath(geometry, effectiveShadow);
   shadowLayer.shadowPath = path;
   CGPathRelease(path);
-  shadowLayer.shadowColor = [self colorForShadow:shadow];
-  shadowLayer.shadowOpacity = 1;
-  shadowLayer.shadowRadius = MAX(0, shadow.blurRadius) / 2.0;
-  shadowLayer.shadowOffset = CGSizeMake(shadow.offsetX, shadow.offsetY);
+  shadowLayer.shadowColor = [self colorForShadow:effectiveShadow];
+  shadowLayer.shadowOpacity = visible ? 1 : 0;
+  shadowLayer.shadowRadius = MAX(0, effectiveShadow.blurRadius) / 2.0;
+  shadowLayer.shadowOffset = CGSizeMake(
+      effectiveShadow.offsetX, effectiveShadow.offsetY);
+}
+
+- (void)writeShadow:(const smoothclip::Shadow &)shadow
+            geometry:(SmoothClipCanonicalGeometry)geometry {
+  _canonicalShadow = shadow;
+  [self writeShadowModel:shadow geometry:geometry];
 }
 
 - (BOOL)canonicalRequestedGeometry:(SmoothClipCanonicalGeometry *)geometry {
@@ -740,15 +738,42 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
 
 - (CGFloat)inheritedVelocityToRect:(CGRect)target
                              radii:(SmoothClipCornerRadii)targetRadii
-                contentTranslation:(CGPoint)targetContentTranslation {
+                contentTranslation:(CGPoint)targetContentTranslation
+                      contentScale:(CGFloat)targetContentScale {
   return smoothclip::inheritedVelocity(
       _velocitySamples,
       SmoothClipVelocityChannels(
           target,
           targetRadii,
           targetContentTranslation,
-          _requestedContentScale),
+          targetContentScale),
       CACurrentMediaTime());
+}
+
+- (double)smoothClipInheritedVelocityToPresentation:
+    (smoothclip::Presentation)presentation {
+  SmoothClipCanonicalGeometry target;
+  const SmoothClipCornerRadii radii =
+      SmoothClipPresentationRadii(presentation.clip);
+  if (!SmoothClipCanonicalizeGeometry(
+          presentation.clip.x,
+          presentation.clip.y,
+          presentation.clip.width,
+          presentation.clip.height,
+          radii.topLeft,
+          radii.topRight,
+          radii.bottomRight,
+          radii.bottomLeft,
+          SmoothClipPresentationCurve(presentation.clip),
+          &target)) {
+    return 0;
+  }
+  return [self inheritedVelocityToRect:target.rect
+                                 radii:target.radii
+                    contentTranslation:CGPointMake(
+                        presentation.contentTranslateX,
+                        presentation.contentTranslateY)
+                          contentScale:presentation.contentScale];
 }
 
 - (void)smoothClipApplyPresentation:(smoothclip::Presentation)presentation {
@@ -760,7 +785,7 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   [self stopLayerAnimationWithoutCallback];
   [self storeRequestedPresentation:presentation];
   [self applyRequestedClip];
-  // Skipped for writes that are not interactive motion (a latched
+  // Skipped for writes that are not interactive motion (a pending-run
   // cancel-to-target): they must not enter the 'inherit' history.
   if (recordVelocitySample && _hasLayout) {
     [self recordInteractiveRect:_canonicalClip
@@ -838,26 +863,13 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
 - (BOOL)smoothClipCanDisplay {
   // A CA animation committed while this view's layer tree is detached from
   // the render tree does not survive the later attach commit; installs and
-  // latch starts must wait until a frame can actually be produced.
+  // pre-ready runs must wait until a frame can actually be produced.
   return [self smoothClipIsJoinable] && self.window != nil &&
       smoothclip::applicationIsActive();
 }
 
-- (BOOL)smoothClipHasPendingInstall {
-  return _pendingAnimationInstall;
-}
-
 - (void)smoothClipClearVelocitySamples {
   smoothclip::clearVelocitySamples(_velocitySamples);
-}
-
-- (double)smoothClipSpringContinuationVelocity {
-  if (_activeAnimationId == 0 || _activeAnimationKind != 2 ||
-      _pendingAnimationInstall) {
-    return 0;
-  }
-  const double elapsed = MAX(0, CACurrentMediaTime() - _animationStartedAt);
-  return smoothclip::springContinuationVelocity(_springAnimation, elapsed);
 }
 
 - (smoothclip::Presentation)smoothClipFreezePresentation {
@@ -899,7 +911,6 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
 }
 
 - (void)stopLayerAnimationWithoutCallback {
-  _pendingAnimationInstall = NO;
   if (_activeAnimationId == 0) return;
   // Invalidate before removing: CA may deliver didStop for the removed
   // animation after this method returns, when _ignoreAnimationCallback has
@@ -930,15 +941,19 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
 }
 
 - (CFTimeInterval)springSettlingDurationWithVelocity:(double)velocity {
-  // Every key path in the group shares mass/stiffness/damping and the same
-  // normalized initialVelocity, so one settling solve covers all of them.
-  CASpringAnimation *probe =
-      [CASpringAnimation animationWithKeyPath:@"bounds.origin.x"];
-  probe.mass = _springAnimation.mass;
-  probe.stiffness = _springAnimation.stiffness;
-  probe.damping = _springAnimation.damping;
-  probe.initialVelocity = velocity;
-  return probe.settlingDuration;
+  // Every key path shares one normalized trajectory. Derive the terminal
+  // duration from the same relative-energy rule as Android/Reanimated instead
+  // of asking each Core Animation property for an independent settle time.
+  smoothclip::ScalarSpringState state{0, velocity};
+  constexpr double step = 1.0 / 120.0;
+  double elapsed = 0;
+  while (elapsed < 10.0 &&
+         smoothclip::relativeSpringEnergy(state, _springAnimation) >
+             _springAnimation.energyThreshold) {
+    state = smoothclip::advanceScalarSpring(state, _springAnimation, step);
+    elapsed += step;
+  }
+  return elapsed;
 }
 
 - (CASpringAnimation *)springAnimationForKeyPath:(NSString *)keyPath
@@ -982,9 +997,9 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
       !CGRectIsEmpty(fromGeometry.rect)) {
     [self setClipContainerHidden:NO];
   }
-  _clipContainer.accessibilityElementsHidden =
-      !SmoothClipRectIntersectsHost(
-          CGRectUnion(fromGeometry.rect, toGeometry.rect), self.bounds);
+  // Autonomous native motion has no per-frame accessibility layout updates.
+  // Hide moving descendants until the endpoint is committed.
+  _clipContainer.accessibilityElementsHidden = YES;
 
   CALayer *layer = _clipContainer.layer;
   const CGRect toBounds = toGeometry.rect;
@@ -1003,7 +1018,14 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   [self writeLayerGeometry:toGeometry
          hasExplicitRadii:hasExplicitToRadii];
   [self writeContentTranslation:toContentTranslation scale:toContentScale];
-  [self writeShadow:toShadow geometry:toGeometry];
+  _canonicalShadow = toShadow;
+  SmoothBoxShadowNormalizeAnimationEndpoints(
+      fromGeometry, &fromShadow, toGeometry, &toShadow);
+  // The target model layer is complete before any presentation animations are
+  // attached. Core Animation may remove the terminal presentation animation
+  // before its delegate runs, so correctness cannot depend on completion-time
+  // cleanup hiding a stale path or opaque color.
+  [self writeShadowModel:toShadow geometry:toGeometry];
   if (usesMask) {
     // Keep one mask representation for the full interval, including an
     // unequal→uniform transition. Switching layer.mask mid-animation would
@@ -1031,25 +1053,25 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
           fromGeometry, fromShadow, toGeometry, toShadow);
   const BOOL animatesShadowColor = hasVisibleShadow &&
       !SmoothBoxShadowColorEqual(fromShadow, toShadow);
-  const BOOL animatesShadowOpacity =
-      fromShadowVisible != toShadowVisible;
   const BOOL animatesShadowRadius = hasVisibleShadow &&
       fromShadow.blurRadius != toShadow.blurRadius;
   const BOOL animatesShadowOffset = hasVisibleShadow &&
       (fromShadow.offsetX != toShadow.offsetX ||
        fromShadow.offsetY != toShadow.offsetY);
   const BOOL animatesShadow = animatesShadowPath || animatesShadowColor ||
-      animatesShadowOpacity || animatesShadowRadius || animatesShadowOffset;
-  if (animatesShadow) [self ensureShadowLayer];
+      animatesShadowRadius || animatesShadowOffset;
+  if (hasVisibleShadow) {
+    [self ensureShadowLayer];
+    // Reveal opacity is encoded in shadowColor alpha. Animating layer opacity
+    // too would multiply both curves and produce a quadratic-looking fade.
+    _shadowLayer.shadowOpacity = 1;
+  }
   CGPathRef fromShadowPath = animatesShadowPath
       ? SmoothClipCreateShadowPath(fromGeometry, fromShadow)
       : nil;
   CGPathRef toShadowPath = animatesShadowPath
       ? SmoothClipCreateShadowPath(toGeometry, toShadow)
       : nil;
-  const float fromShadowOpacity = fromShadowVisible ? 1 : 0;
-  const float toShadowOpacity = toShadowVisible ? 1 : 0;
-
   CAAnimationGroup *group = [CAAnimationGroup animation];
   CAAnimationGroup *contentGroup = [CAAnimationGroup animation];
   CAAnimationGroup *shadowGroup = animatesShadow
@@ -1127,11 +1149,6 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
           [self basicAnimationForKeyPath:@"shadowColor"
                            fromValue:(__bridge id)[self colorForShadow:fromShadow]
                              toValue:(__bridge id)[self colorForShadow:toShadow]
-                      timingFunction:timing]];
-      if (animatesShadowOpacity) [shadowAnimations addObject:
-          [self basicAnimationForKeyPath:@"shadowOpacity"
-                           fromValue:@(fromShadowOpacity)
-                             toValue:@(toShadowOpacity)
                       timingFunction:timing]];
       if (animatesShadowRadius) [shadowAnimations addObject:
           [self basicAnimationForKeyPath:@"shadowRadius"
@@ -1239,9 +1256,8 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
                                  duration:springDuration]];
     }
     group.animations = geometryAnimations;
-    // A rebuilt spring (layout change, foreground resume) must run its own
-    // settling time; clamping to the interrupted run's remaining wall-clock
-    // time would truncate the oscillation and snap to the target.
+    // Springs use their analytic settling time; a wall-clock duration would
+    // truncate oscillation and snap to the target.
     group.duration = springDuration;
     NSMutableArray<CAAnimation *> *contentAnimations = [NSMutableArray arrayWithArray:@[
       [self springAnimationForKeyPath:@"transform.translation.x"
@@ -1277,12 +1293,6 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
           [self springAnimationForKeyPath:@"shadowColor"
                             fromValue:(__bridge id)[self colorForShadow:fromShadow]
                               toValue:(__bridge id)[self colorForShadow:toShadow]
-                             velocity:velocity
-                             duration:springDuration]];
-      if (animatesShadowOpacity) [shadowAnimations addObject:
-          [self springAnimationForKeyPath:@"shadowOpacity"
-                            fromValue:@(fromShadowOpacity)
-                              toValue:@(toShadowOpacity)
                              velocity:velocity
                              duration:springDuration]];
       if (animatesShadowRadius) [shadowAnimations addObject:
@@ -1328,10 +1338,6 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
     }
   }
 
-  _animationDuration = group.duration;
-  _animationStartedAt = sharedBeginTime > 0
-      ? sharedBeginTime
-      : CACurrentMediaTime();
   _animationDelegate = [SmoothClipAnimationDelegate new];
   _animationDelegate.view = self;
   _animationDelegate.driverId = _driverId;
@@ -1350,14 +1356,12 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   if (toMaskPath != nil) CGPathRelease(toMaskPath);
   if (fromShadowPath != nil) CGPathRelease(fromShadowPath);
   if (toShadowPath != nil) CGPathRelease(toShadowPath);
-  _animationInstallGeneration += 1;
 }
 
 - (BOOL)startAnimationToRequestedGeometryWithDuration:(CFTimeInterval)duration
                                        sharedBeginTime:
                                            (CFTimeInterval)sharedBeginTime {
   if (![self smoothClipCanDisplay]) {
-    _pendingAnimationInstall = YES;
     return NO;
   }
   SmoothClipCanonicalGeometry target;
@@ -1436,7 +1440,8 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
       _springAnimation.initialVelocity =
           [self inheritedVelocityToRect:target.rect
                                    radii:target.radii
-                      contentTranslation:_requestedContentTranslation];
+                      contentTranslation:_requestedContentTranslation
+                            contentScale:_requestedContentScale];
     } else {
       _springAnimation.initialVelocity = 0;
     }
@@ -1445,301 +1450,6 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   _activeAnimationId = animationId;
   return [self startAnimationToRequestedGeometryWithDuration:0
                                               sharedBeginTime:sharedBeginTime];
-}
-
-- (CAKeyframeAnimation *)keyframeAnimationForKeyPath:(NSString *)keyPath
-                                               values:(NSArray *)values
-                                             keyTimes:(NSArray<NSNumber *> *)keyTimes {
-  CAKeyframeAnimation *animation =
-      [CAKeyframeAnimation animationWithKeyPath:keyPath];
-  animation.values = values;
-  animation.keyTimes = keyTimes;
-  animation.calculationMode = kCAAnimationLinear;
-  return animation;
-}
-
-- (BOOL)smoothClipAnimateKeyframes:(smoothclip::Presentation)presentation
-                          keyframes:(const std::vector<smoothclip::Keyframe> &)keyframes
-                          durationMs:(double)durationMs
-                         animationId:(int32_t)animationId {
-  return [self smoothClipAnimateKeyframes:presentation
-                                keyframes:keyframes
-                               durationMs:durationMs
-                              animationId:animationId
-                          sharedBeginTime:0];
-}
-
-- (BOOL)smoothClipAnimateKeyframes:(smoothclip::Presentation)presentation
-                          keyframes:(const std::vector<smoothclip::Keyframe> &)keyframes
-                          durationMs:(double)durationMs
-                         animationId:(int32_t)animationId
-                     sharedBeginTime:(CFTimeInterval)sharedBeginTime {
-  if (keyframes.size() < 2) return NO;
-  [self storeRequestedPresentation:presentation];
-  _activeAnimationKind = 3;
-  _activeAnimationId = animationId;
-  if (![self smoothClipCanDisplay]) {
-    _pendingAnimationInstall = YES;
-    return NO;
-  }
-  [self stopLayerAnimationWithoutCallback];
-  _activeAnimationKind = 3;
-  _activeAnimationId = animationId;
-
-  const NSUInteger frameCount = keyframes.size();
-  const BOOL hasVisibleShadowFrame = std::any_of(
-      keyframes.begin(), keyframes.end(),
-      [](const smoothclip::Keyframe &frame) {
-        return frame.presentation.shadow.enabled &&
-            frame.presentation.shadow.alpha > 0;
-      });
-  NSMutableArray<NSNumber *> *times =
-      [NSMutableArray arrayWithCapacity:frameCount];
-  NSMutableArray *boundsValues = [NSMutableArray arrayWithCapacity:frameCount];
-  NSMutableArray *positionValues =
-      [NSMutableArray arrayWithCapacity:frameCount];
-  NSMutableArray *radiusValues = [NSMutableArray arrayWithCapacity:frameCount];
-  NSMutableArray *maskPathValues =
-      [NSMutableArray arrayWithCapacity:frameCount];
-  NSMutableArray *translateXValues =
-      [NSMutableArray arrayWithCapacity:frameCount];
-  NSMutableArray *translateYValues =
-      [NSMutableArray arrayWithCapacity:frameCount];
-  NSMutableArray *scaleValues =
-      [NSMutableArray arrayWithCapacity:frameCount];
-  NSMutableArray *shadowPathValues = hasVisibleShadowFrame
-      ? [NSMutableArray arrayWithCapacity:frameCount] : nil;
-  NSMutableArray *shadowColorValues = hasVisibleShadowFrame
-      ? [NSMutableArray arrayWithCapacity:frameCount] : nil;
-  NSMutableArray *shadowOpacityValues = hasVisibleShadowFrame
-      ? [NSMutableArray arrayWithCapacity:frameCount] : nil;
-  NSMutableArray *shadowRadiusValues = hasVisibleShadowFrame
-      ? [NSMutableArray arrayWithCapacity:frameCount] : nil;
-  NSMutableArray *shadowOffsetValues = hasVisibleShadowFrame
-      ? [NSMutableArray arrayWithCapacity:frameCount] : nil;
-  BOOL usesMask = NO;
-  BOOL animatesScale = NO;
-  CGRect animatedApertureBounds = CGRectNull;
-  SmoothClipCornerCurve firstCurve = SmoothClipCornerCurveCircular;
-  BOOL hasFirstCurve = NO;
-  std::vector<SmoothClipCanonicalGeometry> canonicalFrames;
-  canonicalFrames.reserve(frameCount);
-  for (const smoothclip::Keyframe &frame : keyframes) {
-    const SmoothClipCornerRadii frameRadii =
-        SmoothClipPresentationRadii(frame.presentation.clip);
-    const SmoothClipCornerCurve frameCurve =
-        SmoothClipPresentationCurve(frame.presentation.clip);
-    SmoothClipCanonicalGeometry canonical;
-    if (!SmoothClipCanonicalizeGeometry(
-            frame.presentation.clip.x,
-            frame.presentation.clip.y,
-            frame.presentation.clip.width,
-            frame.presentation.clip.height,
-            frameRadii.topLeft,
-            frameRadii.topRight,
-            frameRadii.bottomRight,
-            frameRadii.bottomLeft,
-            frameCurve,
-            &canonical)) return NO;
-    canonicalFrames.push_back(canonical);
-    animatedApertureBounds = CGRectIsNull(animatedApertureBounds)
-        ? canonical.rect
-        : CGRectUnion(animatedApertureBounds, canonical.rect);
-    if (!SmoothClipCornerRadiiAreUniform(canonical.radii)) usesMask = YES;
-    if (!hasFirstCurve) {
-      firstCurve = canonical.curve;
-      hasFirstCurve = YES;
-    } else if (canonical.curve != firstCurve) {
-      usesMask = YES;
-    }
-    if (frame.presentation.contentScale != 1) animatesScale = YES;
-    [times addObject:@(frame.offset)];
-    [boundsValues addObject:[NSValue valueWithCGRect:canonical.rect]];
-    [positionValues addObject:[NSValue valueWithCGPoint:CGPointMake(
-        CGRectGetMidX(canonical.rect), CGRectGetMidY(canonical.rect))]];
-    [radiusValues addObject:@(canonical.radius)];
-    [translateXValues addObject:@(frame.presentation.contentTranslateX)];
-    [translateYValues addObject:@(frame.presentation.contentTranslateY)];
-    [scaleValues addObject:@(frame.presentation.contentScale)];
-    if (hasVisibleShadowFrame) {
-      CGPathRef shadowPath = SmoothClipCreateShadowPath(
-          canonical, frame.presentation.shadow);
-      [shadowPathValues addObject:(__bridge id)shadowPath];
-      CGPathRelease(shadowPath);
-      [shadowColorValues addObject:
-          (__bridge id)[self colorForShadow:frame.presentation.shadow]];
-      [shadowOpacityValues addObject:@(
-          frame.presentation.shadow.enabled &&
-                  !CGRectIsEmpty(canonical.rect) &&
-                  frame.presentation.shadow.alpha > 0
-              ? 1
-              : 0)];
-      [shadowRadiusValues addObject:@(
-          MAX(0, frame.presentation.shadow.blurRadius) / 2.0)];
-      [shadowOffsetValues addObject:[NSValue valueWithCGSize:CGSizeMake(
-          frame.presentation.shadow.offsetX,
-          frame.presentation.shadow.offsetY)]];
-    }
-  }
-
-  if (usesMask) {
-    for (const SmoothClipCanonicalGeometry &canonical : canonicalFrames) {
-      CGPathRef path = SmoothClipCreateRoundedRectPath(
-          canonical.rect, canonical.radii, canonical.curve);
-      [maskPathValues addObject:(__bridge id)path];
-      CGPathRelease(path);
-    }
-  }
-
-  const BOOL animatesShadowPath = hasVisibleShadowFrame &&
-      !SmoothClipAllPathsEqual(shadowPathValues);
-  const BOOL animatesShadowColor = hasVisibleShadowFrame &&
-      !SmoothClipAllColorsEqual(shadowColorValues);
-  const BOOL animatesShadowOpacity = hasVisibleShadowFrame &&
-      !SmoothClipAllObjectsEqual(shadowOpacityValues);
-  const BOOL animatesShadowRadius = hasVisibleShadowFrame &&
-      !SmoothClipAllObjectsEqual(shadowRadiusValues);
-  const BOOL animatesShadowOffset = hasVisibleShadowFrame &&
-      !SmoothClipAllObjectsEqual(shadowOffsetValues);
-  const BOOL animatesShadow = animatesShadowPath || animatesShadowColor ||
-      animatesShadowOpacity || animatesShadowRadius || animatesShadowOffset;
-  if (animatesShadow) [self ensureShadowLayer];
-
-  SmoothClipCanonicalGeometry target;
-  if (![self canonicalRequestedGeometry:&target]) return NO;
-  [self writeLayerGeometry:target
-         hasExplicitRadii:_requestedHasExplicitRadii];
-  [self writeContentTranslation:_requestedContentTranslation
-                           scale:_requestedContentScale];
-  [self writeShadow:_requestedShadow geometry:target];
-  if (usesMask) {
-    [self configureUnequalCornerMaskForGeometry:target];
-    _clipContainer.layer.cornerRadius = 0;
-    _clipContainer.layer.mask = _unequalCornerMask;
-  }
-  [self setClipContainerHidden:NO];
-  _clipContainer.accessibilityElementsHidden =
-      !SmoothClipRectIntersectsHost(animatedApertureBounds, self.bounds);
-
-  CAAnimationGroup *group = [CAAnimationGroup animation];
-  NSMutableArray<CAAnimation *> *geometryAnimations = [NSMutableArray arrayWithArray:@[
-    [self keyframeAnimationForKeyPath:@"bounds"
-                               values:boundsValues
-                             keyTimes:times],
-    [self keyframeAnimationForKeyPath:@"position"
-                               values:positionValues
-                             keyTimes:times],
-  ]];
-  if (!usesMask) {
-    [geometryAnimations addObject:
-        [self keyframeAnimationForKeyPath:@"cornerRadius"
-                                   values:radiusValues
-                                 keyTimes:times]];
-  }
-  group.animations = geometryAnimations;
-  group.duration = MAX(0, durationMs) / 1000.0;
-  CAAnimationGroup *contentGroup = [CAAnimationGroup animation];
-  NSMutableArray<CAAnimation *> *contentAnimations = [NSMutableArray arrayWithArray:@[
-    [self keyframeAnimationForKeyPath:@"transform.translation.x"
-                               values:translateXValues
-                             keyTimes:times],
-    [self keyframeAnimationForKeyPath:@"transform.translation.y"
-                               values:translateYValues
-                             keyTimes:times],
-  ]];
-  if (animatesScale) {
-    [contentAnimations addObject:
-        [self keyframeAnimationForKeyPath:@"transform.scale"
-                                   values:scaleValues
-                                 keyTimes:times]];
-  }
-  contentGroup.animations = contentAnimations;
-  contentGroup.duration = group.duration;
-  CAAnimationGroup *shadowGroup = animatesShadow
-      ? [CAAnimationGroup animation]
-      : nil;
-  if (animatesShadow) {
-    NSMutableArray<CAAnimation *> *shadowAnimations = [NSMutableArray array];
-    if (animatesShadowPath) [shadowAnimations addObject:
-        [self keyframeAnimationForKeyPath:@"shadowPath"
-                               values:shadowPathValues
-                             keyTimes:times]];
-    if (animatesShadowColor) [shadowAnimations addObject:
-        [self keyframeAnimationForKeyPath:@"shadowColor"
-                               values:shadowColorValues
-                             keyTimes:times]];
-    if (animatesShadowOpacity) [shadowAnimations addObject:
-        [self keyframeAnimationForKeyPath:@"shadowOpacity"
-                               values:shadowOpacityValues
-                             keyTimes:times]];
-    if (animatesShadowRadius) [shadowAnimations addObject:
-        [self keyframeAnimationForKeyPath:@"shadowRadius"
-                               values:shadowRadiusValues
-                             keyTimes:times]];
-    if (animatesShadowOffset) [shadowAnimations addObject:
-        [self keyframeAnimationForKeyPath:@"shadowOffset"
-                               values:shadowOffsetValues
-                             keyTimes:times]];
-    shadowGroup.animations = shadowAnimations;
-    shadowGroup.duration = group.duration;
-  }
-
-  CAAnimationGroup *maskAnimation = nil;
-  if (usesMask) {
-    maskAnimation = [CAAnimationGroup animation];
-    maskAnimation.animations = @[
-      [self keyframeAnimationForKeyPath:@"path"
-                                 values:maskPathValues
-                               keyTimes:times],
-      [self keyframeAnimationForKeyPath:@"bounds"
-                                 values:boundsValues
-                               keyTimes:times],
-      [self keyframeAnimationForKeyPath:@"position"
-                                 values:positionValues
-                               keyTimes:times],
-    ];
-    maskAnimation.duration = group.duration;
-  }
-
-  if (sharedBeginTime > 0) {
-    group.beginTime = [_clipContainer.layer
-        convertTime:sharedBeginTime
-        fromLayer:nil];
-    contentGroup.beginTime = [_contentContainer.layer
-        convertTime:sharedBeginTime
-        fromLayer:nil];
-    if (animatesShadow) {
-      shadowGroup.beginTime = [_shadowLayer
-          convertTime:sharedBeginTime
-          fromLayer:nil];
-    }
-    if (maskAnimation != nil) {
-      maskAnimation.beginTime = [_unequalCornerMask
-          convertTime:sharedBeginTime
-          fromLayer:nil];
-    }
-  }
-
-  _animationDuration = group.duration;
-  _animationStartedAt = sharedBeginTime > 0
-      ? sharedBeginTime
-      : CACurrentMediaTime();
-  _animationDelegate = [SmoothClipAnimationDelegate new];
-  _animationDelegate.view = self;
-  _animationDelegate.driverId = _driverId;
-  _animationDelegate.animationId = _activeAnimationId;
-  group.delegate = _animationDelegate;
-  [_clipContainer.layer addAnimation:group forKey:@"smoothClip.geometry"];
-  [_contentContainer.layer addAnimation:contentGroup
-                                 forKey:@"smoothClip.content"];
-  if (animatesShadow) {
-    [_shadowLayer addAnimation:shadowGroup forKey:@"smoothClip.shadow"];
-  }
-  if (maskAnimation != nil) {
-    [_unequalCornerMask addAnimation:maskAnimation forKey:@"smoothClip.mask"];
-  }
-  _animationInstallGeneration += 1;
-  return YES;
 }
 
 - (void)smoothClipCancelAnimationUsingTarget:(BOOL)useTarget {
@@ -1765,6 +1475,8 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   [_unequalCornerMask removeAnimationForKey:@"smoothClip.mask"];
   [_shadowLayer removeAnimationForKey:@"smoothClip.shadow"];
   [self applyStaticCornerRepresentation:[self canonicalGeometryValue]];
+  [self writeShadow:_requestedShadow
+            geometry:[self canonicalGeometryValue]];
   [self syncVisibilityForRect:_canonicalClip];
   smoothclip::viewAnimationDidStop(
       driverId, animationId, self, finished);
@@ -1834,112 +1546,14 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
 
 - (void)updateLayoutMetrics:(const LayoutMetrics &)layoutMetrics
              oldLayoutMetrics:(const LayoutMetrics &)oldLayoutMetrics {
-  const BOOL wasAnimating = _activeAnimationId != 0;
-  const BOOL wasPending = _pendingAnimationInstall;
-  const uint32_t installGenerationAtEntry = _animationInstallGeneration;
-  const smoothclip::Presentation visible = wasAnimating && !wasPending
-      ? [self smoothClipCurrentPresentation]
-      : smoothclip::Presentation{{0, 0, 0, 0, 0}, 0, 0, 1};
-  const CGRect visibleRect = CGRectMake(
-      visible.clip.x,
-      visible.clip.y,
-      visible.clip.width,
-      visible.clip.height);
-  const SmoothClipCornerRadii visibleRadii =
-      SmoothClipPresentationRadii(visible.clip);
-  const SmoothClipCornerCurve visibleCurve =
-      SmoothClipPresentationCurve(visible.clip);
-  const CGPoint visibleContentTranslation = CGPointMake(
-      visible.contentTranslateX,
-      visible.contentTranslateY);
-  const CGFloat visibleContentScale = visible.contentScale;
-  CFTimeInterval remaining = wasAnimating
-      ? MAX(0, _animationDuration -
-                   (CACurrentMediaTime() - _animationStartedAt))
-      : 0;
-  const double springContinuationVelocity =
-      wasAnimating && !wasPending && _activeAnimationKind == 2
-      ? [self smoothClipSpringContinuationVelocity]
-      : 0;
-
   [super updateLayoutMetrics:layoutMetrics oldLayoutMetrics:oldLayoutMetrics];
   _hasLayout = YES;
   [self layoutContentContainer];
   if (_driverId != 0) {
-    // Both edges matter: zero size/detach/background suspend an installed
-    // participant; the first positive visible layout resumes the held latch.
     smoothclip::viewDisplayabilityChanged(_driverId, self);
   }
-  if (wasPending) {
-    // The registry either kept the install deferred or installed the rebased
-    // latch. Relayout must not independently restart a background-held id.
-    if (_activeAnimationId == 0) [self applyRequestedClip];
-    return;
-  }
-  if (wasAnimating) {
-    // A negative transition may have frozen this host and re-latched the
-    // registry above. Its non-recording freeze is already the correct model
-    // state for the new lifecycle; do not resurrect a local timer.
-    if (_activeAnimationId == 0 || ![self smoothClipCanDisplay]) return;
-    // The lifecycle notification above may itself have installed this
-    // animation from the registry's trimmed remainder (a latch resume inside
-    // this very layout pass). That install rebased the clocks; the `remaining`
-    // captured on entry predates the suspension and would rebuild a shorter —
-    // possibly zero-duration — run on top of the fresh one. The id alone
-    // cannot detect this (a resume keeps the animation id), so compare the
-    // install generation.
-    if (_animationInstallGeneration != installGenerationAtEntry) return;
-    const int32_t animationId = _activeAnimationId;
-    const NSInteger animationKind = _activeAnimationKind;
-    [self stopLayerAnimationWithoutCallback];
-    _activeAnimationId = animationId;
-    _activeAnimationKind = animationKind;
-    if (_activeAnimationKind == 1 && _animationDuration > 0) {
-      const double progress = smoothclip::clamp01(
-          1 - remaining / _animationDuration);
-      _timingAnimation =
-          smoothclip::timingRemainder(_timingAnimation, progress).animation;
-      remaining = _timingAnimation.durationMs / 1000.0;
-    } else if (_activeAnimationKind == 2) {
-      _springAnimation.initialVelocity = springContinuationVelocity;
-      _springAnimation.inheritVelocity = false;
-    } else if (_activeAnimationKind == 3) {
-      _activeAnimationKind = 1;
-      _timingAnimation = {remaining * 1000.0, 0, 0, 1, 1, 2};
-    }
-    SmoothClipCanonicalGeometry current;
-    SmoothClipCanonicalizeGeometry(
-        CGRectGetMinX(visibleRect),
-        CGRectGetMinY(visibleRect),
-        CGRectGetWidth(visibleRect),
-        CGRectGetHeight(visibleRect),
-        visibleRadii.topLeft,
-        visibleRadii.topRight,
-        visibleRadii.bottomRight,
-        visibleRadii.bottomLeft,
-        visibleCurve,
-        &current);
-    SmoothClipCanonicalGeometry target;
-    if ([self canonicalRequestedGeometry:&target]) {
-      [self installAnimationFromGeometry:current
-                  fromContentTranslation:visibleContentTranslation
-                        fromContentScale:visibleContentScale
-                             fromShadow:visible.shadow
-                              toGeometry:target
-                    hasExplicitToRadii:_requestedHasExplicitRadii
-                    toContentTranslation:_requestedContentTranslation
-                              toContentScale:_requestedContentScale
-                                  toShadow:_requestedShadow
-                                duration:remaining
-                         sharedBeginTime:0];
-    }
-  } else {
-    if (_driverId != 0 && smoothclip::hasActiveAnimation(_driverId)) {
-      // Registry-level lifecycle pause owns the frozen model. A layout pass
-      // while its latch is held must not apply the requested target or start a
-      // per-view timer; foreground/reattach will re-latch and resume it once.
-      return;
-    }
+  if (_activeAnimationId == 0 &&
+      (_driverId == 0 || !smoothclip::hasActiveAnimation(_driverId))) {
     [self applyRequestedClip];
   }
 }
@@ -2029,7 +1643,6 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
     _driverId = 0;
   }
   [self stopLayerAnimationWithoutCallback];
-  _pendingAnimationInstall = NO;
   smoothclip::clearVelocitySamples(_velocitySamples);
   [super prepareForRecycle];
   _requestedClip = CGRectZero;

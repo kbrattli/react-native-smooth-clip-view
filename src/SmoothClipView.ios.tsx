@@ -1,19 +1,43 @@
 /* eslint-disable no-bitwise -- color channels use packed RRGGBBAA integers */
-import { forwardRef, type ComponentRef, type ReactNode } from 'react';
+import {
+  forwardRef,
+  useEffect,
+  type ComponentRef,
+  type ForwardedRef,
+  type ReactElement,
+  type ReactNode,
+} from 'react';
 import { StyleSheet, type ViewProps, type ViewStyle } from 'react-native';
-import type { SmoothClipDriver } from './driverTypes';
-import { getDriverState } from './driverState';
-import { canonicalizeClipPresentation } from './geometry';
+import type { SmoothClipController } from './controllerTypes';
+import { getControllerRef, unwrapSmoothClipRef } from './controllerInternals';
 import NativeSmoothClipView, {
   type NativeProps,
 } from './SmoothClipViewNativeComponent';
 
 export type SmoothClipViewProps = ViewProps & {
-  driver: SmoothClipDriver;
+  controller: SmoothClipController;
   children?: ReactNode;
 };
 
 let reportedIndependentShadow = false;
+const mountedControllers = new WeakMap<SmoothClipController, number>();
+
+function useSingleControllerHost(controller: SmoothClipController): void {
+  useEffect(() => {
+    const mounted = mountedControllers.get(controller) ?? 0;
+    if (__DEV__ && mounted > 0) {
+      throw new Error(
+        '[SmoothClipView] One controller cannot drive two mounted hosts. Create one controller per SmoothClipView.'
+      );
+    }
+    mountedControllers.set(controller, mounted + 1);
+    return () => {
+      const current = mountedControllers.get(controller) ?? 1;
+      if (current <= 1) mountedControllers.delete(controller);
+      else mountedControllers.set(controller, current - 1);
+    };
+  }, [controller]);
+}
 
 function filterContainsDropShadow(filter: ViewStyle['filter']): boolean {
   if (typeof filter === 'string') return /drop-shadow\s*\(/i.test(filter);
@@ -86,16 +110,12 @@ export function sanitizeSmoothClipStyle(
   return sanitized as ViewStyle;
 }
 
-export const SmoothClipView = forwardRef<
-  ComponentRef<typeof NativeSmoothClipView>,
-  SmoothClipViewProps
->(function SmoothClipViewComponent(
-  { driver, children, style, ...viewProps },
-  forwardedRef
-) {
-  const { driverId, initialPresentation } = getDriverState(driver);
-  const canonical = canonicalizeClipPresentation(initialPresentation);
-  if (canonical === null) return null;
+export function renderSmoothClipView(
+  { controller, children, style, ...viewProps }: SmoothClipViewProps,
+  forwardedRef: ForwardedRef<ComponentRef<typeof NativeSmoothClipView>>
+): ReactElement {
+  const { ref, initialFrame: canonical } = getControllerRef(controller);
+  const driverId = unwrapSmoothClipRef(ref)?.id ?? 0;
   const { clip } = canonical;
   const shadow = canonical.boxShadow;
   const color = (shadow?.color as unknown as number) ?? 0;
@@ -131,4 +151,12 @@ export const SmoothClipView = forwardRef<
       {children}
     </NativeSmoothClipView>
   );
+}
+
+export const SmoothClipView = forwardRef<
+  ComponentRef<typeof NativeSmoothClipView>,
+  SmoothClipViewProps
+>(function SmoothClipViewComponent(props, forwardedRef) {
+  useSingleControllerHost(props.controller);
+  return renderSmoothClipView(props, forwardedRef);
 });
