@@ -1,5 +1,9 @@
 import { describe, expect, it, jest } from '@jest/globals';
-import type { SmoothClipPresentation } from '../geometry';
+import {
+  canonicalizeClipPresentation,
+  type SmoothClipPresentation,
+} from '../geometry';
+import { presentationPacket } from '../presentationCodec';
 
 let completionListener:
   | ((event: {
@@ -34,6 +38,7 @@ jest.mock('../smoothClipNative', () => ({
   default: {
     setClipPresentation: jest.fn(),
     beginGroupInteraction: jest.fn(),
+    snapshotGroup: jest.fn(),
     setClipPresentationBatch: jest.fn(() => true),
     animateTimingGroup: jest.fn(() => 11),
     animateSpringGroup: jest.fn(() => 12),
@@ -74,11 +79,17 @@ const timing = {
 };
 
 type MockNative = {
+  snapshotGroup: jest.Mock;
   setClipPresentationBatch: jest.Mock;
   animateTimingGroup: jest.Mock;
+  cancelAnimationGroup: jest.Mock;
 };
 
 const native = mockNativeModule as unknown as MockNative;
+
+function snapshotPacket(value: SmoothClipPresentation): number[] {
+  return [1, ...presentationPacket(canonicalizeClipPresentation(value)!)];
+}
 
 describe('useSmoothClipController', () => {
   it('uses the shared one-member batch path for streamed frames', () => {
@@ -125,6 +136,21 @@ describe('useSmoothClipController', () => {
     expect(controller.ui.animateTo(target, timing, 1.5)).toBeNull();
     expect(controller.ui.animateTo(target, timing, -1)).toBeNull();
     expect(native.animateTimingGroup).not.toHaveBeenCalled();
+  });
+
+  it('returns the current presentation when cancelling a stale UI run', () => {
+    const controller = useSmoothClipController(initial);
+    native.animateTimingGroup.mockReturnValueOnce(51);
+    native.cancelAnimationGroup.mockReturnValueOnce([]);
+    native.snapshotGroup.mockReturnValueOnce(snapshotPacket(target));
+    const run = controller.ui.animateTo(target, timing);
+
+    expect(run).not.toBeNull();
+    expect(controller.ui.cancel(run!)).toEqual(
+      canonicalizeClipPresentation(target)
+    );
+    expect(native.cancelAnimationGroup).toHaveBeenCalledWith(51, 0);
+    expect(native.snapshotGroup).toHaveBeenCalledTimes(1);
   });
 
   it('correlates synchronous React completion without exposing an id', async () => {

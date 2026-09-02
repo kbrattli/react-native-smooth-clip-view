@@ -32,6 +32,7 @@ import NativeSmoothClipModule from './smoothClipNative';
 
 const beginGroupInteractionHostFunction =
   NativeSmoothClipModule.beginGroupInteraction;
+const snapshotGroupHostFunction = NativeSmoothClipModule.snapshotGroup;
 const setClipPresentationBatchHostFunction =
   NativeSmoothClipModule.setClipPresentationBatch;
 const animateTimingGroupHostFunction =
@@ -51,6 +52,7 @@ const DEFAULT_ENERGY_THRESHOLD = 6e-9;
 
 type InternalRunHandle = SmoothClipRunHandle &
   Readonly<{
+    controllerId: number;
     id: number;
     refs: readonly SmoothClipRef[];
   }>;
@@ -304,27 +306,42 @@ function animateGroupOnUI(
   }
   if (id <= 0) return null;
   return {
+    controllerId,
     id,
     refs: entries.map((entry) => entry.clip),
   } as unknown as InternalRunHandle;
 }
 
 function cancelGroupOnUI(
+  controllerId: number,
   handle: SmoothClipRunHandle
 ): readonly SmoothClipGroupSnapshot[] {
   'worklet';
   const internal = handle as InternalRunHandle;
   if (
+    internal.controllerId !== controllerId ||
     !Number.isInteger(internal.id) ||
     internal.id <= 0 ||
     !Array.isArray(internal.refs)
   ) {
     return [];
   }
-  return snapshotsFromPacket(
-    internal.refs,
-    cancelAnimationGroupHostFunction(internal.id, 0)
+  let internals: readonly InternalSmoothClipRef[];
+  try {
+    internals = validatedRefs(internal.refs);
+  } catch {
+    return [];
+  }
+  const values = cancelAnimationGroupHostFunction(internal.id, 0);
+  if (values.length > 0) {
+    return snapshotsFromPacket(internal.refs, values);
+  }
+  const snapshots = snapshotGroupHostFunction(
+    internals.map((internalRefValue) => internalRefValue.id)
   );
+  return snapshots.length === 0
+    ? []
+    : snapshotsFromPacket(internal.refs, snapshots);
 }
 
 function validReactEntries(entries: readonly SmoothClipGroupTarget[]): boolean {
@@ -418,14 +435,20 @@ function handleNativeGroupCompletion(
 }
 
 function cancelRegisteredRun(
+  controllerId: number,
   groupId: number,
   refs: readonly SmoothClipRef[]
 ): void {
   scheduleOnUI(
-    (id: number, clips: readonly SmoothClipRef[]) => {
+    (ownerId: number, id: number, clips: readonly SmoothClipRef[]) => {
       'worklet';
-      cancelGroupOnUI({ id, refs: clips } as unknown as InternalRunHandle);
+      cancelGroupOnUI(ownerId, {
+        controllerId: ownerId,
+        id,
+        refs: clips,
+      } as unknown as InternalRunHandle);
     },
+    controllerId,
     groupId,
     refs
   );
@@ -465,7 +488,7 @@ export function useSmoothClipGroup(
         },
         cancel(run) {
           'worklet';
-          return cancelGroupOnUI(run);
+          return cancelGroupOnUI(controllerId, run);
         },
       },
       react: {
@@ -531,7 +554,7 @@ export function useSmoothClipGroup(
               run.cancelRequested = true;
               nativeId.then((groupId) => {
                 if (groupId > 0 && !run.settled) {
-                  cancelRegisteredRun(groupId, run.refs);
+                  cancelRegisteredRun(run.controllerId, groupId, run.refs);
                 }
               });
             },

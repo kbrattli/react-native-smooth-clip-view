@@ -163,6 +163,20 @@ Presentation presentationWithScale(double scale) {
       6e-9);
 }
 
+- (void)testUndampedSpringRequiresHardDurationCap {
+  const smoothclip::SpringAnimation spring{1, 100, 0, 0, false, 2, 6e-9};
+  smoothclip::ScalarSpringState state{0, 0};
+  for (int frame = 0; frame < 1200; frame += 1) {
+    state = smoothclip::advanceScalarSpring(state, spring, 1.0 / 120.0);
+  }
+
+  XCTAssertEqualWithAccuracy(
+      smoothclip::relativeSpringEnergy(state, spring), 1, 1e-9);
+  XCTAssertGreaterThan(
+      smoothclip::relativeSpringEnergy(state, spring),
+      spring.energyThreshold);
+}
+
 - (void)testPositiveScaleCheckAcceptsSafeUnderdampedOvershoot {
   const smoothclip::SpringAnimation spring{1, 100, 10, 0, false, 2};
   XCTAssertTrue(smoothclip::springScaleStaysPositive(
