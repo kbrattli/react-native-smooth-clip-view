@@ -846,9 +846,8 @@ void advanceGroup(int32_t groupId, ActiveGroup &group, double now) {
     group.lastFrameS = now;
     group.scalarSpring = advanceScalarSpring(
         group.scalarSpring, group.spring, deltaTime);
-    done = now - group.startedAtS >= kSpringMaxDurationS ||
-        relativeSpringEnergy(group.scalarSpring, group.spring) <=
-            group.spring.energyThreshold;
+    done = relativeSpringEnergy(group.scalarSpring, group.spring) <=
+        group.spring.energyThreshold;
     for (GroupMemberAnimation &member : group.members) {
       member.animation.current = interpolate(
           member.animation.start,
