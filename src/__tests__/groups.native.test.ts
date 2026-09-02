@@ -169,6 +169,29 @@ describe('useSmoothClipGroup', () => {
     });
   });
 
+  it('treats an empty cancel result as a stale run', () => {
+    const group = useSmoothClipGroup();
+    native.animateTimingGroup.mockReturnValueOnce(91);
+    native.cancelAnimationGroup.mockReturnValueOnce([]);
+    const handle = group.ui.animateTo([{ clip: first, target }], timing);
+
+    expect(handle).not.toBeNull();
+    expect(group.ui.cancel(handle!)).toEqual([]);
+    expect(native.cancelAnimationGroup).toHaveBeenCalledWith(91, 0);
+  });
+
+  it('does not cancel a run owned by another group', () => {
+    const owner = useSmoothClipGroup();
+    const other = useSmoothClipGroup();
+    native.animateTimingGroup.mockReturnValueOnce(92);
+    const handle = owner.ui.animateTo([{ clip: first, target }], timing);
+    native.cancelAnimationGroup.mockClear();
+
+    expect(handle).not.toBeNull();
+    expect(other.ui.cancel(handle!)).toEqual([]);
+    expect(native.cancelAnimationGroup).not.toHaveBeenCalled();
+  });
+
   it('correlates replacement completions without exposing native ids', async () => {
     const group = useSmoothClipGroup();
     native.animateTimingGroup.mockReturnValueOnce(81).mockReturnValueOnce(82);
