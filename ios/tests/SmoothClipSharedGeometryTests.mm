@@ -6,6 +6,7 @@
 #include "SmoothClipSharedGeometry.h"
 
 #include <cmath>
+#include <cfloat>
 
 // Mirrored in ClipGeometryNormalizerTest.kt so Kotlin, shared C++, and iOS
 // provably use the same host-independent canonical geometry.
@@ -74,6 +75,14 @@ typedef struct {
     XCTAssertFalse(accepted, @"input %zu", index);
     XCTAssertEqual(shared.left, -1.0, @"input %zu", index);
   }
+}
+
+- (void)testSharedCanonicalizerRejectsArithmeticOverflow {
+  smoothclip::CanonicalClip shared;
+  XCTAssertFalse(smoothclip::SmoothClipCanonicalize(
+      DBL_MAX, 0, DBL_MAX, 10, 1, shared));
+  XCTAssertFalse(smoothclip::SmoothClipCanonicalize(
+      0, DBL_MAX, 10, DBL_MAX, 1, shared));
 }
 
 - (void)testCanonicalPresentationKeepsRawCoordinatesAndScalesRadiiOnly {

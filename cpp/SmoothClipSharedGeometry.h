@@ -69,10 +69,13 @@ inline bool SmoothClipCanonicalize(
 
   const double canonicalWidth = std::max(0.0, width);
   const double canonicalHeight = std::max(0.0, height);
+  const double right = x + canonicalWidth;
+  const double bottom = y + canonicalHeight;
+  if (!std::isfinite(right) || !std::isfinite(bottom)) return false;
   out.left = x;
   out.top = y;
-  out.right = x + canonicalWidth;
-  out.bottom = y + canonicalHeight;
+  out.right = right;
+  out.bottom = bottom;
 
   double topLeft = std::max(0.0, resolvedTopLeft);
   double topRight = std::max(0.0, resolvedTopRight);

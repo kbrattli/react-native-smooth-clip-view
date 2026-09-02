@@ -75,6 +75,9 @@ NS_INLINE BOOL SmoothClipCanonicalizeGeometry(
 
   const CGFloat requestedWidth = MAX(0, width);
   const CGFloat requestedHeight = MAX(0, height);
+  if (!isfinite(x + requestedWidth) || !isfinite(y + requestedHeight)) {
+    return NO;
+  }
 
   SmoothClipCornerRadii radii = {
       MAX(0, topLeftRadius),

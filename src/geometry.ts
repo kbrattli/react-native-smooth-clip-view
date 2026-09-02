@@ -138,12 +138,16 @@ function clipBoxShadowEquals(
 
 export function isFiniteClipGeometry(geometry: ClipGeometry): boolean {
   'worklet';
+  const width = Math.max(0, geometry.width);
+  const height = Math.max(0, geometry.height);
   return (
     Number.isFinite(geometry.x) &&
     Number.isFinite(geometry.y) &&
     Number.isFinite(geometry.width) &&
     Number.isFinite(geometry.height) &&
     Number.isFinite(geometry.radius) &&
+    Number.isFinite(geometry.x + width) &&
+    Number.isFinite(geometry.y + height) &&
     isFiniteOptionalNumber(geometry.topLeftRadius) &&
     isFiniteOptionalNumber(geometry.topRightRadius) &&
     isFiniteOptionalNumber(geometry.bottomRightRadius) &&

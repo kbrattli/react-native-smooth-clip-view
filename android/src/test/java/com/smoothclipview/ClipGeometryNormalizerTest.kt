@@ -86,6 +86,31 @@ class ClipGeometryNormalizerTest {
     }
 
     @Test
+    fun rejectsArithmeticOverflow() {
+        assertFalse(
+            canonicalize(
+                Float.MAX_VALUE,
+                0f,
+                Float.MAX_VALUE,
+                20f,
+                4f,
+            ).first,
+        )
+        assertFalse(
+            canonicalizeValue(
+                0f,
+                Float.MAX_VALUE,
+                20f,
+                Float.MAX_VALUE,
+                4f,
+                4f,
+                4f,
+                4f,
+            ).first,
+        )
+    }
+
+    @Test
     fun v3UsesOneCssOverlapFactorForAllCorners() {
         val (accepted, result) = canonicalizeValue(
             0f,

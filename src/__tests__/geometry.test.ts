@@ -114,6 +114,15 @@ describe('canonicalizeClipGeometry', () => {
         radius: 4,
       })
     ).toBeNull();
+    expect(
+      canonicalizeClipGeometry({
+        x: Number.MAX_VALUE,
+        y: 0,
+        width: Number.MAX_VALUE,
+        height: 20,
+        radius: 4,
+      })
+    ).toBeNull();
   });
 
   it('compares geometry without allocating canonical copies', () => {

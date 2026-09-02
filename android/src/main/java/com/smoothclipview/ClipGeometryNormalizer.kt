@@ -36,6 +36,7 @@ internal inline fun canonicalizeClipGeometryPx(
     val canonicalHeight = max(0f, height)
     val right = x + canonicalWidth
     val bottom = y + canonicalHeight
+    if (!right.isFinite() || !bottom.isFinite()) return false
     val canonicalRadius = min(
         radius.coerceAtLeast(0f),
         min(canonicalWidth, canonicalHeight) / 2f,
@@ -86,6 +87,7 @@ internal inline fun canonicalizeClipGeometryPx(
     val canonicalHeight = max(0f, height)
     val right = x + canonicalWidth
     val bottom = y + canonicalHeight
+    if (!right.isFinite() || !bottom.isFinite()) return false
     val topLeft = topLeftRadius.coerceAtLeast(0f)
     val topRight = topRightRadius.coerceAtLeast(0f)
     val bottomRight = bottomRightRadius.coerceAtLeast(0f)
