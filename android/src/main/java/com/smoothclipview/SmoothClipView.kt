@@ -22,7 +22,25 @@ import kotlin.math.abs
 import kotlin.math.pow
 
 class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
-    private val clipContainer = ReactViewGroup(context)
+    private val clipPath = Path()
+    private val supportsPathOutlineClipping =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+    private val clipContainer: ReactViewGroup =
+        if (supportsPathOutlineClipping) {
+            ReactViewGroup(context)
+        } else {
+            object : ReactViewGroup(context) {
+                override fun dispatchDraw(canvas: Canvas) {
+                    val saveCount = canvas.save()
+                    canvas.clipPath(clipPath)
+                    try {
+                        super.dispatchDraw(canvas)
+                    } finally {
+                        canvas.restoreToCount(saveCount)
+                    }
+                }
+            }
+        }
     internal val contentContainer = ReactViewGroup(context)
     private var requestedX = 0f
     private var requestedY = 0f
@@ -54,7 +72,6 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     private var clipBottomRightRadius = 0f
     private var clipBottomLeftRadius = 0f
     private var clipCurveCode = CLIP_CURVE_CIRCULAR
-    private val clipPath = Path()
     private var boxShadowPath: Path? = null
     private var boxShadowPaint: Paint? = null
     private var clipIsEmpty = true
@@ -75,17 +92,23 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
                 return
             }
 
-            // Outline.setRoundRect only accepts integer edges. The raw path
-            // keeps sub-pixel coordinates and off-host geometry intact.
-            outline.setPath(clipPath)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                // Outline.setRoundRect only accepts integer edges. The raw path
+                // keeps sub-pixel coordinates and off-host geometry intact.
+                outline.setPath(clipPath)
+            } else {
+                outline.setEmpty()
+            }
         }
     }
 
     init {
         clipContainer.addView(contentContainer)
         super.addView(clipContainer)
-        clipContainer.outlineProvider = clipOutlineProvider
-        clipContainer.clipToOutline = true
+        if (supportsPathOutlineClipping) {
+            clipContainer.outlineProvider = clipOutlineProvider
+            clipContainer.clipToOutline = true
+        }
         clipToOutline = false
         setWillNotDraw(false)
         visibility = INVISIBLE
@@ -479,7 +502,11 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
             }
         }
         rebuildBoxShadowPath()
-        clipContainer.invalidateOutline()
+        if (supportsPathOutlineClipping) {
+            clipContainer.invalidateOutline()
+        } else {
+            clipContainer.invalidate()
+        }
         if (requestedShadowEnabled) invalidate()
     }
 

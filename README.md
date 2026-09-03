@@ -23,6 +23,7 @@ https://github.com/user-attachments/assets/899235b3-de69-46d7-b6db-61bc54d80df8
 - React 19.2 or newer
 - React Native Reanimated 4.5 or newer
 - React Native Worklets 0.10.1 or newer
+- Android API 24 or newer
 
 ```sh
 npm install react-native-smooth-clip-view react-native-reanimated react-native-worklets

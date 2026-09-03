@@ -1,7 +1,7 @@
 buildscript {
   ext.SmoothClipView = [
     kotlinVersion: "2.0.21",
-    minSdkVersion: 33,
+    minSdkVersion: 24,
     compileSdkVersion: 36,
     targetSdkVersion: 36
   ]
@@ -76,10 +76,7 @@ android {
   }
 
   defaultConfig {
-    // Outline.setPath only guarantees arbitrary path clipping from API 33.
-    // Keep this as a hard library floor: allowing a consuming root project to
-    // override it lower would make the per-corner/continuous path silently
-    // unsupported at runtime.
+    // API 24-32 clip child drawing directly; API 33+ use path outlines.
     minSdkVersion SmoothClipView.minSdkVersion
     targetSdkVersion getExtOrDefault("targetSdkVersion")
     // C++ resolves SmoothClipView by name and calls its presentation setters via

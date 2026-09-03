@@ -1,5 +1,9 @@
 package com.smoothclipview
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Outline
 import android.graphics.Path
 import android.graphics.RectF
 import android.view.MotionEvent
@@ -17,6 +21,7 @@ import org.mockito.Mockito.mock
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
 // API 36 support in Robolectric 4.16 requires a Java 21 test worker. CI stays
@@ -205,6 +210,50 @@ class SmoothClipViewRobolectricTest {
         // This point is outside a radius-20 quarter circle but inside the
         // library's continuous cubic, whose controls meet at the corner.
         assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 95f, 5f)))
+    }
+
+    @Test
+    @Config(sdk = [33, 35])
+    fun roundedOutlineClipsOnSupportedAndroidVersions() {
+        view.setClipPresentationPx(
+            0.25f,
+            0.75f,
+            80.5f,
+            70.25f,
+            4f,
+            12f,
+            20f,
+            24f,
+            CLIP_CURVE_CONTINUOUS,
+            0f,
+            0f,
+            1f,
+        )
+
+        val outline = Outline()
+        val clipContainer = privateObject("clipContainer") as View
+        clipContainer.outlineProvider.getOutline(clipContainer, outline)
+
+        assertTrue(clipContainer.clipToOutline)
+        assertFalse(outline.isEmpty)
+        assertTrue(outline.canClip())
+    }
+
+    @Test
+    @Config(sdk = [26, 32])
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun canvasPathClipsRenderedContentBeforePathOutlinesAreSupported() {
+        view.contentContainer.getChildAt(0).setBackgroundColor(Color.RED)
+        setUniformPresentationPx(view, 20f, 20f, 80f, 80f, 16f, 0f, 0f)
+
+        val clipContainer = privateObject("clipContainer") as View
+        assertFalse(clipContainer.clipToOutline)
+
+        val bitmap = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888)
+        view.draw(Canvas(bitmap))
+
+        assertEquals(Color.TRANSPARENT, bitmap.getPixel(10, 50))
+        assertEquals(Color.RED, bitmap.getPixel(50, 50))
     }
 
     @Test
