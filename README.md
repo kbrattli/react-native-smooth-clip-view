@@ -13,6 +13,10 @@ native-owned timing or spring motion without animating Yoga layout. A regular
 Reanimated `View` with `overflow: 'hidden'` remains the simpler choice when
 layout-thread work and interruption snapshots are not concerns.
 
+## Demo
+
+https://github.com/user-attachments/assets/899235b3-de69-46d7-b6db-61bc54d80df8
+
 ## Requirements
 
 - React Native 0.86 or newer with the New Architecture
