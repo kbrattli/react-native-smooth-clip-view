@@ -77,6 +77,8 @@ internal object SmoothClipBindings {
         lifecycleVisible: Boolean,
     )
 
+    external fun nativeSetApplicationActive(active: Boolean)
+
     /**
      * Releases runtime-bound listener state during host teardown; must run
      * while the JS runtime is still alive (module invalidate).
@@ -97,6 +99,10 @@ internal object SmoothClipBindings {
     @JvmStatic
     fun scheduleFrame() {
         Choreographer.getInstance().postFrameCallback(frameCallback)
+    }
+
+    fun pauseFrameLoop() {
+        Choreographer.getInstance().removeFrameCallback(frameCallback)
     }
 
     /** Advances the frame loop with the doFrame vsync timestamp. */

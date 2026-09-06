@@ -107,9 +107,9 @@ UI-runtime runs without retaining a consumer worklet for the animation lifetime.
 It does not update React state, animated props, Yoga, the ShadowTree, or a public
 SharedValue.
 
-`beginInteraction()` atomically interrupts native motion and returns its visible
-raw presentation. Apply the final gesture sample with `setFrame()` before calling
-it when the release must start from that exact frame.
+`beginInteraction()` atomically interrupts native motion and returns
+its visible raw presentation. Apply the final gesture sample with `setFrame()`
+before calling it when the release must start from that exact frame.
 
 ## React API
 
@@ -135,8 +135,21 @@ relative energy threshold `6e-9`. A spring is rejected when its resolved native
 trajectory could make `contentScale` nonpositive.
 
 An animation requested before the host has a positive layout waits, then starts
-with its full duration. Host loss after motion starts freezes every member and
-resolves the transaction `false`. Replacement, cancellation, destruction, and
+with its full duration. While the application is inactive, native animation
+transactions stay pending and do not report cancellation. Timing animations
+retain wall-clock progress and catch up after activation. Springs stay frozen;
+their first foreground step consumes at most 64 ms, matching Reanimated, and
+then they continue normally. If the platform discarded an underlying animation
+object, the transaction settles successfully at its requested target.
+
+Interactive `setFrame()` updates remain application-owned. The library does not
+reset a drag or mutate related SharedValues or React state when lifecycle state
+changes, so applications do not need lifecycle integration for the clip itself.
+
+Host loss while the application is active keeps the existing semantics:
+standalone animations apply their target and finish successfully, while groups
+(including public controllers because they use one-member groups) freeze every
+member and resolve `false`. Replacement, cancellation, destruction, and
 rejection also settle once with `false`.
 
 ## Atomic groups

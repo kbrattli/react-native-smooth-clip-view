@@ -1,10 +1,12 @@
 package com.smoothclipview
 
 import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.LifecycleEventListener
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.UiThreadUtil
 import com.facebook.react.bridge.WritableArray
+import com.facebook.react.common.LifecycleState
 import com.facebook.react.module.annotations.ReactModule
 import com.facebook.react.turbomodule.core.interfaces.BindingsInstallerHolder
 import com.facebook.react.turbomodule.core.interfaces.TurboModuleWithJSIBindings
@@ -17,12 +19,46 @@ import com.facebook.react.turbomodule.core.interfaces.TurboModuleWithJSIBindings
  */
 @ReactModule(name = NativeSmoothClipModuleSpec.NAME)
 class SmoothClipModule(context: ReactApplicationContext) :
-    NativeSmoothClipModuleSpec(context), TurboModuleWithJSIBindings {
+    NativeSmoothClipModuleSpec(context),
+    TurboModuleWithJSIBindings,
+    LifecycleEventListener {
+
+    init {
+        context.addLifecycleEventListener(this)
+        setApplicationActive(context.lifecycleState == LifecycleState.RESUMED)
+    }
+
+    private fun setApplicationActive(active: Boolean) {
+        val updateState = {
+            if (!active) {
+                SmoothClipBindings.pauseFrameLoop()
+            }
+            SmoothClipBindings.nativeSetApplicationActive(active)
+        }
+        if (UiThreadUtil.isOnUiThread()) {
+            updateState()
+        } else {
+            UiThreadUtil.runOnUiThread(updateState)
+        }
+    }
+
+    override fun onHostResume() {
+        setApplicationActive(true)
+    }
+
+    override fun onHostPause() {
+        setApplicationActive(false)
+    }
+
+    override fun onHostDestroy() {
+        setApplicationActive(false)
+    }
 
     override fun getBindingsInstaller(): BindingsInstallerHolder =
         SmoothClipBindings.getBindingsInstaller()
 
     override fun invalidate() {
+        reactApplicationContext.removeLifecycleEventListener(this)
         super.invalidate()
         // Completions must stop and runtime-bound listener functions must be
         // released before the JS runtime is torn down; otherwise a later host

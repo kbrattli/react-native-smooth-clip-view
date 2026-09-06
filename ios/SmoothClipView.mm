@@ -365,6 +365,9 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   smoothclip::TimingAnimation _timingAnimation;
   smoothclip::SpringAnimation _springAnimation;
   SmoothClipAnimationDelegate *_animationDelegate;
+  BOOL _springPausedForInactivity;
+  BOOL _pausedSpringHadMaskAnimation;
+  BOOL _pausedSpringHadShadowAnimation;
 
   // 'inherit' velocity samples (raw canonical geometry, per view); recording/
   // coalescing/projection live in the shared cpp/SmoothClipVelocityTracker.h
@@ -445,6 +448,9 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
     _ignoreAnimationCallback = NO;
     _activeAnimationId = 0;
     _activeAnimationKind = 0;
+    _springPausedForInactivity = NO;
+    _pausedSpringHadMaskAnimation = NO;
+    _pausedSpringHadShadowAnimation = NO;
     smoothclip::clearVelocitySamples(_velocitySamples);
     // App-state transitions are observed by the registry itself (see
     // installApplicationStateObservers): the active flag is process-global,
@@ -927,6 +933,9 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   _activeAnimationId = 0;
   _activeAnimationKind = 0;
   _animationDelegate = nil;
+  _springPausedForInactivity = NO;
+  _pausedSpringHadMaskAnimation = NO;
+  _pausedSpringHadShadowAnimation = NO;
 }
 
 - (CABasicAnimation *)basicAnimationForKeyPath:(NSString *)keyPath
@@ -1318,6 +1327,12 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
     maskAnimation.duration = group.duration;
   }
 
+  // An explicit media-time origin is required to pause and resume spring
+  // groups without touching the parent layer clock (which would also pause
+  // consumer animations in the clipped subtree).
+  if (sharedBeginTime <= 0) {
+    sharedBeginTime = CACurrentMediaTime();
+  }
   if (sharedBeginTime > 0) {
     // Each layer receives the same absolute media timestamp translated into
     // its local clock. Group participants therefore advance from one epoch
@@ -1343,6 +1358,9 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   _animationDelegate.driverId = _driverId;
   _animationDelegate.animationId = _activeAnimationId;
   group.delegate = _animationDelegate;
+  _springPausedForInactivity = NO;
+  _pausedSpringHadMaskAnimation = NO;
+  _pausedSpringHadShadowAnimation = NO;
   [layer addAnimation:group forKey:@"smoothClip.geometry"];
   [_contentContainer.layer addAnimation:contentGroup
                                  forKey:@"smoothClip.content"];
@@ -1465,6 +1483,154 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   }
 }
 
+- (BOOL)smoothClipPauseSpringAnimation:(int32_t)animationId
+                           atMediaTime:(CFTimeInterval)mediaTime {
+  if (_activeAnimationId != animationId || _activeAnimationKind != 2 ||
+      _springPausedForInactivity) {
+    return NO;
+  }
+
+  CALayer *geometryLayer = _clipContainer.layer;
+  CALayer *contentLayer = _contentContainer.layer;
+  CAAnimation *installedGeometry =
+      [geometryLayer animationForKey:@"smoothClip.geometry"];
+  CAAnimation *installedContent =
+      [contentLayer animationForKey:@"smoothClip.content"];
+  if (installedGeometry == nil || installedContent == nil) return NO;
+
+  auto pausedCopy = ^CAAnimation *(CALayer *layer, CAAnimation *installed) {
+    if (installed == nil) return (CAAnimation *)nil;
+    CAAnimation *paused = [installed copy];
+    const CFTimeInterval localNow =
+        [layer convertTime:mediaTime fromLayer:nil];
+    const CFTimeInterval elapsed = std::clamp(
+        localNow - installed.beginTime,
+        (CFTimeInterval)0,
+        installed.duration);
+    paused.speed = 0;
+    paused.timeOffset = elapsed;
+    paused.beginTime = 0;
+    return paused;
+  };
+
+  CAAnimation *geometry = pausedCopy(geometryLayer, installedGeometry);
+  CAAnimation *content = pausedCopy(contentLayer, installedContent);
+  CAAnimation *installedMask =
+      [_unequalCornerMask animationForKey:@"smoothClip.mask"];
+  CAAnimation *mask = pausedCopy(_unequalCornerMask, installedMask);
+  CAAnimation *installedShadow =
+      [_shadowLayer animationForKey:@"smoothClip.shadow"];
+  CAAnimation *shadow = pausedCopy(_shadowLayer, installedShadow);
+
+  _animationDelegate.invalidated = YES;
+  _ignoreAnimationCallback = YES;
+  [geometryLayer removeAnimationForKey:@"smoothClip.geometry"];
+  [contentLayer removeAnimationForKey:@"smoothClip.content"];
+  [_unequalCornerMask removeAnimationForKey:@"smoothClip.mask"];
+  [_shadowLayer removeAnimationForKey:@"smoothClip.shadow"];
+
+  _animationDelegate = [SmoothClipAnimationDelegate new];
+  _animationDelegate.view = self;
+  _animationDelegate.driverId = _driverId;
+  _animationDelegate.animationId = animationId;
+  geometry.delegate = _animationDelegate;
+  [geometryLayer addAnimation:geometry forKey:@"smoothClip.geometry"];
+  [contentLayer addAnimation:content forKey:@"smoothClip.content"];
+  if (mask != nil) {
+    [_unequalCornerMask addAnimation:mask forKey:@"smoothClip.mask"];
+  }
+  if (shadow != nil) {
+    [_shadowLayer addAnimation:shadow forKey:@"smoothClip.shadow"];
+  }
+  _ignoreAnimationCallback = NO;
+  _springPausedForInactivity = YES;
+  _pausedSpringHadMaskAnimation = mask != nil;
+  _pausedSpringHadShadowAnimation = shadow != nil;
+  return YES;
+}
+
+- (BOOL)smoothClipResumeSpringAnimation:(int32_t)animationId
+                            atMediaTime:(CFTimeInterval)mediaTime
+                             catchUpBy:(CFTimeInterval)catchUp {
+  if (_activeAnimationId != animationId || _activeAnimationKind != 2 ||
+      !_springPausedForInactivity) {
+    return NO;
+  }
+
+  CALayer *geometryLayer = _clipContainer.layer;
+  CALayer *contentLayer = _contentContainer.layer;
+  CAAnimation *installedGeometry =
+      [geometryLayer animationForKey:@"smoothClip.geometry"];
+  CAAnimation *installedContent =
+      [contentLayer animationForKey:@"smoothClip.content"];
+  CAAnimation *installedMask =
+      [_unequalCornerMask animationForKey:@"smoothClip.mask"];
+  CAAnimation *installedShadow =
+      [_shadowLayer animationForKey:@"smoothClip.shadow"];
+  if (installedGeometry == nil || installedContent == nil ||
+      (_pausedSpringHadMaskAnimation && installedMask == nil) ||
+      (_pausedSpringHadShadowAnimation && installedShadow == nil)) {
+    return NO;
+  }
+
+  auto resumedCopy = ^CAAnimation *(CALayer *layer, CAAnimation *installed) {
+    if (installed == nil) return (CAAnimation *)nil;
+    CAAnimation *resumed = [installed copy];
+    const CFTimeInterval localNow =
+        [layer convertTime:mediaTime fromLayer:nil];
+    const CFTimeInterval resumedTime = std::min(
+        installed.duration,
+        std::max((CFTimeInterval)0, installed.timeOffset + catchUp));
+    resumed.speed = 1;
+    resumed.timeOffset = 0;
+    resumed.beginTime = localNow - resumedTime;
+    return resumed;
+  };
+
+  CAAnimation *geometry = resumedCopy(geometryLayer, installedGeometry);
+  CAAnimation *content = resumedCopy(contentLayer, installedContent);
+  CAAnimation *mask = resumedCopy(_unequalCornerMask, installedMask);
+  CAAnimation *shadow = resumedCopy(_shadowLayer, installedShadow);
+
+  _animationDelegate.invalidated = YES;
+  _ignoreAnimationCallback = YES;
+  [geometryLayer removeAnimationForKey:@"smoothClip.geometry"];
+  [contentLayer removeAnimationForKey:@"smoothClip.content"];
+  [_unequalCornerMask removeAnimationForKey:@"smoothClip.mask"];
+  [_shadowLayer removeAnimationForKey:@"smoothClip.shadow"];
+
+  _animationDelegate = [SmoothClipAnimationDelegate new];
+  _animationDelegate.view = self;
+  _animationDelegate.driverId = _driverId;
+  _animationDelegate.animationId = animationId;
+  geometry.delegate = _animationDelegate;
+  [geometryLayer addAnimation:geometry forKey:@"smoothClip.geometry"];
+  [contentLayer addAnimation:content forKey:@"smoothClip.content"];
+  if (mask != nil) {
+    [_unequalCornerMask addAnimation:mask forKey:@"smoothClip.mask"];
+  }
+  if (shadow != nil) {
+    [_shadowLayer addAnimation:shadow forKey:@"smoothClip.shadow"];
+  }
+  _ignoreAnimationCallback = NO;
+  _springPausedForInactivity = NO;
+  _pausedSpringHadMaskAnimation = NO;
+  _pausedSpringHadShadowAnimation = NO;
+  return YES;
+}
+
+- (BOOL)smoothClipHasInstalledAnimation:(int32_t)animationId {
+  return _activeAnimationId == animationId &&
+      [_clipContainer.layer animationForKey:@"smoothClip.geometry"] != nil &&
+      [_contentContainer.layer animationForKey:@"smoothClip.content"] != nil &&
+      (!_springPausedForInactivity ||
+       (!_pausedSpringHadMaskAnimation ||
+        [_unequalCornerMask animationForKey:@"smoothClip.mask"] != nil)) &&
+      (!_springPausedForInactivity ||
+       (!_pausedSpringHadShadowAnimation ||
+        [_shadowLayer animationForKey:@"smoothClip.shadow"] != nil));
+}
+
 - (void)smoothClipAnimationDidStopWithDriverId:(uint64_t)driverId
                                     animationId:(int32_t)animationId
                                        finished:(BOOL)finished {
@@ -1472,6 +1638,9 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   _activeAnimationId = 0;
   _activeAnimationKind = 0;
   _animationDelegate = nil;
+  _springPausedForInactivity = NO;
+  _pausedSpringHadMaskAnimation = NO;
+  _pausedSpringHadShadowAnimation = NO;
   [_unequalCornerMask removeAnimationForKey:@"smoothClip.mask"];
   [_shadowLayer removeAnimationForKey:@"smoothClip.shadow"];
   [self applyStaticCornerRepresentation:[self canonicalGeometryValue]];

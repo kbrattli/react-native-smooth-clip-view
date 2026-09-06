@@ -54,6 +54,7 @@ void setViewLifecycleVisibilityAndroid(
     uint64_t driverId,
     facebook::jni::alias_ref<JSmoothClipView> view,
     bool lifecycleVisible);
+void setApplicationActiveAndroid(bool active);
 
 // Advances the registry frame loop. Called from Kotlin (SmoothClipBindings)
 // inside Choreographer#doFrame with the frame's vsync timestamp converted to

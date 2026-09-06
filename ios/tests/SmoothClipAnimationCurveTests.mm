@@ -128,6 +128,20 @@ Presentation presentationWithScale(double scale) {
       smoothclip::timingFraction(2.0, 1.0, 2.0), 0.5, 1e-12);
 }
 
+- (void)testSpringSafetyClockExcludesInactiveWallTime {
+  const double startedAt = 100.0;
+  const double pausedAt = 102.0;
+  const double resumedAt = 122.0;
+  const double rebased = smoothclip::rebaseSpringStartAfterInactivity(
+      startedAt, resumedAt - pausedAt);
+
+  XCTAssertEqualWithAccuracy(rebased, 120.0, 1e-12);
+  XCTAssertEqualWithAccuracy(resumedAt - rebased, 2.0, 1e-12);
+  XCTAssertEqual(
+      smoothclip::rebaseSpringStartAfterInactivity(startedAt, -1.0),
+      startedAt);
+}
+
 #pragma mark - Shared scalar spring
 
 - (void)testDefaultSpringMatchesRepresentativeReanimatedSteps {

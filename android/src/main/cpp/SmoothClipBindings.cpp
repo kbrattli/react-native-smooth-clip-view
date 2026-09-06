@@ -918,6 +918,12 @@ void nativeSetViewLifecycleVisibility(
       static_cast<uint64_t>(driverId), view, lifecycleVisible != 0);
 }
 
+void nativeSetApplicationActive(
+    jni::alias_ref<jni::JObject>,
+    jboolean active) {
+  smoothclip::setApplicationActiveAndroid(active != 0);
+}
+
 void nativeInvalidate(jni::alias_ref<jni::JObject>) {
   smoothclip::invalidateBindings();
 }
@@ -942,6 +948,8 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) {
             makeNativeMethod(
                 "nativeSetViewLifecycleVisibility",
                 nativeSetViewLifecycleVisibility),
+            makeNativeMethod(
+                "nativeSetApplicationActive", nativeSetApplicationActive),
             makeNativeMethod("nativeInvalidate", nativeInvalidate),
             makeNativeMethod("nativeOnFrame", nativeOnFrame),
         });

@@ -166,6 +166,16 @@ std::vector<int32_t> &animatingGroups() {
   return value;
 }
 
+bool &applicationActiveState() {
+  static bool value = true;
+  return value;
+}
+
+std::optional<double> &applicationInactiveSinceS() {
+  static std::optional<double> value;
+  return value;
+}
+
 // The sink is written from the JS thread (installBindings / invalidate) and
 // invoked on main. Invoking under the lock also keeps the owning bindings
 // state alive for the duration of the callback.
@@ -639,6 +649,7 @@ void startPendingGroup(ActiveGroup &group) {
 }
 
 void reconcileGroupReadiness(uint64_t driverId) {
+  if (!applicationActiveState()) return;
   const auto stateIterator = registry().find(driverId);
   if (stateIterator == registry().end() || stateIterator->second.groupId == 0) {
     return;
@@ -704,7 +715,8 @@ int32_t startAnimation(
   // visible all read animation->current, giving a never-rendered pending-run
   // freeze-at-start / replace-from-start semantics with no extra branches.
   animation.current = animation.start;
-  animation.started = anyDisplayableView(state);
+  animation.started =
+      applicationActiveState() && anyDisplayableView(state);
   state.animation = std::move(animation);
   for (ViewEntry &entry : state.views) {
     entry.participation = state.animation->started && entryDisplayable(entry)
@@ -730,7 +742,8 @@ int32_t startAnimation(
 }
 
 void finishIfHostUnavailable(uint64_t driverId, DriverState &state) {
-  if (!state.animation.has_value() || !state.animation->started ||
+  if (!applicationActiveState() || !state.animation.has_value() ||
+      !state.animation->started ||
       anyDisplayableView(state)) {
     return;
   }
@@ -746,7 +759,7 @@ void reconcileViewDisplayability(
     uint64_t driverId,
     DriverState &state,
     ViewEntry &entry) {
-  if (!state.animation.has_value()) return;
+  if (!applicationActiveState() || !state.animation.has_value()) return;
   if (!state.animation->started) {
     if (entryDisplayable(entry)) startPendingAnimation(driverId, state);
     return;
@@ -892,6 +905,7 @@ void advanceGroup(int32_t groupId, ActiveGroup &group, double now) {
 void onFrameImpl(double now) {
   SMOOTH_CLIP_TRACE("SmoothClip.frame");
   gFrameScheduled = false;
+  if (!applicationActiveState()) return;
   // Snapshot: advance() clears live-list entries on completion. advance()
   // never erases registry entries and never starts animations (completion
   // delivery hops through CallInvoker::invokeAsync), so the find() guard
@@ -936,6 +950,66 @@ void onFrameAndroid(double frameTimeS) {
     } catch (...) {
       // gFrameScheduled stays false; the next animation start re-schedules.
     }
+  }
+}
+
+void setApplicationActiveAndroid(bool active) {
+  if (!isOnMainThread() || applicationActiveState() == active) return;
+  if (!active) {
+    applicationActiveState() = false;
+    applicationInactiveSinceS() = nowSeconds();
+    gFrameScheduled = false;
+    return;
+  }
+
+  const double now = nowSeconds();
+  const double inactiveDurationS = applicationInactiveSinceS().has_value()
+      ? std::max(0.0, now - *applicationInactiveSinceS())
+      : 0.0;
+  applicationInactiveSinceS().reset();
+  applicationActiveState() = true;
+
+  // Reanimated's spring frame delta includes the inactive interval and is
+  // clamped to 64 ms, but its termination is energy-based rather than a wall
+  // clock timeout. Keep lastFrameS unchanged so the first resumed step sees
+  // that clamped delta, while moving only the safety-cap origin forward so an
+  // ordinary background interval cannot terminate the spring by itself.
+  if (inactiveDurationS > 0) {
+    for (auto &[driverId, state] : registry()) {
+      (void)driverId;
+      if (state.groupId == 0 && state.animation.has_value() &&
+          state.animation->started &&
+          state.animation->kind == AnimationKind::Spring) {
+        state.animation->startedAtS = rebaseSpringStartAfterInactivity(
+            state.animation->startedAtS, inactiveDurationS);
+      }
+    }
+    for (auto &[groupId, group] : groupRegistry()) {
+      (void)groupId;
+      if (!group.started || group.kind != AnimationKind::Spring) continue;
+      group.startedAtS = rebaseSpringStartAfterInactivity(
+          group.startedAtS, inactiveDurationS);
+      for (GroupMemberAnimation &member : group.members) {
+        member.animation.startedAtS = rebaseSpringStartAfterInactivity(
+            member.animation.startedAtS, inactiveDurationS);
+      }
+    }
+  }
+
+  for (auto &[driverId, state] : registry()) {
+    if (state.groupId == 0 && state.animation.has_value() &&
+        !state.animation->started && anyDisplayableView(state)) {
+      startPendingAnimation(driverId, state);
+    }
+  }
+  for (auto &[groupId, group] : groupRegistry()) {
+    (void)groupId;
+    if (!group.started && allGroupMembersReady(group)) {
+      startPendingGroup(group);
+    }
+  }
+  if (!animatingDrivers().empty() || !animatingGroups().empty()) {
+    scheduleFrame();
   }
 }
 
@@ -1241,7 +1315,8 @@ int32_t startGroupCommon(
     member.animation.lastFrameS = stamp.startedAtS;
     member.animation.frameClockAnchored = stamp.frameClockAnchored;
   }
-  group.started = allGroupMembersReady(group);
+  group.started =
+      applicationActiveState() && allGroupMembersReady(group);
   groupRegistry().emplace(groupId, std::move(group));
   if (reduce) {
     finishGroupImpl(groupId, true, true);

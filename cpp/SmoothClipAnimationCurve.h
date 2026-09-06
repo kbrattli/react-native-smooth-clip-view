@@ -91,6 +91,14 @@ inline double timingFraction(
   return clamp01((nowS - startedAtS) / durationS);
 }
 
+// Springs clamp a long frame delta, so inactive wall time must remain visible
+// to lastFrameS. Only the independent safety-cap origin moves forward.
+inline double rebaseSpringStartAfterInactivity(
+    double startedAtS,
+    double inactiveDurationS) {
+  return startedAtS + std::max(0.0, inactiveDurationS);
+}
+
 // --- Timing curve --------------------------------------------------------
 
 inline double cubicBezierParameterForX(

@@ -14,6 +14,9 @@
 
 @interface SmoothClipView (SmoothClipRegistryTests)
 - (smoothclip::Presentation)smoothClipCurrentPresentation;
+- (void)smoothClipAnimationDidStopWithDriverId:(uint64_t)driverId
+                                    animationId:(int32_t)animationId
+                                       finished:(BOOL)finished;
 - (void)setClipPresentation:(double)x
                             y:(double)y
                         width:(double)width
@@ -1453,24 +1456,233 @@ static UIWindow *TestWindow(void) {
   smoothclip::destroyDriver(driverId);
 }
 
-- (void)testBackgroundFreezesGroupWithOrderedSnapshots {
-  constexpr uint64_t firstDriverId = 9083;
-  constexpr uint64_t secondDriverId = 9084;
+- (void)testTemporaryInactivityKeepsRunningGroupActive {
+  constexpr uint64_t driverId = 9085;
   UIWindow *window = TestWindow();
-  SmoothClipView *first =
-      DisplayableView(window, CGRectMake(0, 0, 200, 200));
-  SmoothClipView *second =
+  SmoothClipView *view =
       DisplayableView(window, CGRectMake(0, 0, 200, 200));
   const smoothclip::Presentation initial =
       Presentation(0, 0, 40, 40, 12);
-  const smoothclip::Presentation firstTarget =
-      Presentation(-80, 20, 120, 100, 18);
-  const smoothclip::Presentation secondTarget =
-      Presentation(220, -40, 160, 140, 24);
-  smoothclip::registerView(firstDriverId, first, initial);
-  smoothclip::registerView(secondDriverId, second, initial);
-  std::vector<smoothclip::DriverSnapshot> completionSnapshots;
+  const smoothclip::Presentation target =
+      Presentation(200, 20, 120, 100, 18);
+  int completionCount = 0;
+  BOOL completedFinished = YES;
+  smoothclip::setGroupCompletionCallback(
+      (__bridge const void *)self,
+      [&](uint64_t,
+          int32_t,
+          int32_t,
+          bool finished,
+          std::vector<smoothclip::DriverSnapshot>) {
+        completionCount += 1;
+        completedFinished = finished;
+      });
+  smoothclip::registerView(driverId, view, initial);
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7009,
+      {GroupEntry(driverId, true, initial, target)},
+      {5000, 0.42, 0, 0.58, 1, 2});
+  XCTAssertGreaterThan(groupId, 0);
+  UIView *container = [view valueForKey:@"clipContainer"];
+  CAAnimation *animation =
+      [container.layer animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(animation);
+  const CFTimeInterval beginTime = animation.beginTime;
+
+  smoothclip::applicationWillResignActive();
+  XCTAssertEqual(completionCount, 0);
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+
+  smoothclip::applicationDidBecomeActive();
+  XCTAssertEqual(completionCount, 0);
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+  animation = [container.layer animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(animation);
+  XCTAssertEqualWithAccuracy(animation.beginTime, beginTime, 1e-9);
+
+  smoothclip::cancelAnimationGroup(
+      groupId, smoothclip::GroupCancelBehavior::Freeze);
+  XCTAssertEqual(completionCount, 1);
+  XCTAssertFalse(completedFinished);
+  smoothclip::clearGroupCompletionCallback((__bridge const void *)self);
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testSpringInactivityPausesAndResumesWithClampedCatchUp {
+  constexpr uint64_t driverId = 9093;
+  UIWindow *window = TestWindow();
+  SmoothClipView *view =
+      DisplayableView(window, CGRectMake(0, 0, 200, 200));
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 12);
+  const smoothclip::Presentation target =
+      Presentation(180, 30, 140, 110, 20);
+  const smoothclip::SpringAnimation spring{4, 900, 120, 0, false, 2};
+  int completionCount = 0;
+  smoothclip::setGroupCompletionCallback(
+      (__bridge const void *)self,
+      [&](uint64_t,
+          int32_t,
+          int32_t,
+          bool,
+          std::vector<smoothclip::DriverSnapshot>) {
+        completionCount += 1;
+      });
+  smoothclip::registerView(driverId, view, initial);
+  const int32_t groupId = smoothclip::animateSpringGroup(
+      7016,
+      {GroupEntry(driverId, true, initial, target)},
+      spring);
+  XCTAssertGreaterThan(groupId, 0);
+
+  UIView *container = [view valueForKey:@"clipContainer"];
+  smoothclip::applicationWillResignActive();
+  CAAnimation *paused =
+      [container.layer animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(paused);
+  XCTAssertEqualWithAccuracy(paused.speed, 0, 1e-9);
+  const CFTimeInterval pausedOffset = paused.timeOffset;
+  const CFTimeInterval duration = paused.duration;
+
+  // A gap longer than Reanimated's 64 ms clamp must not be consumed in full.
+  usleep(100000);
+  smoothclip::applicationDidBecomeActive();
+
+  CAAnimation *resumed =
+      [container.layer animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(resumed);
+  XCTAssertEqualWithAccuracy(resumed.speed, 1, 1e-9);
+  const CFTimeInterval localNow =
+      [container.layer convertTime:CACurrentMediaTime() fromLayer:nil];
+  const CFTimeInterval resumedElapsed = localNow - resumed.beginTime;
+  const CFTimeInterval expectedElapsed =
+      MIN(duration, pausedOffset + 0.064);
+  XCTAssertEqualWithAccuracy(resumedElapsed, expectedElapsed, 0.02);
+  XCTAssertEqual(completionCount, 0);
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+
+  smoothclip::cancelAnimationGroup(
+      groupId, smoothclip::GroupCancelBehavior::Freeze);
+  XCTAssertEqual(completionCount, 1);
+  smoothclip::clearGroupCompletionCallback((__bridge const void *)self);
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testSetFrameDuringInactiveSpringFreezesAndCompletesOnce {
+  constexpr uint64_t driverId = 9094;
+  constexpr uint64_t controllerId = 7017;
+  UIWindow *window = TestWindow();
+  SmoothClipView *view =
+      DisplayableView(window, CGRectMake(0, 0, 200, 200));
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 12);
+  const smoothclip::Presentation target =
+      Presentation(180, 30, 140, 110, 20);
+  const smoothclip::Presentation interactive =
+      Presentation(35, 12, 80, 70, 16);
+  const smoothclip::SpringAnimation spring{4, 900, 120, 0, false, 2};
+  int completionCount = 0;
+  BOOL completedFinished = YES;
+  int32_t completedGroupId = 0;
+  smoothclip::setGroupCompletionCallback(
+      (__bridge const void *)self,
+      [&](uint64_t completedController,
+          int32_t groupId,
+          int32_t,
+          bool finished,
+          std::vector<smoothclip::DriverSnapshot>) {
+        if (completedController != controllerId) return;
+        completionCount += 1;
+        completedFinished = finished;
+        completedGroupId = groupId;
+      });
+  smoothclip::registerView(driverId, view, initial);
+  const int32_t groupId = smoothclip::animateSpringGroup(
+      controllerId,
+      {GroupEntry(driverId, true, initial, target)},
+      spring);
+  XCTAssertGreaterThan(groupId, 0);
+
+  smoothclip::applicationWillResignActive();
+  XCTAssertTrue(smoothclip::setPresentationBatch({
+      {driverId, interactive},
+  }));
+
+  XCTAssertEqual(completionCount, 1);
+  XCTAssertFalse(completedFinished);
+  XCTAssertEqual(completedGroupId, groupId);
+  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+  XCTAssertEqualWithAccuracy(
+      smoothclip::snapshotCurrent(driverId).clip.x,
+      interactive.clip.x,
+      1e-9);
+
+  smoothclip::applicationDidBecomeActive();
+  XCTAssertEqual(completionCount, 1);
+  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+  XCTAssertEqualWithAccuracy(
+      smoothclip::snapshotCurrent(driverId).clip.x,
+      interactive.clip.x,
+      1e-9);
+  smoothclip::clearGroupCompletionCallback((__bridge const void *)self);
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testDisplayabilityCallbackDuringInactivityDoesNotBecomeHostLoss {
+  constexpr uint64_t driverId = 9089;
+  UIWindow *window = TestWindow();
+  SmoothClipView *view =
+      DisplayableView(window, CGRectMake(0, 0, 200, 200));
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 12);
+  const smoothclip::Presentation target =
+      Presentation(200, 20, 120, 100, 18);
+  int completionCount = 0;
+  smoothclip::setGroupCompletionCallback(
+      (__bridge const void *)self,
+      [&](uint64_t,
+          int32_t,
+          int32_t,
+          bool,
+          std::vector<smoothclip::DriverSnapshot>) {
+        completionCount += 1;
+      });
+  smoothclip::registerView(driverId, view, initial);
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7013,
+      {GroupEntry(driverId, true, initial, target)},
+      {5000, 0.42, 0, 0.58, 1, 2});
+  XCTAssertGreaterThan(groupId, 0);
+
+  smoothclip::applicationWillResignActive();
+  smoothclip::viewDisplayabilityChanged(driverId, view);
+
+  XCTAssertEqual(completionCount, 0);
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+
+  smoothclip::applicationDidBecomeActive();
+  smoothclip::cancelAnimationGroup(
+      groupId, smoothclip::GroupCancelBehavior::Freeze);
+  smoothclip::clearGroupCompletionCallback((__bridge const void *)self);
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testInactiveDelegateInterruptionFinishesAtTargetOnReactivation {
+  constexpr uint64_t driverId = 9086;
+  UIWindow *window = TestWindow();
+  SmoothClipView *view =
+      DisplayableView(window, CGRectMake(0, 0, 200, 200));
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 12);
+  const smoothclip::Presentation target =
+      Presentation(180, 30, 140, 110, 20);
+  int completionCount = 0;
   BOOL completedFinished = NO;
+  std::vector<smoothclip::DriverSnapshot> completionSnapshots;
   smoothclip::setGroupCompletionCallback(
       (__bridge const void *)self,
       [&](uint64_t,
@@ -1478,35 +1690,129 @@ static UIWindow *TestWindow(void) {
           int32_t,
           bool finished,
           std::vector<smoothclip::DriverSnapshot> snapshots) {
+        completionCount += 1;
         completedFinished = finished;
         completionSnapshots = std::move(snapshots);
       });
-  XCTAssertGreaterThan(
-      smoothclip::animateTimingGroup(
-          7008,
-          {
-              GroupEntry(firstDriverId, true, initial, firstTarget),
-              GroupEntry(secondDriverId, true, initial, secondTarget),
-          },
-          {500, 0.42, 0, 0.58, 1, 2}),
-      0);
+  smoothclip::registerView(driverId, view, initial);
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7010,
+      {GroupEntry(driverId, true, initial, target)},
+      {5000, 0.42, 0, 0.58, 1, 2});
+  XCTAssertGreaterThan(groupId, 0);
 
   smoothclip::applicationWillResignActive();
+  [view smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:NO];
+  XCTAssertEqual(completionCount, 0);
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+  const smoothclip::Presentation inactivePresentation =
+      [view smoothClipCurrentPresentation];
+  XCTAssertEqualWithAccuracy(
+      inactivePresentation.clip.x, target.clip.x, 1e-9);
 
-  XCTAssertFalse(completedFinished);
-  XCTAssertEqual(completionSnapshots.size(), 2u);
-  XCTAssertEqual(completionSnapshots[0].driverId, firstDriverId);
-  XCTAssertEqual(completionSnapshots[1].driverId, secondDriverId);
-  XCTAssertTrue(
-      std::isfinite(completionSnapshots[0].presentation.clip.x));
-  XCTAssertTrue(
-      std::isfinite(completionSnapshots[1].presentation.clip.x));
   smoothclip::applicationDidBecomeActive();
+  XCTAssertEqual(completionCount, 1);
+  XCTAssertTrue(completedFinished);
+  XCTAssertEqual(completionSnapshots.size(), 1u);
+  XCTAssertEqualWithAccuracy(
+      completionSnapshots[0].presentation.clip.x, target.clip.x, 1e-9);
+  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+
   smoothclip::clearGroupCompletionCallback((__bridge const void *)self);
-  smoothclip::unregisterView(firstDriverId, first);
-  smoothclip::unregisterView(secondDriverId, second);
-  smoothclip::destroyDriver(firstDriverId);
-  smoothclip::destroyDriver(secondDriverId);
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testRemovedAnimationWithoutDelegateCallbackFinishesOnReactivation {
+  constexpr uint64_t driverId = 9092;
+  UIWindow *window = TestWindow();
+  SmoothClipView *view =
+      DisplayableView(window, CGRectMake(0, 0, 200, 200));
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 12);
+  const smoothclip::Presentation target =
+      Presentation(180, 30, 140, 110, 20);
+  int completionCount = 0;
+  BOOL completedFinished = NO;
+  smoothclip::setGroupCompletionCallback(
+      (__bridge const void *)self,
+      [&](uint64_t,
+          int32_t,
+          int32_t,
+          bool finished,
+          std::vector<smoothclip::DriverSnapshot>) {
+        completionCount += 1;
+        completedFinished = finished;
+      });
+  smoothclip::registerView(driverId, view, initial);
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7015,
+      {GroupEntry(driverId, true, initial, target)},
+      {5000, 0.42, 0, 0.58, 1, 2});
+  XCTAssertGreaterThan(groupId, 0);
+
+  smoothclip::applicationWillResignActive();
+  UIView *container = [view valueForKey:@"clipContainer"];
+  [container.layer removeAnimationForKey:@"smoothClip.geometry"];
+  smoothclip::applicationDidBecomeActive();
+
+  XCTAssertEqual(completionCount, 1);
+  XCTAssertTrue(completedFinished);
+  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+
+  [view smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:NO];
+  XCTAssertEqual(completionCount, 1);
+
+  smoothclip::clearGroupCompletionCallback((__bridge const void *)self);
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testGroupRequestedWhileInactiveWaitsForActive {
+  constexpr uint64_t driverId = 9090;
+  UIWindow *window = TestWindow();
+  SmoothClipView *view =
+      DisplayableView(window, CGRectMake(0, 0, 200, 200));
+  const smoothclip::Presentation initial =
+      Presentation(0, 0, 40, 40, 12);
+  const smoothclip::Presentation target =
+      Presentation(140, 15, 100, 90, 16);
+  int completionCount = 0;
+  smoothclip::registerView(driverId, view, initial);
+  smoothclip::setGroupCompletionCallback(
+      (__bridge const void *)self,
+      [&](uint64_t,
+          int32_t,
+          int32_t,
+          bool,
+          std::vector<smoothclip::DriverSnapshot>) {
+        completionCount += 1;
+      });
+  smoothclip::applicationWillResignActive();
+
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7014,
+      {GroupEntry(driverId, true, initial, target)},
+      {5000, 0.42, 0, 0.58, 1, 2});
+  XCTAssertGreaterThan(groupId, 0);
+  XCTAssertEqual(completionCount, 0);
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+  UIView *container = [view valueForKey:@"clipContainer"];
+  XCTAssertNil([container.layer animationForKey:@"smoothClip.geometry"]);
+
+  smoothclip::applicationDidBecomeActive();
+  XCTAssertEqual(completionCount, 0);
+  XCTAssertNotNil([container.layer animationForKey:@"smoothClip.geometry"]);
+
+  smoothclip::cancelAnimationGroup(
+      groupId, smoothclip::GroupCancelBehavior::Freeze);
+  smoothclip::clearGroupCompletionCallback((__bridge const void *)self);
+  smoothclip::unregisterView(driverId, view);
+  smoothclip::destroyDriver(driverId);
 }
 
 - (void)testBeginInteractionCancelsTheActiveTransitionAndReturnsCanonicalGeometry {
@@ -2476,9 +2782,9 @@ static UIWindow *TestWindow(void) {
   smoothclip::destroyDriver(driverId);
 }
 
-// Backgrounding in the window between the curve's last rendered frame and its
-// asynchronous didStop must not stamp a fully-rendered run finished:false.
-- (void)testResignActiveAfterTheCurveElapsedCompletesFinishedTrue {
+// A completion delivered while inactive stays pending until foreground
+// reconciliation, matching Reanimated's paused callback delivery.
+- (void)testInactiveCompletionWaitsForReactivation {
   constexpr uint64_t driverId = 9063;
   int completionCount = 0;
   BOOL completedFinished = NO;
@@ -2495,15 +2801,20 @@ static UIWindow *TestWindow(void) {
   const smoothclip::Presentation target = Presentation(0, 0, 100, 100, 12);
   const smoothclip::TimingAnimation timing{30, 0.42, 0, 0.58, 1, 2};
   smoothclip::registerView(driverId, host, initial);
-  smoothclip::animateTiming(driverId, {true, initial}, target, timing);
-  // The curve fully elapses; the headless runner never delivers didStop.
-  usleep(60000);
+  const int32_t animationId =
+      smoothclip::animateTiming(driverId, {true, initial}, target, timing);
+  XCTAssertGreaterThan(animationId, 0);
   smoothclip::applicationWillResignActive();
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                    animationId:animationId
+                                       finished:YES];
+  XCTAssertEqual(completionCount, 0);
+
+  smoothclip::applicationDidBecomeActive();
   XCTAssertEqual(completionCount, 1);
   XCTAssertTrue(completedFinished);
   XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
 
-  smoothclip::applicationDidBecomeActive();
   smoothclip::unregisterView(driverId, host);
   smoothclip::clearCompletionCallback((__bridge const void *)self);
   smoothclip::destroyDriver(driverId);

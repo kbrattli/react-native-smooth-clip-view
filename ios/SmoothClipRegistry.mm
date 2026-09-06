@@ -44,6 +44,12 @@
                      animationId:(int32_t)animationId
                  sharedBeginTime:(CFTimeInterval)sharedBeginTime;
 - (void)smoothClipCancelAnimationUsingTarget:(BOOL)useTarget;
+- (BOOL)smoothClipPauseSpringAnimation:(int32_t)animationId
+                           atMediaTime:(CFTimeInterval)mediaTime;
+- (BOOL)smoothClipResumeSpringAnimation:(int32_t)animationId
+                            atMediaTime:(CFTimeInterval)mediaTime
+                             catchUpBy:(CFTimeInterval)catchUp;
+- (BOOL)smoothClipHasInstalledAnimation:(int32_t)animationId;
 - (BOOL)smoothClipIsJoinable;
 - (BOOL)smoothClipCanDisplay;
 - (double)smoothClipInheritedVelocityToPresentation:
@@ -76,6 +82,8 @@ struct ActiveAnimation {
   // False while a pre-ready run waits for its first displayable host. Host
   // loss after the run starts finishes it at the target.
   bool started = false;
+  bool exposedToInactivity = false;
+  bool needsForegroundReconciliation = false;
 };
 
 struct DriverState {
@@ -155,6 +163,11 @@ bool &applicationActiveState() {
   return active;
 }
 
+std::optional<CFTimeInterval> &applicationInactiveSince() {
+  static std::optional<CFTimeInterval> value;
+  return value;
+}
+
 CompletionSink &completionSink() {
   static CompletionSink sink;
   return sink;
@@ -185,6 +198,113 @@ std::vector<DriverSnapshot> cancelGroupInternal(
 void tryStartGroup(int32_t groupId);
 void finishGroupForHostLoss(int32_t groupId);
 DriverSnapshot snapshotForDriver(uint64_t driverId);
+SmoothClipView *viewForKey(ViewKey key);
+
+bool animationNeedsForegroundReconciliation(const DriverState &state) {
+  if (!state.animation.has_value()) return false;
+  const ActiveAnimation &animation = *state.animation;
+  if (animation.needsForegroundReconciliation) return true;
+  if (!animation.exposedToInactivity) return false;
+  if (animation.participants.empty()) return true;
+  for (const ViewKey key : animation.participants) {
+    if (![viewForKey(key)
+            smoothClipHasInstalledAnimation:animation.animationId]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool groupNeedsForegroundReconciliation(int32_t groupId) {
+  const auto groupIterator = groupRegistry().find(groupId);
+  if (groupIterator == groupRegistry().end()) return false;
+  for (const uint64_t driverId : groupIterator->second.driverIds) {
+    const auto stateIterator = registry().find(driverId);
+    if (stateIterator != registry().end() &&
+        stateIterator->second.animation.has_value() &&
+        stateIterator->second.animation->groupId == groupId &&
+        animationNeedsForegroundReconciliation(stateIterator->second)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool pauseSpringForInactivity(
+    DriverState &state,
+    CFTimeInterval mediaTime) {
+  if (!state.animation.has_value() || !state.animation->started ||
+      state.animation->kind != AnimationKind::Spring) {
+    return true;
+  }
+  ActiveAnimation &animation = *state.animation;
+  if (animation.participants.empty()) {
+    animation.needsForegroundReconciliation = true;
+    return false;
+  }
+  bool paused = true;
+  for (const ViewKey key : animation.participants) {
+    paused = [viewForKey(key)
+        smoothClipPauseSpringAnimation:animation.animationId
+                           atMediaTime:mediaTime] && paused;
+  }
+  if (!paused) animation.needsForegroundReconciliation = true;
+  return paused;
+}
+
+bool resumeSpringAfterInactivity(
+    DriverState &state,
+    CFTimeInterval mediaTime,
+    CFTimeInterval catchUp) {
+  if (!state.animation.has_value() || !state.animation->started ||
+      state.animation->kind != AnimationKind::Spring) {
+    return true;
+  }
+  ActiveAnimation &animation = *state.animation;
+  bool resumed = !animation.participants.empty();
+  for (const ViewKey key : animation.participants) {
+    resumed = [viewForKey(key)
+        smoothClipResumeSpringAnimation:animation.animationId
+                            atMediaTime:mediaTime
+                             catchUpBy:catchUp] && resumed;
+  }
+  if (!resumed) animation.needsForegroundReconciliation = true;
+  return resumed;
+}
+
+bool resumeGroupSpringsAfterInactivity(
+    int32_t groupId,
+    CFTimeInterval mediaTime,
+    CFTimeInterval catchUp) {
+  const auto groupIterator = groupRegistry().find(groupId);
+  if (groupIterator == groupRegistry().end()) return false;
+  bool resumed = true;
+  for (const uint64_t driverId : groupIterator->second.driverIds) {
+    const auto stateIterator = registry().find(driverId);
+    if (stateIterator == registry().end() ||
+        !stateIterator->second.animation.has_value() ||
+        stateIterator->second.animation->groupId != groupId) {
+      return false;
+    }
+    resumed = resumeSpringAfterInactivity(
+        stateIterator->second, mediaTime, catchUp) && resumed;
+  }
+  return resumed;
+}
+
+void clearGroupInactivityExposure(int32_t groupId) {
+  const auto groupIterator = groupRegistry().find(groupId);
+  if (groupIterator == groupRegistry().end()) return;
+  for (const uint64_t driverId : groupIterator->second.driverIds) {
+    const auto stateIterator = registry().find(driverId);
+    if (stateIterator != registry().end() &&
+        stateIterator->second.animation.has_value() &&
+        stateIterator->second.animation->groupId == groupId) {
+      stateIterator->second.animation->exposedToInactivity = false;
+      stateIterator->second.animation->needsForegroundReconciliation = false;
+    }
+  }
+}
 
 Presentation unavailablePresentation() {
   // Non-finite geometry makes the JS side fall back to its current value
@@ -647,6 +767,7 @@ void tryStartGroup(int32_t groupId) {
     if (stateIterator == registry().end() ||
         !stateIterator->second.animation.has_value() ||
         stateIterator->second.animation->groupId != groupId ||
+        stateIterator->second.animation->started ||
         !driverReady(stateIterator->second)) {
       return;
     }
@@ -689,19 +810,14 @@ bool applicationIsActive() {
 void applicationWillResignActive() {
   NSCAssert(NSThread.isMainThread, @"SmoothClip registry is main-thread only");
   if (!applicationActiveState()) return;
+  const CFTimeInterval mediaTime = CACurrentMediaTime();
   applicationActiveState() = false;
-  std::vector<int32_t> groupIds;
-  groupIds.reserve(groupRegistry().size());
-  for (const auto &[groupId, group] : groupRegistry()) {
-    (void)group;
-    groupIds.push_back(groupId);
-  }
-  for (const int32_t groupId : groupIds) {
-    finishGroupForHostLoss(groupId);
-  }
+  applicationInactiveSince() = mediaTime;
   for (auto &[driverId, state] : registry()) {
-    if (!state.animation.has_value() || state.animation->groupId == 0) {
-      finishStandaloneAtTarget(driverId, state);
+    (void)driverId;
+    if (state.animation.has_value() && state.animation->started) {
+      state.animation->exposedToInactivity = true;
+      pauseSpringForInactivity(state, mediaTime);
     }
   }
 }
@@ -709,6 +825,14 @@ void applicationWillResignActive() {
 void applicationDidBecomeActive() {
   NSCAssert(NSThread.isMainThread, @"SmoothClip registry is main-thread only");
   if (applicationActiveState()) return;
+  const CFTimeInterval mediaTime = CACurrentMediaTime();
+  const CFTimeInterval inactiveDuration = applicationInactiveSince().has_value()
+      ? std::max((CFTimeInterval)0,
+                 mediaTime - *applicationInactiveSince())
+      : 0;
+  const CFTimeInterval springCatchUp =
+      std::min((CFTimeInterval)0.064, inactiveDuration);
+  applicationInactiveSince().reset();
   applicationActiveState() = true;
   std::vector<int32_t> groupIds;
   groupIds.reserve(groupRegistry().size());
@@ -717,13 +841,35 @@ void applicationDidBecomeActive() {
     groupIds.push_back(groupId);
   }
   for (const int32_t groupId : groupIds) {
-    tryStartGroup(groupId);
+    bool needsReconciliation = groupNeedsForegroundReconciliation(groupId);
+    if (!needsReconciliation) {
+      needsReconciliation = !resumeGroupSpringsAfterInactivity(
+          groupId, mediaTime, springCatchUp);
+    }
+    if (needsReconciliation) {
+      cancelGroupInternal(groupId, GroupCancelBehavior::Finish, true);
+    } else {
+      clearGroupInactivityExposure(groupId);
+      tryStartGroup(groupId);
+    }
   }
   for (auto &[driverId, state] : registry()) {
-    (void)driverId;
-    if (state.animation.has_value() && !state.animation->started &&
-        state.animation->groupId == 0 && anyDisplayableView(state)) {
-      startPendingAnimation(state);
+    if (!state.animation.has_value() || state.animation->groupId != 0) {
+      continue;
+    }
+    bool needsReconciliation = animationNeedsForegroundReconciliation(state);
+    if (!needsReconciliation) {
+      needsReconciliation = !resumeSpringAfterInactivity(
+          state, mediaTime, springCatchUp);
+    }
+    if (needsReconciliation) {
+      finishStandaloneAtTarget(driverId, state);
+    } else {
+      state.animation->exposedToInactivity = false;
+      state.animation->needsForegroundReconciliation = false;
+      if (!state.animation->started && anyDisplayableView(state)) {
+        startPendingAnimation(state);
+      }
     }
   }
 }
@@ -818,6 +964,9 @@ void viewDisplayabilityChanged(uint64_t driverId, SmoothClipView *view) {
     return;
   }
   if (![view smoothClipCanDisplay]) {
+    if (!applicationActiveState()) {
+      return;
+    }
     if (state.animation->groupId != 0 && state.animation->started) {
       finishGroupForHostLoss(state.animation->groupId);
     } else if (state.animation->started) {
@@ -841,7 +990,10 @@ void unregisterView(uint64_t driverId, SmoothClipView *view) {
   DriverState &state = iterator->second;
   const ViewKey key = keyForView(view);
   if (state.animation.has_value()) {
-    if (state.animation->groupId != 0 && state.animation->started) {
+    if (!applicationActiveState() && state.animation->started) {
+      state.animation->participants.erase(key);
+      state.animation->needsForegroundReconciliation = true;
+    } else if (state.animation->groupId != 0 && state.animation->started) {
       finishGroupForHostLoss(state.animation->groupId);
     } else if (state.animation->groupId == 0 && state.animation->started) {
       finishStandaloneAtTarget(driverId, state);
@@ -1611,6 +1763,10 @@ void viewAnimationDidStop(
 
   const ViewKey key = keyForView(view);
   if (state.animation->participants.erase(key) == 0) return;
+  if (!applicationActiveState() || state.animation->exposedToInactivity) {
+    state.animation->needsForegroundReconciliation = true;
+    return;
+  }
   state.animation->finished = state.animation->finished && finished;
   finishIfNoInstalledParticipants(driverId, state);
 }
