@@ -37,6 +37,7 @@ export type {
   CanonicalClipBoxShadow,
   CanonicalSmoothClipPresentation,
   ClipCurve,
+  ClipRotation,
   ClipGeometry,
   ClipBoxShadow,
   SmoothClipPresentation,

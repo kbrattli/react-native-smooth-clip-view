@@ -45,6 +45,36 @@ using namespace facebook::react;
   return (id<CAAction>)[NSNull null];
 }
 
+// UIKit normally hit-tests the target model tree. During native motion, use
+// the visible bounds/transform/opacity instead, including a fade whose target
+// opacity is already zero. These containers have no consumer-owned handlers.
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+  CALayer *visible = self.layer.animationKeys.count > 0 ? self.layer.presentationLayer : nil;
+  return CGRectContainsPoint(visible != nil ? visible.bounds : self.bounds, point);
+}
+
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+  CALayer *visible = self.layer.animationKeys.count > 0 ? self.layer.presentationLayer : nil;
+  if (self.hidden || !self.userInteractionEnabled ||
+      (visible != nil ? visible.opacity : self.layer.opacity) <= 0) return nil;
+  if (visible != nil && self.layer.animationKeys.count > 0) {
+    CGPoint parentPoint = [self.layer convertPoint:point toLayer:self.layer.superlayer];
+    point = [visible convertPoint:parentPoint fromLayer:visible.superlayer];
+  }
+  if (![self pointInside:point withEvent:event]) return nil;
+  for (UIView *child in self.subviews.reverseObjectEnumerator) {
+    UIView *hit = [child hitTest:[self convertPoint:point toView:child] withEvent:event];
+    if (hit != nil) return hit;
+  }
+  return self;
+}
+
+@end
+
+@interface SmoothClipPresentationContainerView : SmoothClipContainerView
+@end
+@implementation SmoothClipPresentationContainerView
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event { return YES; }
 @end
 
 @interface SmoothClipView () <RCTSmoothClipViewViewProtocol>
@@ -104,6 +134,8 @@ static bool SmoothClipBuildPresentation(
     double shadowOffsetY,
     double shadowBlurRadius,
     double shadowSpreadDistance,
+    double rotation,
+    double opacity,
     smoothclip::Presentation *result) {
   if (result == nullptr || !isfinite(x) || !isfinite(y) ||
       !isfinite(width) || !isfinite(height) ||
@@ -115,6 +147,7 @@ static bool SmoothClipBuildPresentation(
       !isfinite(shadowAlpha) ||
       !isfinite(shadowOffsetX) || !isfinite(shadowOffsetY) ||
       !isfinite(shadowBlurRadius) || !isfinite(shadowSpreadDistance) ||
+      !isfinite(rotation) || !isfinite(opacity) ||
       contentScale <= 0 || shadowRed < 0 || shadowRed > 1 ||
       shadowGreen < 0 || shadowGreen > 1 ||
       shadowBlue < 0 || shadowBlue > 1 ||
@@ -145,7 +178,8 @@ static bool SmoothClipBuildPresentation(
       shadowBlurRadius,
       shadowSpreadDistance};
   *result = {
-      geometry, contentTranslateX, contentTranslateY, contentScale, shadow};
+      geometry, contentTranslateX, contentTranslateY, contentScale, shadow,
+      rotation, smoothclip::clamp01(opacity)};
   return true;
 }
 
@@ -320,9 +354,25 @@ static std::array<double, 11> SmoothClipVelocityChannels(
           contentScale};
 }
 
-static BOOL SmoothClipRectIntersectsHost(CGRect rect, CGRect host) {
-  const CGRect intersection = CGRectIntersection(rect, host);
-  return !CGRectIsNull(intersection) && !CGRectIsEmpty(intersection);
+// Core Animation uses the overdamped physical solution as well as the critical
+// and underdamped ones. This is only a turn-count reference at snapshot time.
+static double SmoothClipCARotationProgress(double elapsed, const smoothclip::SpringAnimation &spring) {
+  const double omega = std::sqrt(spring.stiffness / spring.mass);
+  const double zeta = spring.damping / (2 * std::sqrt(spring.stiffness * spring.mass));
+  if (zeta <= 1) {
+    return smoothclip::advanceScalarSpring({0, spring.initialVelocity}, spring, elapsed).position;
+  }
+  const double root = std::sqrt(zeta * zeta - 1);
+  const double slow = -omega / (zeta + root);
+  const double fast = -omega * (zeta + root);
+  const double a = (spring.initialVelocity + fast) / (slow - fast);
+  return 1 + a * std::exp(slow * elapsed) + (-1 - a) * std::exp(fast * elapsed);
+}
+
+static BOOL SmoothClipRotatedRectIntersectsHost(CGRect rect, CGRect host, double rotation) {
+  return smoothclip::rotatedRectIntersectsHost(rect.origin.x - host.origin.x,
+      rect.origin.y - host.origin.y, rect.size.width, rect.size.height, rotation,
+      host.size.width, host.size.height);
 }
 
 static smoothclip::Presentation SmoothClipCanonicalSnapshot(
@@ -333,6 +383,19 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
 
 @implementation SmoothClipView {
   CALayer *_shadowLayer;
+  SmoothClipPresentationContainerView *_presentationContainer;
+  double _requestedRotation;
+  double _canonicalRotation;
+  double _requestedOpacity;
+  double _canonicalOpacity;
+  double _animationFromRotation;
+  double _animationToRotation;
+  BOOL _hasAppearanceAnimation;
+  BOOL _hasMaskAnimation;
+  BOOL _hasShadowModel;
+  SmoothClipCanonicalGeometry _shadowModelGeometry;
+  smoothclip::Shadow _shadowModel;
+
   SmoothClipContainerView *_clipContainer;
   SmoothClipContainerView *_contentContainer;
   CAShapeLayer *_unequalCornerMask;
@@ -400,6 +463,12 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
     // intentionally overridden again after every prop update below.
     self.clipsToBounds = YES;
 
+    _presentationContainer = [[SmoothClipPresentationContainerView alloc] initWithFrame:CGRectZero];
+    _presentationContainer.layer.anchorPoint = CGPointZero;
+    _presentationContainer.layer.allowsGroupOpacity = YES;
+    _presentationContainer.autoresizesSubviews = NO;
+    [self addSubview:_presentationContainer];
+    _requestedOpacity = _canonicalOpacity = 1;
     _clipContainer = [[SmoothClipContainerView alloc] initWithFrame:CGRectZero];
     _clipContainer.layer.masksToBounds = YES;
     _clipContainer.layer.needsDisplayOnBoundsChange = NO;
@@ -412,7 +481,7 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
     _contentContainer.layer.needsDisplayOnBoundsChange = NO;
     _contentContainer.autoresizesSubviews = NO;
     [_clipContainer addSubview:_contentContainer];
-    [self addSubview:_clipContainer];
+    [_presentationContainer addSubview:_clipContainer];
 
     _shadowLayer = nil;
     // Created lazily so the common clipping-only path owns no shadow layer.
@@ -508,6 +577,8 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
       presentation.contentTranslateY);
   _requestedContentScale = presentation.contentScale;
   _requestedShadow = presentation.shadow;
+  _requestedRotation = presentation.rotation;
+  _requestedOpacity = smoothclip::clamp01(presentation.opacity);
 }
 
 - (CGColorRef)colorForShadow:(const smoothclip::Shadow &)shadow {
@@ -530,7 +601,7 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
     @"bounds": [NSNull null],
     @"position": [NSNull null],
   };
-  [self.layer insertSublayer:_shadowLayer below:_clipContainer.layer];
+  [_presentationContainer.layer insertSublayer:_shadowLayer below:_clipContainer.layer];
   return _shadowLayer;
 }
 
@@ -545,9 +616,15 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   shadowLayer.bounds = self.bounds;
   shadowLayer.position = CGPointMake(
       CGRectGetMidX(self.bounds), CGRectGetMidY(self.bounds));
-  CGPathRef path = SmoothClipCreateShadowPath(geometry, effectiveShadow);
-  shadowLayer.shadowPath = path;
-  CGPathRelease(path);
+  if (!_hasShadowModel || !SmoothBoxShadowPathInputEqual(
+          _shadowModelGeometry, _shadowModel, geometry, effectiveShadow)) {
+    CGPathRef path = SmoothClipCreateShadowPath(geometry, effectiveShadow);
+    shadowLayer.shadowPath = path;
+    CGPathRelease(path);
+  }
+  _hasShadowModel = YES;
+  _shadowModelGeometry = geometry;
+  _shadowModel = effectiveShadow;
   shadowLayer.shadowColor = [self colorForShadow:effectiveShadow];
   shadowLayer.shadowOpacity = visible ? 1 : 0;
   shadowLayer.shadowRadius = MAX(0, effectiveShadow.blurRadius) / 2.0;
@@ -603,7 +680,7 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
 - (void)syncVisibilityForRect:(CGRect)rect {
   [self setClipContainerHidden:CGRectIsEmpty(rect)];
   _clipContainer.accessibilityElementsHidden =
-      !SmoothClipRectIntersectsHost(rect, self.bounds);
+      !SmoothClipRotatedRectIntersectsHost(rect, self.bounds, _canonicalRotation) || _canonicalOpacity <= 0;
 }
 
 - (void)configureUnequalCornerMaskForGeometry:
@@ -687,6 +764,50 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
 #endif
 }
 
+- (void)writeAppearanceRotation:(double)rotation opacity:(double)opacity rect:(CGRect)rect {
+  CALayer *layer = _presentationContainer.layer;
+  // A zero-angle group is identity regardless of pivot. Keep it stationary so
+  // existing geometry-only streams do not also dirty the parent layer each frame.
+  const CGPoint center = rotation == 0 ? CGPointZero :
+      CGPointMake(CGRectGetMidX(rect), CGRectGetMidY(rect));
+  const CGRect bounds = (CGRect){center, self.bounds.size};
+  if (!CGRectEqualToRect(layer.bounds, bounds)) layer.bounds = bounds;
+  if (!CGPointEqualToPoint(layer.position, center)) layer.position = center;
+  if (_canonicalRotation != rotation) layer.affineTransform = CGAffineTransformMakeRotation(rotation);
+  if (_canonicalOpacity != opacity) layer.opacity = smoothclip::clamp01(opacity);
+  _canonicalRotation = rotation;
+  _canonicalOpacity = opacity;
+}
+
+// Matrix decomposition loses complete turns. Use the installed native trajectory
+// to choose the equivalent visible angle, including after a paused spring resumes.
+- (double)visibleRotation {
+  CAAnimationGroup *group = (CAAnimationGroup *)[_presentationContainer.layer
+      animationForKey:@"smoothClip.appearance"];
+  CALayer *visible = _presentationContainer.layer.presentationLayer;
+  if (_activeAnimationId == 0 || group == nil || visible == nil) return _canonicalRotation;
+  const double elapsed = group.speed == 0 ? group.timeOffset :
+      std::clamp([_presentationContainer.layer convertTime:CACurrentMediaTime() fromLayer:nil] - group.beginTime,
+                 0.0, group.duration);
+  double progress;
+  if (_activeAnimationKind == 1) {
+    progress = smoothclip::cubicBezier(_timingAnimation.controlPoint1X,
+        _timingAnimation.controlPoint1Y, _timingAnimation.controlPoint2X,
+        _timingAnimation.controlPoint2Y, group.duration > 0 ? elapsed / group.duration : 1);
+  } else {
+    progress = SmoothClipCARotationProgress(elapsed, _springAnimation);
+  }
+  const double expected = _animationFromRotation +
+      (_animationToRotation - _animationFromRotation) * progress;
+  const CGAffineTransform matrix = visible.affineTransform;
+  return smoothclip::unwrapRotation(std::atan2(matrix.b, matrix.a), expected);
+}
+
+- (double)visibleOpacity {
+  CALayer *layer = _activeAnimationId != 0 ? _presentationContainer.layer.presentationLayer : nil;
+  return smoothclip::clamp01(layer == nil ? _canonicalOpacity : layer.opacity);
+}
+
 - (void)writeContentTranslation:(CGPoint)translation
                            scale:(CGFloat)scale {
   if (CGPointEqualToPoint(_canonicalContentTranslation, translation) &&
@@ -704,7 +825,7 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   if (![self canonicalRequestedGeometry:&geometry]) return;
 
   const BOOL accessibilityHidden =
-      !SmoothClipRectIntersectsHost(geometry.rect, self.bounds);
+      !SmoothClipRotatedRectIntersectsHost(geometry.rect, self.bounds, _requestedRotation) || _requestedOpacity <= 0;
   const BOOL visibilityChanged =
       _clipHidden != CGRectIsEmpty(geometry.rect) ||
       _clipContainer.accessibilityElementsHidden != accessibilityHidden;
@@ -715,15 +836,23 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
       CGPointEqualToPoint(
           _canonicalContentTranslation, _requestedContentTranslation) &&
       _canonicalContentScale == _requestedContentScale &&
+      _canonicalRotation == _requestedRotation && _canonicalOpacity == _requestedOpacity &&
       SmoothBoxShadowEqual(_canonicalShadow, _requestedShadow) &&
       !visibilityChanged) {
     return;
   }
+  const SmoothClipCanonicalGeometry previousGeometry = [self canonicalGeometryValue];
   [self writeLayerGeometry:geometry
          hasExplicitRadii:_requestedHasExplicitRadii];
   [self writeContentTranslation:_requestedContentTranslation
                            scale:_requestedContentScale];
-  [self writeShadow:_requestedShadow geometry:geometry];
+  if (!CGRectEqualToRect(previousGeometry.rect, geometry.rect) ||
+      !SmoothClipCornerRadiiEqual(previousGeometry.radii, geometry.radii) ||
+      previousGeometry.curve != geometry.curve ||
+      !SmoothBoxShadowEqual(_canonicalShadow, _requestedShadow)) {
+    [self writeShadow:_requestedShadow geometry:geometry];
+  }
+  [self writeAppearanceRotation:_requestedRotation opacity:_requestedOpacity rect:geometry.rect];
   [self syncVisibilityForRect:geometry.rect];
 }
 
@@ -833,7 +962,8 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
       ? (CALayer *)_shadowLayer.presentationLayer
       : _shadowLayer;
   if (shadowLayer == nil) return SmoothClipCanonicalSnapshot({
-      geometry, transform.tx, transform.ty, contentScale, shadow});
+      geometry, transform.tx, transform.ty, contentScale, shadow,
+      [self visibleRotation], [self visibleOpacity]});
   shadow.enabled = _canonicalShadow.enabled || shadowLayer.shadowOpacity > 0;
   shadow.blurRadius = shadowLayer.shadowRadius * 2.0;
   shadow.offsetX = shadowLayer.shadowOffset.width;
@@ -856,7 +986,8 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
         CGRectGetMinX(visibleRect) - CGRectGetMinX(shadowBounds);
   }
   return SmoothClipCanonicalSnapshot(
-      {geometry, transform.tx, transform.ty, contentScale, shadow});
+      {geometry, transform.tx, transform.ty, contentScale, shadow,
+      [self visibleRotation], [self visibleOpacity]});
 }
 
 - (BOOL)smoothClipIsJoinable {
@@ -927,8 +1058,11 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   [_clipContainer.layer removeAnimationForKey:@"smoothClip.geometry"];
   [_contentContainer.layer removeAnimationForKey:@"smoothClip.content"];
   [_unequalCornerMask removeAnimationForKey:@"smoothClip.mask"];
+  [_presentationContainer.layer removeAnimationForKey:@"smoothClip.appearance"];
   [_shadowLayer removeAnimationForKey:@"smoothClip.shadow"];
-  [self applyStaticCornerRepresentation:[self canonicalGeometryValue]];
+  if (_hasMaskAnimation) {
+    [self applyStaticCornerRepresentation:[self canonicalGeometryValue]];
+  }
   _ignoreAnimationCallback = NO;
   _activeAnimationId = 0;
   _activeAnimationKind = 0;
@@ -987,12 +1121,16 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
                    fromContentTranslation:(CGPoint)fromContentTranslation
                          fromContentScale:(CGFloat)fromContentScale
                               fromShadow:(smoothclip::Shadow)fromShadow
+                            fromRotation:(double)fromRotation
+                             fromOpacity:(double)fromOpacity
                                toGeometry:
             (SmoothClipCanonicalGeometry)toGeometry
                      hasExplicitToRadii:(BOOL)hasExplicitToRadii
                      toContentTranslation:(CGPoint)toContentTranslation
                            toContentScale:(CGFloat)toContentScale
                                 toShadow:(smoothclip::Shadow)toShadow
+                              toRotation:(double)toRotation
+                               toOpacity:(double)toOpacity
                                  duration:(CFTimeInterval)duration
                             sharedBeginTime:(CFTimeInterval)sharedBeginTime {
   const int32_t animationId = _activeAnimationId;
@@ -1020,13 +1158,19 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
       CGPointMake(
           CGRectGetMidX(toGeometry.rect),
           CGRectGetMidY(toGeometry.rect));
-  const BOOL usesMask =
-      !SmoothClipCornerRadiiAreUniform(fromGeometry.radii) ||
-      !SmoothClipCornerRadiiAreUniform(toGeometry.radii) ||
+  const BOOL changesShape = !CGRectEqualToRect(fromGeometry.rect, toGeometry.rect) ||
+      !SmoothClipCornerRadiiEqual(fromGeometry.radii, toGeometry.radii) ||
       fromGeometry.curve != toGeometry.curve;
+  const BOOL usesMask = changesShape &&
+      (!SmoothClipCornerRadiiAreUniform(fromGeometry.radii) ||
+       !SmoothClipCornerRadiiAreUniform(toGeometry.radii) ||
+       fromGeometry.curve != toGeometry.curve);
   [self writeLayerGeometry:toGeometry
          hasExplicitRadii:hasExplicitToRadii];
   [self writeContentTranslation:toContentTranslation scale:toContentScale];
+  [self writeAppearanceRotation:toRotation opacity:toOpacity rect:toGeometry.rect];
+  _animationFromRotation = fromRotation;
+  _animationToRotation = toRotation;
   _canonicalShadow = toShadow;
   SmoothBoxShadowNormalizeAnimationEndpoints(
       fromGeometry, &fromShadow, toGeometry, &toShadow);
@@ -1087,6 +1231,7 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
       ? [CAAnimationGroup animation]
       : nil;
   CAAnimationGroup *maskAnimation = nil;
+  _hasMaskAnimation = usesMask;
   if (_activeAnimationKind == 1) {
     CAMediaTimingFunction *timing = [CAMediaTimingFunction
         functionWithControlPoints:_timingAnimation.controlPoint1X
@@ -1327,6 +1472,36 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
     maskAnimation.duration = group.duration;
   }
 
+  CAAnimationGroup *appearanceGroup = [CAAnimationGroup animation];
+  NSMutableArray<CAAnimation *> *appearanceAnimations = [NSMutableArray array];
+  // A zero anchor and moving bounds origin avoid host-size-dependent pivot math.
+  NSArray<NSString *> *keys = @[@"bounds.origin.x", @"bounds.origin.y", @"position.x",
+      @"position.y", @"transform.rotation.z", @"opacity"];
+  NSArray<NSNumber *> *fromValues = @[@(fromPosition.x), @(fromPosition.y), @(fromPosition.x),
+      @(fromPosition.y), @(fromRotation), @(fromOpacity)];
+  NSArray<NSNumber *> *toValues = @[@(toPosition.x), @(toPosition.y), @(toPosition.x),
+      @(toPosition.y), @(toRotation), @(toOpacity)];
+  for (NSUInteger index = 0; index < keys.count; index++) {
+    if ([fromValues[index] isEqual:toValues[index]]) continue;
+    // At zero rotation, origin/position cancel exactly; no pivot animation is needed.
+    if (index < 4 && fromRotation == 0 && toRotation == 0) continue;
+    CAAnimation *animation;
+    if (_activeAnimationKind == 1) {
+      CAMediaTimingFunction *timing = [CAMediaTimingFunction
+          functionWithControlPoints:_timingAnimation.controlPoint1X :_timingAnimation.controlPoint1Y
+          :_timingAnimation.controlPoint2X :_timingAnimation.controlPoint2Y];
+      animation = [self basicAnimationForKeyPath:keys[index] fromValue:fromValues[index]
+          toValue:toValues[index] timingFunction:timing];
+    } else {
+      animation = [self springAnimationForKeyPath:keys[index] fromValue:fromValues[index]
+          toValue:toValues[index] velocity:_springAnimation.initialVelocity duration:group.duration];
+    }
+    [appearanceAnimations addObject:animation];
+  }
+  appearanceGroup.animations = appearanceAnimations;
+  appearanceGroup.duration = group.duration;
+
+
   // An explicit media-time origin is required to pause and resume spring
   // groups without touching the parent layer clock (which would also pause
   // consumer animations in the clipped subtree).
@@ -1337,6 +1512,7 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
     // Each layer receives the same absolute media timestamp translated into
     // its local clock. Group participants therefore advance from one epoch
     // even though their animations are installed sequentially.
+    appearanceGroup.beginTime = [_presentationContainer.layer convertTime:sharedBeginTime fromLayer:nil];
     group.beginTime = [layer convertTime:sharedBeginTime fromLayer:nil];
     contentGroup.beginTime = [_contentContainer.layer
         convertTime:sharedBeginTime
@@ -1361,6 +1537,10 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   _springPausedForInactivity = NO;
   _pausedSpringHadMaskAnimation = NO;
   _pausedSpringHadShadowAnimation = NO;
+  _hasAppearanceAnimation = appearanceAnimations.count > 0;
+  if (_hasAppearanceAnimation) {
+    [_presentationContainer.layer addAnimation:appearanceGroup forKey:@"smoothClip.appearance"];
+  }
   [layer addAnimation:group forKey:@"smoothClip.geometry"];
   [_contentContainer.layer addAnimation:contentGroup
                                  forKey:@"smoothClip.content"];
@@ -1405,11 +1585,15 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
                                          current.contentTranslateY)
                     fromContentScale:current.contentScale
                          fromShadow:current.shadow
+                       fromRotation:current.rotation
+                        fromOpacity:current.opacity
                           toGeometry:target
                 hasExplicitToRadii:_requestedHasExplicitRadii
                 toContentTranslation:_requestedContentTranslation
                       toContentScale:_requestedContentScale
                            toShadow:_requestedShadow
+                         toRotation:_requestedRotation
+                          toOpacity:_requestedOpacity
                             duration:duration
                      sharedBeginTime:sharedBeginTime];
   return YES;
@@ -1496,7 +1680,8 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
       [geometryLayer animationForKey:@"smoothClip.geometry"];
   CAAnimation *installedContent =
       [contentLayer animationForKey:@"smoothClip.content"];
-  if (installedGeometry == nil || installedContent == nil) return NO;
+  CAAnimation *installedAppearance = [_presentationContainer.layer animationForKey:@"smoothClip.appearance"];
+  if ((_hasAppearanceAnimation && installedAppearance == nil) || installedGeometry == nil || installedContent == nil) return NO;
 
   auto pausedCopy = ^CAAnimation *(CALayer *layer, CAAnimation *installed) {
     if (installed == nil) return (CAAnimation *)nil;
@@ -1513,6 +1698,7 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
     return paused;
   };
 
+  CAAnimation *appearance = pausedCopy(_presentationContainer.layer, installedAppearance);
   CAAnimation *geometry = pausedCopy(geometryLayer, installedGeometry);
   CAAnimation *content = pausedCopy(contentLayer, installedContent);
   CAAnimation *installedMask =
@@ -1527,6 +1713,7 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   [geometryLayer removeAnimationForKey:@"smoothClip.geometry"];
   [contentLayer removeAnimationForKey:@"smoothClip.content"];
   [_unequalCornerMask removeAnimationForKey:@"smoothClip.mask"];
+  [_presentationContainer.layer removeAnimationForKey:@"smoothClip.appearance"];
   [_shadowLayer removeAnimationForKey:@"smoothClip.shadow"];
 
   _animationDelegate = [SmoothClipAnimationDelegate new];
@@ -1534,6 +1721,9 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   _animationDelegate.driverId = _driverId;
   _animationDelegate.animationId = animationId;
   geometry.delegate = _animationDelegate;
+  if (appearance != nil) {
+    [_presentationContainer.layer addAnimation:appearance forKey:@"smoothClip.appearance"];
+  }
   [geometryLayer addAnimation:geometry forKey:@"smoothClip.geometry"];
   [contentLayer addAnimation:content forKey:@"smoothClip.content"];
   if (mask != nil) {
@@ -1567,7 +1757,8 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
       [_unequalCornerMask animationForKey:@"smoothClip.mask"];
   CAAnimation *installedShadow =
       [_shadowLayer animationForKey:@"smoothClip.shadow"];
-  if (installedGeometry == nil || installedContent == nil ||
+  CAAnimation *installedAppearance = [_presentationContainer.layer animationForKey:@"smoothClip.appearance"];
+  if ((_hasAppearanceAnimation && installedAppearance == nil) || installedGeometry == nil || installedContent == nil ||
       (_pausedSpringHadMaskAnimation && installedMask == nil) ||
       (_pausedSpringHadShadowAnimation && installedShadow == nil)) {
     return NO;
@@ -1587,6 +1778,7 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
     return resumed;
   };
 
+  CAAnimation *appearance = resumedCopy(_presentationContainer.layer, installedAppearance);
   CAAnimation *geometry = resumedCopy(geometryLayer, installedGeometry);
   CAAnimation *content = resumedCopy(contentLayer, installedContent);
   CAAnimation *mask = resumedCopy(_unequalCornerMask, installedMask);
@@ -1597,6 +1789,7 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   [geometryLayer removeAnimationForKey:@"smoothClip.geometry"];
   [contentLayer removeAnimationForKey:@"smoothClip.content"];
   [_unequalCornerMask removeAnimationForKey:@"smoothClip.mask"];
+  [_presentationContainer.layer removeAnimationForKey:@"smoothClip.appearance"];
   [_shadowLayer removeAnimationForKey:@"smoothClip.shadow"];
 
   _animationDelegate = [SmoothClipAnimationDelegate new];
@@ -1604,6 +1797,9 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   _animationDelegate.driverId = _driverId;
   _animationDelegate.animationId = animationId;
   geometry.delegate = _animationDelegate;
+  if (appearance != nil) {
+    [_presentationContainer.layer addAnimation:appearance forKey:@"smoothClip.appearance"];
+  }
   [geometryLayer addAnimation:geometry forKey:@"smoothClip.geometry"];
   [contentLayer addAnimation:content forKey:@"smoothClip.content"];
   if (mask != nil) {
@@ -1621,6 +1817,8 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
 
 - (BOOL)smoothClipHasInstalledAnimation:(int32_t)animationId {
   return _activeAnimationId == animationId &&
+      (!_hasAppearanceAnimation ||
+       [_presentationContainer.layer animationForKey:@"smoothClip.appearance"] != nil) &&
       [_clipContainer.layer animationForKey:@"smoothClip.geometry"] != nil &&
       [_contentContainer.layer animationForKey:@"smoothClip.content"] != nil &&
       (!_springPausedForInactivity ||
@@ -1642,8 +1840,11 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   _pausedSpringHadMaskAnimation = NO;
   _pausedSpringHadShadowAnimation = NO;
   [_unequalCornerMask removeAnimationForKey:@"smoothClip.mask"];
+  [_presentationContainer.layer removeAnimationForKey:@"smoothClip.appearance"];
   [_shadowLayer removeAnimationForKey:@"smoothClip.shadow"];
-  [self applyStaticCornerRepresentation:[self canonicalGeometryValue]];
+  if (_hasMaskAnimation) {
+    [self applyStaticCornerRepresentation:[self canonicalGeometryValue]];
+  }
   [self writeShadow:_requestedShadow
             geometry:[self canonicalGeometryValue]];
   [self syncVisibilityForRect:_canonicalClip];
@@ -1685,6 +1886,8 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
           newProps.initialClipBoxShadowOffsetY,
           newProps.initialClipBoxShadowBlurRadius,
           newProps.initialClipBoxShadowSpreadDistance,
+          newProps.initialRotation,
+          newProps.initialOpacity,
           &initial)) {
     // The initial presentation is atomic. Never apply a valid subset when one
     // field rejects.
@@ -1706,6 +1909,7 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
 }
 
 - (void)layoutContentContainer {
+  [self writeAppearanceRotation:_canonicalRotation opacity:_canonicalOpacity rect:_canonicalClip];
   _contentContainer.layer.bounds = CGRectMake(
       0, 0, MAX(0, self.bounds.size.width), MAX(0, self.bounds.size.height));
   _contentContainer.layer.position = CGPointMake(
@@ -1733,6 +1937,12 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   const CGRect clip = _activeAnimationId != 0
       ? [self presentationRectWithRadii:&radii]
       : _canonicalClip;
+  if ([self visibleOpacity] <= 0) return NO;
+  const double rotation = [self visibleRotation];
+  const CGPoint center = CGPointMake(CGRectGetMidX(clip), CGRectGetMidY(clip));
+  const double dx = point.x - center.x, dy = point.y - center.y;
+  point = CGPointMake(center.x + cos(rotation) * dx + sin(rotation) * dy,
+                      center.y - sin(rotation) * dx + cos(rotation) * dy);
   if (CGRectIsEmpty(clip) || !CGRectContainsPoint(clip, point)) return NO;
   CGPathRef path = nil;
   if (_clipContainer.layer.mask == _unequalCornerMask) {
@@ -1775,7 +1985,9 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
                  shadowOffsetX:(double)shadowOffsetX
                  shadowOffsetY:(double)shadowOffsetY
               shadowBlurRadius:(double)shadowBlurRadius
-              shadowSpreadDistance:(double)shadowSpreadDistance {
+              shadowSpreadDistance:(double)shadowSpreadDistance
+                          rotation:(double)rotation
+                           opacity:(double)opacity {
   smoothclip::Presentation presentation{};
   if (!SmoothClipBuildPresentation(
           x,
@@ -1799,6 +2011,8 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
           shadowOffsetY,
           shadowBlurRadius,
           shadowSpreadDistance,
+          rotation,
+          opacity,
           &presentation)) {
     return;
   }
@@ -1830,6 +2044,10 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   _canonicalContentScale = 1;
   _requestedShadow = {};
   _canonicalShadow = {};
+  _requestedRotation = _canonicalRotation = 0;
+  _requestedOpacity = _canonicalOpacity = 1;
+  _presentationContainer.layer.affineTransform = CGAffineTransformIdentity;
+  _presentationContainer.layer.opacity = 1;
   _hasLayout = NO;
   _commandIsAuthoritative = NO;
 
@@ -1841,6 +2059,7 @@ static smoothclip::Presentation SmoothClipCanonicalSnapshot(
   layer.mask = nil;
   _unequalCornerMask.path = nil;
   _contentContainer.layer.affineTransform = CGAffineTransformIdentity;
+  _hasShadowModel = NO;
   _shadowLayer.shadowPath = nil;
   _shadowLayer.shadowOpacity = 0;
   _shadowLayer.shadowRadius = 0;

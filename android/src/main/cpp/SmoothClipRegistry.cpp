@@ -458,7 +458,7 @@ void deliverToView(const ViewEntry &entry, const Presentation &presentation) {
       translateX,
       translateY,
       presentation.contentScale,
-      shadowPx);
+      shadowPx, presentation.rotation, presentation.opacity);
 }
 
 void applyToViews(DriverState &state, const Presentation &presentation) {
@@ -1705,7 +1705,7 @@ void JSmoothClipView::applyClip(const Presentation &presentation) const {
               jdouble,
               jdouble,
               jdouble,
-              jdouble)>("setClipPresentationDip");
+              jdouble, jdouble, jdouble)>("setClipPresentationDip");
   method(
       self(),
       presentation.clip.x,
@@ -1732,7 +1732,7 @@ void JSmoothClipView::applyClip(const Presentation &presentation) const {
       presentation.shadow.offsetX,
       presentation.shadow.offsetY,
       presentation.shadow.blurRadius,
-      presentation.shadow.spreadDistance);
+      presentation.shadow.spreadDistance, presentation.rotation, presentation.opacity);
 }
 
 void JSmoothClipView::applyClipPx(
@@ -1740,7 +1740,7 @@ void JSmoothClipView::applyClipPx(
     double contentTranslateXPx,
     double contentTranslateYPx,
     double contentScale,
-    const Shadow &shadowPx) const {
+    const Shadow &shadowPx, double rotation, double opacity) const {
   static const auto method =
       javaClassStatic()
           ->getMethod<void(
@@ -1764,7 +1764,7 @@ void JSmoothClipView::applyClipPx(
               jfloat,
               jfloat,
               jfloat,
-              jfloat)>("setClipPresentationPx");
+              jfloat, jdouble, jfloat)>("setClipPresentationPx");
   method(
       self(),
       static_cast<jfloat>(clip.left),
@@ -1787,7 +1787,7 @@ void JSmoothClipView::applyClipPx(
       static_cast<jfloat>(shadowPx.offsetX),
       static_cast<jfloat>(shadowPx.offsetY),
       static_cast<jfloat>(shadowPx.blurRadius),
-      static_cast<jfloat>(shadowPx.spreadDistance));
+      static_cast<jfloat>(shadowPx.spreadDistance), rotation, static_cast<jfloat>(opacity));
 }
 
 void JSmoothClipView::setAutonomousMotion(bool active) const {

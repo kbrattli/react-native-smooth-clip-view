@@ -22,7 +22,7 @@ struct JSmoothClipView : facebook::jni::JavaClass<JSmoothClipView> {
       double contentTranslateXPx,
       double contentTranslateYPx,
       double contentScale,
-      const Shadow &shadowPx) const;
+      const Shadow &shadowPx, double rotation, double opacity) const;
   void setAutonomousMotion(bool active) const;
 };
 

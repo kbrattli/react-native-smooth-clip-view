@@ -27,7 +27,7 @@ namespace smoothclip {
 namespace {
 
 constexpr double kMaxSafeJavaScriptInteger = 9007199254740991.0;
-constexpr size_t kPresentationStride = 21;
+constexpr size_t kPresentationStride = 23;
 constexpr size_t kSnapshotStride = kPresentationStride + 1;
 constexpr size_t kMotionEntryStride = kPresentationStride * 2 + 2;
 
@@ -61,7 +61,8 @@ bool finiteBasePresentation(const Presentation &presentation) {
       std::isfinite(presentation.contentTranslateX) &&
       std::isfinite(presentation.contentTranslateY) &&
       std::isfinite(presentation.contentScale) &&
-      presentation.contentScale > 0;
+      presentation.contentScale > 0 &&
+      std::isfinite(presentation.rotation) && std::isfinite(presentation.opacity);
 }
 
 bool finitePresentation(const Presentation &presentation) {
@@ -154,7 +155,7 @@ bool presentationAt(
       Shadow{
           packet[12] == 1.0,
           packet[13], packet[14], packet[15], packet[16],
-          packet[17], packet[18], packet[19], packet[20]}};
+          packet[17], packet[18], packet[19], packet[20]}, packet[21], packet[22]};
   return finitePresentation(result);
 }
 
@@ -190,6 +191,8 @@ void appendPresentation(
   result.setValueAtIndex(runtime, offset++, presentation.shadow.offsetY);
   result.setValueAtIndex(runtime, offset++, presentation.shadow.blurRadius);
   result.setValueAtIndex(runtime, offset++, presentation.shadow.spreadDistance);
+  result.setValueAtIndex(runtime, offset++, presentation.rotation);
+  result.setValueAtIndex(runtime, offset++, presentation.opacity);
 }
 
 Array presentationArray(Runtime &runtime, const Presentation &presentation) {
@@ -551,9 +554,9 @@ void installBindings(
       });
 
   setHostFunction(
-      runtime, bindings, "setClipFrameScalars", 22,
+      runtime, bindings, "setClipFrameScalars", 24,
       [](Runtime &, const Value &, const Value *args, size_t count) -> Value {
-        if (count < 22) return Value::undefined();
+        if (count < 24) return Value::undefined();
         const double driverId = args[0].asNumber();
         Geometry geometry{
             args[1].asNumber(), args[2].asNumber(), args[3].asNumber(),
@@ -584,7 +587,7 @@ void installBindings(
                 args[19].asNumber(),
                 args[20].asNumber(),
                 args[21].asNumber(),
-            }};
+            }, args[22].asNumber(), args[23].asNumber()};
         if (validDriverId(driverId) && validCurve(args[9].asNumber()) &&
             finitePresentation(presentation)) {
           setPresentation(
@@ -828,6 +831,8 @@ void nativeRegisterView(
     jdouble shadowOffsetY,
     jdouble shadowBlurRadius,
     jdouble shadowSpreadDistance,
+    jdouble rotation,
+    jdouble opacity,
     jdouble density,
     jdouble widthPx,
     jdouble heightPx,
@@ -842,7 +847,8 @@ void nativeRegisterView(
       !std::isfinite(shadowBlue) || !std::isfinite(shadowAlpha) ||
       !std::isfinite(shadowOffsetX) ||
       !std::isfinite(shadowOffsetY) || !std::isfinite(shadowBlurRadius) ||
-      !std::isfinite(shadowSpreadDistance) || contentScale <= 0 ||
+      !std::isfinite(shadowSpreadDistance) ||
+      !std::isfinite(rotation) || !std::isfinite(opacity) || contentScale <= 0 ||
       shadowRed < 0 || shadowRed > 1 || shadowGreen < 0 || shadowGreen > 1 ||
       shadowBlue < 0 || shadowBlue > 1 || shadowAlpha < 0 || shadowAlpha > 1 ||
       shadowBlurRadius < 0 ||
@@ -874,7 +880,7 @@ void nativeRegisterView(
       static_cast<uint64_t>(driverId),
       view,
       smoothclip::Presentation{
-          geometry, contentTranslateX, contentTranslateY, contentScale, shadow},
+          geometry, contentTranslateX, contentTranslateY, contentScale, shadow, rotation, opacity},
       density,
       widthPx,
       heightPx,

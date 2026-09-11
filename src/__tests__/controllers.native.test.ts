@@ -101,7 +101,7 @@ describe('useSmoothClipController', () => {
     expect(native.setClipPresentationBatch).toHaveBeenCalledTimes(1);
     const packet = native.setClipPresentationBatch.mock
       .calls[0]?.[0] as number[];
-    expect(packet).toHaveLength(22);
+    expect(packet).toHaveLength(24);
     expect(packet.slice(1, 5)).toEqual([-40, 120, 180, 90]);
   });
 

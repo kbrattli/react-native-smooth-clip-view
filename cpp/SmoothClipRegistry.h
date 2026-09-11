@@ -44,6 +44,8 @@ struct Presentation {
   double contentTranslateY;
   double contentScale = 1.0;
   Shadow shadow{};
+  double rotation = 0; // Unwrapped radians, clockwise in host coordinates.
+  double opacity = 1;
 };
 
 struct TimingAnimation {

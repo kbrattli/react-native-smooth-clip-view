@@ -138,10 +138,10 @@ inline double cubicBezier(
 
 // --- Presentation channels ------------------------------------------------
 
-// The first eleven channels are geometry/content; the final eight are shadow.
+// The first thirteen channels are geometry/content/appearance; the final eight are shadow.
 // Curve and shadow presence are categorical and stay outside the scalar array.
-constexpr std::size_t kBaseChannelCount = 11;
-constexpr std::size_t kChannelCount = 19;
+constexpr std::size_t kBaseChannelCount = 13;
+constexpr std::size_t kChannelCount = 21;
 using Channels = std::array<double, kChannelCount>;
 
 inline double resolvedRadius(double overrideValue, double shorthand) {
@@ -177,6 +177,8 @@ inline Channels toChannels(const Presentation &presentation) {
           presentation.contentTranslateX,
           presentation.contentTranslateY,
           presentation.contentScale,
+          presentation.rotation,
+          presentation.opacity,
           presentation.shadow.red,
           presentation.shadow.green,
           presentation.shadow.blue,
@@ -219,6 +221,7 @@ inline bool canonicalizePresentation(Presentation &presentation) {
   CanonicalClip clip;
   if (!SmoothClipCanonicalize(presentation.clip, clip)) return false;
   presentation.clip = SmoothClipGeometry(clip);
+  presentation.opacity = clamp01(presentation.opacity);
   return true;
 }
 
@@ -444,16 +447,16 @@ inline Presentation fromChannels(
   geometry.curve = curve;
   Shadow shadow{
       shadowEnabled,
-      std::clamp(channels[11], 0.0, 1.0),
-      std::clamp(channels[12], 0.0, 1.0),
       std::clamp(channels[13], 0.0, 1.0),
       std::clamp(channels[14], 0.0, 1.0),
-      channels[15],
-      channels[16],
-      std::max(0.0, channels[17]),
-      channels[18]};
+      std::clamp(channels[15], 0.0, 1.0),
+      std::clamp(channels[16], 0.0, 1.0),
+      channels[17],
+      channels[18],
+      std::max(0.0, channels[19]),
+      channels[20]};
   return Presentation{
-      geometry, channels[8], channels[9], channels[10], shadow};
+      geometry, channels[8], channels[9], channels[10], shadow, channels[11], clamp01(channels[12])};
 }
 
 inline Presentation interpolate(

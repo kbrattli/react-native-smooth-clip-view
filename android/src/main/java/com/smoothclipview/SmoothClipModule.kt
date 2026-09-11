@@ -140,6 +140,8 @@ class SmoothClipModule(context: ReactApplicationContext) :
         shadowOffsetY: Double,
         shadowBlurRadius: Double,
         shadowSpreadDistance: Double,
+        rotation: Double,
+        opacity: Double,
     ) = Unit
 
     override fun beginInteraction(driverId: Double): WritableArray =

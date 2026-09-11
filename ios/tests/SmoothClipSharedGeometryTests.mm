@@ -98,4 +98,33 @@ typedef struct {
   XCTAssertEqualWithAccuracy(presentation.contentTranslateY, -9, 1e-9);
 }
 
+
+- (void)testRotationUsesRotatedViewportIntersectionAndPreservesTurns {
+  XCTAssertFalse(smoothclip::rotatedRectIntersectsHost(-30, 0, 20, 100, 0, 100, 100));
+  XCTAssertTrue(smoothclip::rotatedRectIntersectsHost(-30, 0, 20, 100, M_PI_2, 100, 100));
+  XCTAssertFalse(smoothclip::rotatedRectIntersectsHost(-100, -100, 10, 10, M_PI_4, 100, 100));
+  XCTAssertEqualWithAccuracy(smoothclip::unwrapRotation(M_PI_2, 4.5 * M_PI), 4.5 * M_PI, 1e-10);
+  XCTAssertEqualWithAccuracy(smoothclip::unwrapRotation(-M_PI_2, -4.5 * M_PI), -4.5 * M_PI, 1e-10);
+}
+
+- (void)testAppearanceChannelsAnimateWithoutAShadowAndClampOnlyRenderedOpacity {
+  smoothclip::Presentation from{{0, 0, 80, 60, 8}, 0, 0};
+  auto to = from;
+  to.rotation = 4 * M_PI;
+  to.opacity = 0;
+  const auto middle = smoothclip::interpolate(from, to, 0.5);
+  XCTAssertEqualWithAccuracy(middle.rotation, 2 * M_PI, 1e-10);
+  XCTAssertEqualWithAccuracy(middle.opacity, 0.5, 1e-10);
+  auto channels = smoothclip::toChannels(to);
+  channels[12] = -0.25;
+  const auto rendered = smoothclip::fromChannels(channels);
+  XCTAssertEqual(rendered.opacity, 0);
+  XCTAssertEqual(channels[12], -0.25);
+  to.opacity = NAN;
+  XCTAssertFalse(smoothclip::canonicalizePresentation(to));
+  to.opacity = 1;
+  to.rotation = INFINITY;
+  XCTAssertFalse(smoothclip::canonicalizePresentation(to));
+}
+
 @end

@@ -10,6 +10,7 @@ import {
 import { StyleSheet, type ViewProps, type ViewStyle } from 'react-native';
 import type { SmoothClipController } from './controllerTypes';
 import { getControllerRef, unwrapSmoothClipRef } from './controllerInternals';
+import { rotationRadians } from './geometry';
 import NativeSmoothClipView, {
   type NativeProps,
 } from './SmoothClipViewNativeComponent';
@@ -135,6 +136,8 @@ export function renderSmoothClipView(
     initialContentTranslateX: canonical.contentTranslateX,
     initialContentTranslateY: canonical.contentTranslateY,
     initialContentScale: canonical.contentScale,
+    initialRotation: rotationRadians(canonical.rotation),
+    initialOpacity: canonical.opacity,
     initialClipBoxShadowEnabled: shadow !== undefined,
     initialClipBoxShadowRed: ((color >>> 24) & 0xff) / 255,
     initialClipBoxShadowGreen: ((color >>> 16) & 0xff) / 255,

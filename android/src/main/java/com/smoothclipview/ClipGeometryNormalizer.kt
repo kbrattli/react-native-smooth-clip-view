@@ -240,3 +240,26 @@ internal fun clipAccessibility(
     } else {
         requestedAccessibility
     }
+
+/** Conservative for rounded corners, exact for the rotated bounding rectangle. */
+internal fun rotatedRectIntersectsHost(
+    left: Double, top: Double, right: Double, bottom: Double,
+    pivotX: Double, pivotY: Double, rotation: Double, hostWidth: Double, hostHeight: Double,
+): Boolean {
+    if (right <= left || bottom <= top || hostWidth <= 0 || hostHeight <= 0) return false
+    if (rotation == 0.0) return right > 0 && bottom > 0 && left < hostWidth && top < hostHeight
+    val c = kotlin.math.cos(rotation)
+    val s = kotlin.math.sin(rotation)
+    val dx = (left + right) / 2 - pivotX
+    val dy = (top + bottom) / 2 - pivotY
+    val x = pivotX + c * dx - s * dy - hostWidth / 2
+    val y = pivotY + s * dx + c * dy - hostHeight / 2
+    val hw = (right - left) / 2
+    val hh = (bottom - top) / 2
+    val ac = kotlin.math.abs(c)
+    val ass = kotlin.math.abs(s)
+    return kotlin.math.abs(x) < hostWidth / 2 + ac * hw + ass * hh &&
+        kotlin.math.abs(y) < hostHeight / 2 + ass * hw + ac * hh &&
+        kotlin.math.abs(c * x + s * y) < hw + ac * hostWidth / 2 + ass * hostHeight / 2 &&
+        kotlin.math.abs(-s * x + c * y) < hh + ass * hostWidth / 2 + ac * hostHeight / 2
+}

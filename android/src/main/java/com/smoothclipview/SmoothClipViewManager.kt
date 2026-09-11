@@ -37,6 +37,8 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
         var shadowOffsetY: Double = 0.0,
         var shadowBlurRadius: Double = 0.0,
         var shadowSpreadDistance: Double = 0.0,
+        var rotation: Double = 0.0,
+        var opacity: Double = 1.0,
         var driverId: Double = 0.0,
         // Whether any prop setter ran in the current update transaction.
         var dirty: Boolean = false,
@@ -173,6 +175,12 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
     @ReactProp(name = "initialClipBoxShadowSpreadDistance")
     override fun setInitialClipBoxShadowSpreadDistance(view: SmoothClipView, value: Double) { pending(view).shadowSpreadDistance = value }
 
+    @ReactProp(name = "initialRotation")
+    override fun setInitialRotation(view: SmoothClipView, value: Double) { pending(view).rotation = value }
+
+    @ReactProp(name = "initialOpacity", defaultDouble = 1.0)
+    override fun setInitialOpacity(view: SmoothClipView, value: Double) { pending(view).opacity = value }
+
     override fun setClipPresentation(
         view: SmoothClipView,
         x: Double,
@@ -196,6 +204,8 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
         shadowOffsetY: Double,
         shadowBlurRadius: Double,
         shadowSpreadDistance: Double,
+        rotation: Double,
+        opacity: Double,
     ) {
         view.commandIsAuthoritative = true
         view.setClipPresentationDip(
@@ -220,6 +230,8 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
             shadowOffsetY,
             shadowBlurRadius,
             shadowSpreadDistance,
+            rotation,
+            opacity,
         )
     }
 
@@ -262,6 +274,8 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
                     initial.shadowOffsetY,
                     initial.shadowBlurRadius,
                     initial.shadowSpreadDistance,
+                    initial.rotation,
+                    initial.opacity,
                     view.densityScale(),
                     view.width.toDouble(),
                     view.height.toDouble(),
@@ -292,6 +306,8 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
                     initial.shadowOffsetY,
                     initial.shadowBlurRadius,
                     initial.shadowSpreadDistance,
+                    initial.rotation,
+                    initial.opacity,
                 )
         } else {
             view.reapplyClipPresentation()

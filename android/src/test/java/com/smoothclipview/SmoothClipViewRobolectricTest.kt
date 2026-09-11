@@ -53,6 +53,66 @@ class SmoothClipViewRobolectricTest {
     }
 
     @Test
+    @Config(sdk = [26, 32])
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun renderedRotationAndGroupOpacityPreserveClippingAndOverlap() {
+        view.contentContainer.getChildAt(0).setBackgroundColor(Color.RED)
+        val overlap = View(view.context).apply { setBackgroundColor(Color.BLUE) }
+        view.contentContainer.addView(overlap)
+        overlap.layout(40, 0, 100, 100)
+        view.setClipPresentationPx(20f, 40f, 80f, 60f, 0f, 0f, 0f, 0f,
+            CLIP_CURVE_CIRCULAR, 0f, 0f, 1f, rotation = Math.PI / 2, opacity = 0.5f)
+        val bitmap = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888)
+        view.draw(Canvas(bitmap))
+        assertEquals(0, Color.alpha(bitmap.getPixel(25, 50)))
+        assertEquals(128f, Color.alpha(bitmap.getPixel(50, 25)).toFloat(), 1f)
+        assertEquals(128f, Color.alpha(bitmap.getPixel(50, 60)).toFloat(), 1f)
+        assertEquals(255, Color.blue(bitmap.getPixel(50, 60)))
+    }
+
+    @Test
+    @Config(sdk = [28, 35])
+    fun rotatedOffHostContentStillReceivesTouches() {
+        view.setClipPresentationPx(-30f, 0f, -10f, 100f, 0f, 0f, 0f, 0f,
+            CLIP_CURVE_CIRCULAR, -30f, 0f, 1f, rotation = Math.PI / 2)
+        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 10f, 50f)))
+        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_UP, 10f, 50f)))
+        assertEquals(listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP), actions)
+    }
+
+    @Test
+    @Config(sdk = [28, 35])
+    fun wholeObjectRotationAndOpacityKeepHostAndTouchCoordinatesCorrect() {
+        view.setClipPresentationPx(20f, 40f, 80f, 60f, 0f, 0f, 0f, 0f,
+            CLIP_CURVE_CIRCULAR, 0f, 0f, 1f, rotation = Math.PI / 2, opacity = 0.5f)
+        assertEquals(90f, view.presentationContainer.rotation, 0.001f)
+        assertEquals(50f, view.presentationContainer.pivotX, 0.001f)
+        assertEquals(50f, view.presentationContainer.pivotY, 0.001f)
+        assertEquals(0.5f, view.presentationContainer.alpha, 0.001f)
+        assertTrue(view.presentationContainer.hasOverlappingRendering())
+        assertFalse(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 25f, 50f)))
+        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 50f, 25f)))
+        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_UP, 50f, 25f)))
+        assertEquals(listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP), actions)
+        view.setClipPresentationPx(20f, 40f, 80f, 60f, 0f, 0f, 0f, 0f,
+            CLIP_CURVE_CIRCULAR, 0f, 0f, 1f, rotation = Math.PI / 2, opacity = 0f)
+        assertFalse(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 50f, 50f)))
+        assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS, view.importantForAccessibility)
+    }
+
+    @Test
+    @Config(sdk = [28, 35])
+    fun offHostApertureCanRotateBackIntoTheViewport() {
+        view.setClipPresentationPx(-30f, 0f, -10f, 100f, 0f, 0f, 0f, 0f,
+            CLIP_CURVE_CIRCULAR, 0f, 0f, 1f)
+        assertEquals(View.INVISIBLE, view.visibility)
+        view.setClipPresentationPx(-30f, 0f, -10f, 100f, 0f, 0f, 0f, 0f,
+            CLIP_CURVE_CIRCULAR, 0f, 0f, 1f, rotation = Math.PI / 2)
+        assertEquals(View.VISIBLE, view.visibility)
+        assertFalse(view.importantForAccessibility == View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS)
+    }
+
+    @Test
     fun emptyGeometryUpdatesRealVisibilityAndAccessibility() {
         assertEquals(View.VISIBLE, view.visibility)
         assertFalse(

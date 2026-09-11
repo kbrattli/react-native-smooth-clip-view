@@ -93,6 +93,18 @@ function snapshotPacket(value: SmoothClipPresentation, ready = true): number[] {
 }
 
 describe('useSmoothClipGroup', () => {
+  it('rejects an invalid appearance before writing any member', () => {
+    const group = useSmoothClipGroup();
+    native.setClipPresentationBatch.mockClear();
+    expect(() =>
+      group.ui.setFrames([
+        { clip: first, frame: { ...frame, rotation: '90deg', opacity: 0.5 } },
+        { clip: second, frame: { ...frame, opacity: NaN } },
+      ])
+    ).toThrow('A group frame is invalid');
+    expect(native.setClipPresentationBatch).not.toHaveBeenCalled();
+  });
+
   it('submits one ordered native batch for streamed frames', () => {
     const group = useSmoothClipGroup();
     native.setClipPresentationBatch.mockClear();
@@ -106,9 +118,9 @@ describe('useSmoothClipGroup', () => {
     const packet = native.setClipPresentationBatch.mock
       .calls[0]?.[0] as number[];
     expect(packet[0]).toBe(unwrapSmoothClipRef(first)?.id);
-    expect(packet[22]).toBe(unwrapSmoothClipRef(second)?.id);
+    expect(packet[24]).toBe(unwrapSmoothClipRef(second)?.id);
     expect(packet[1]).toBe(-20);
-    expect(packet[23]).toBe(220);
+    expect(packet[25]).toBe(220);
   });
 
   it('treats a pre-ready streamed batch rejection as a dropped frame', () => {

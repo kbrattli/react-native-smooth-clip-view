@@ -24,7 +24,11 @@ export type SpringClipAnimation = SmoothClipAnimationBase &
     mass?: number;
     stiffness?: number;
     damping?: number;
-    /** Normalized progress velocity in inverse seconds. */
+    /**
+     * Initial progress velocity in inverse seconds; defaults to 0, with no
+     * automatic gesture-velocity inheritance. Each changing channel, including
+     * rotation and opacity, starts at velocity * (target - start).
+     */
     velocity?: number;
     /** Relative mechanical energy used to determine settlement. */
     energyThreshold?: number;

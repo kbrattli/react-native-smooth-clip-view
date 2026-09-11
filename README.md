@@ -134,6 +134,21 @@ defaults match Reanimated 4.5: mass `4`, stiffness `900`, damping `120`, and
 relative energy threshold `6e-9`. A spring is rejected when its resolved native
 trajectory could make `contentScale` nonpositive.
 
+`velocity` is a shared initial progress velocity in inverse seconds, defaulting
+to `0`. Each changing channel starts with velocity proportional to its remaining
+distance: `velocity * (target - start)`. This includes rotation (in radians) and
+opacity. Public controllers and groups do not automatically inherit gesture
+velocity; starting a new spring after `beginInteraction()` still defaults to `0`
+unless `velocity` is supplied. Pausing and resuming an existing native spring
+preserves its internal motion state; public snapshots return clamped opacity.
+
+The internal native standalone path also supports inherited velocity. Its
+projection uses only clip position, size, corner radii, and content translation.
+Rotation, opacity, content scale, and shadow channels do not contribute to that
+projection. The resulting normalized velocity can drive all changing channels,
+including rotation and opacity, without mixing their units into the projection.
+Rotation/opacity-only motion therefore supplies no inherited velocity.
+
 An animation requested before the host has a positive layout waits, then starts
 with its full duration. While the application is inactive, native animation
 transactions stay pending and do not report cancellation. Timing animations
@@ -189,6 +204,15 @@ APIs share validation, run ownership, and completion behavior.
 - Corner-overlap scaling follows CSS rules against the requested rectangle.
 - `contentTranslateX`, `contentTranslateY`, and positive `contentScale` animate
   with the aperture.
+- `rotation` accepts degree or radian strings (for example, `'12deg'` or
+  `'0.2rad'`) and defaults to `'0deg'`. It rotates the aperture, content, and
+  shadow together, clockwise around the current aperture center. Existing
+  content translation and scale happen before this rotation. The host stays
+  fixed and crops the rotated result.
+- `opacity` defaults to `1` and fades the aperture's content and shadow as one
+  group. Finite values clamp to `[0, 1]`; malformed angles and nonfinite values
+  reject the complete presentation. Spring opacity is clamped for rendering
+  without clamping its internal spring state.
 - Circular and continuous curves and independent corner radii are supported.
 - One outset `boxShadow` is supported. It escapes the aperture but not the host.
 - A fully off-host aperture is not touchable, even when only its shadow overlaps.
@@ -198,6 +222,52 @@ APIs share validation, run ownership, and completion behavior.
 Use `getSmoothClipCapabilities()` when a consumer needs to decide whether a
 complex native path can be promoted on the current platform.
 
+### Rotate and fade a clip
+
+Rotation and opacity are presentation fields, so they use the same controller
+and group methods as geometry. For example, start a tilted, translucent card
+and animate it upright:
+
+```ts
+const clip = useSmoothClipController({
+  clip: { x: 24, y: 80, width: 240, height: 320, radius: 24 },
+  contentTranslateX: 0,
+  contentTranslateY: 0,
+  rotation: '-12deg',
+  opacity: 0.4,
+});
+
+// Attach this controller to <SmoothClipView controller={clip}> as above.
+const reveal = () =>
+  clip.react.animateTo(
+    {
+      clip: { x: 24, y: 80, width: 240, height: 320, radius: 24 },
+      contentTranslateX: 0,
+      contentTranslateY: 0,
+      rotation: '0deg',
+      opacity: 1,
+    },
+    { type: 'spring', stiffness: 180, damping: 22 }
+  );
+```
+
+For gesture-driven updates, supply the same fields from a UI-runtime worklet:
+
+```ts
+clip.ui.setFrame({ ...frame, rotation: '12deg', opacity: 0.5 });
+```
+
+Angles interpolate numerically, so `'720deg'` requests two full turns from zero;
+there is no automatic shortest-path wrapping. Interruption snapshots preserve
+full turns and return rotation as a radian string. Each presentation is complete:
+omitting rotation or opacity resets that field to its default. At zero opacity,
+the content admits no new touches and is hidden from accessibility.
+
+When upgrading to **0.4.3**, rebuild the native app (and run `pod install` on
+iOS). The native presentation protocol includes new rotation and opacity
+channels, so a JavaScript-only OTA update cannot upgrade an older native build.
+See the [changelog](./CHANGELOG.md) for release details.
+
 ## Performance contract
 
 - One worklet-to-native call per `ui.setFrame`, or per group batch.
@@ -205,6 +275,10 @@ complex native path can be promoted on the current platform.
 - The shadow-disabled rendering path keeps no shadow drawing resources.
 - The fixed host is the maximum rendering viewport; consumers should size it to
   the region in which content and shadow may appear.
+- Rotation and opacity update native compositor properties without Yoga work
+  or rebuilding unchanged clipping paths. Correctly fading overlapping children
+  may require offscreen compositing; large translucent groups can cost more GPU
+  time than opaque ones. No rasterization or software layer is forced.
 
 ## License
 

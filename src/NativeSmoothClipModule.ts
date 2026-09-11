@@ -85,7 +85,9 @@ export interface Spec extends TurboModule {
     shadowOffsetX: CodegenTypes.Double,
     shadowOffsetY: CodegenTypes.Double,
     shadowBlurRadius: CodegenTypes.Double,
-    shadowSpreadDistance: CodegenTypes.Double
+    shadowSpreadDistance: CodegenTypes.Double,
+    rotation: CodegenTypes.Double,
+    opacity: CodegenTypes.Double
   ): void;
   beginInteraction(
     driverId: CodegenTypes.Double

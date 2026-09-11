@@ -11,6 +11,12 @@ namespace smoothclip {
 // the four radius channels contributes one quarter of the uniform-radius weight.
 // Both platforms record raw canonical geometry, including off-host coordinates.
 // The projection only needs both samples and the target in the same space.
+// Rotation, opacity, and shadow channels are deliberately absent: their units
+// must not enter this geometry/translation projection. Appearance-only motion
+// cannot supply inherited velocity. The resulting normalized scalar can still
+// seed every changing animation channel, including rotation and opacity.
+// This inheritance path is internal to standalone native animations; public
+// controllers/groups use an explicit progress velocity, defaulting to zero.
 // Shared by ios/SmoothClipView.mm and android/.../SmoothClipRegistry.cpp; a
 // behavior change here changes both platforms.
 struct VelocitySampleHistory {

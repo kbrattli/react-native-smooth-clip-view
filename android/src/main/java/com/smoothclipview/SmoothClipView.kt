@@ -5,6 +5,7 @@ import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Outline
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Region
@@ -20,6 +21,8 @@ import com.facebook.react.views.view.ReactViewGroup
 import kotlin.math.roundToInt
 import kotlin.math.abs
 import kotlin.math.pow
+import kotlin.math.cos
+import kotlin.math.sin
 
 class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     private val clipPath = Path()
@@ -41,6 +44,16 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
                 }
             }
         }
+    // One compositing group; arbitrary React children may overlap when faded.
+    internal val presentationContainer = object : ReactViewGroup(context) {
+        override fun hasOverlappingRendering(): Boolean = true
+        override fun dispatchDraw(canvas: Canvas) {
+            drawBoxShadow(canvas)
+            super.dispatchDraw(canvas)
+        }
+    }
+    private var requestedRotation = 0.0
+    private var requestedOpacity = 1f
     internal val contentContainer = ReactViewGroup(context)
     private var requestedX = 0f
     private var requestedY = 0f
@@ -78,6 +91,9 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     private var requestedImportantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_AUTO
     private var autonomousMotion = false
     private var acceptingTouchStream = false
+    private var forwardingOverflowTouchStream = false
+    private val inversePresentationMatrix = Matrix()
+    private val touchPoint = FloatArray(2)
 
     /** Driver this view is registered with in the native registry (0 = none). */
     internal var boundDriverId: Double = 0.0
@@ -104,7 +120,8 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
 
     init {
         clipContainer.addView(contentContainer)
-        super.addView(clipContainer)
+        presentationContainer.addView(clipContainer)
+        super.addView(presentationContainer)
         if (supportsPathOutlineClipping) {
             clipContainer.outlineProvider = clipOutlineProvider
             clipContainer.clipToOutline = true
@@ -139,6 +156,8 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         shadowOffsetY: Double = 0.0,
         shadowBlurRadius: Double = 0.0,
         shadowSpreadDistance: Double = 0.0,
+        rotation: Double = 0.0,
+        opacity: Double = 1.0,
     ) {
         if (!x.isFinite() || !y.isFinite() || !width.isFinite() ||
             !height.isFinite() || !topLeftRadius.isFinite() ||
@@ -149,7 +168,7 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
             !shadowBlue.isFinite() || !shadowAlpha.isFinite() ||
             !shadowOffsetX.isFinite() ||
             !shadowOffsetY.isFinite() || !shadowBlurRadius.isFinite() ||
-            !shadowSpreadDistance.isFinite() || contentScale <= 0.0 ||
+            !shadowSpreadDistance.isFinite() || !rotation.isFinite() || !opacity.isFinite() || contentScale <= 0.0 ||
             shadowRed !in 0.0..1.0 || shadowGreen !in 0.0..1.0 ||
             shadowBlue !in 0.0..1.0 || shadowAlpha !in 0.0..1.0 ||
             shadowBlurRadius < 0.0 ||
@@ -197,6 +216,8 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         requestedCurveCode = curveCode
         requestedContentTranslateX = nextContentTranslateX
         requestedContentTranslateY = nextContentTranslateY
+        requestedRotation = rotation
+        requestedOpacity = opacity.coerceIn(0.0, 1.0).toFloat()
         requestedContentScale = nextContentScale
         storeShadow(
             shadowEnabled,
@@ -236,6 +257,8 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         shadowOffsetY: Float = 0f,
         shadowBlurRadius: Float = 0f,
         shadowSpreadDistance: Float = 0f,
+        rotation: Double = 0.0,
+        opacity: Float = 1f,
     ) {
         if (!left.isFinite() || !top.isFinite() || !right.isFinite() ||
             !bottom.isFinite() || !topLeftRadius.isFinite() ||
@@ -246,7 +269,7 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
             !shadowBlue.isFinite() || !shadowAlpha.isFinite() ||
             !shadowOffsetX.isFinite() ||
             !shadowOffsetY.isFinite() || !shadowBlurRadius.isFinite() ||
-            !shadowSpreadDistance.isFinite() || contentScale <= 0f ||
+            !shadowSpreadDistance.isFinite() || !rotation.isFinite() || !opacity.isFinite() || contentScale <= 0f ||
             shadowRed !in 0f..1f || shadowGreen !in 0f..1f ||
             shadowBlue !in 0f..1f || shadowAlpha !in 0f..1f ||
             shadowBlurRadius < 0f ||
@@ -259,6 +282,8 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         try {
             requestedContentTranslateX = contentTranslateX
             requestedContentTranslateY = contentTranslateY
+            requestedRotation = rotation
+            requestedOpacity = opacity.coerceIn(0f, 1f)
             requestedContentScale = contentScale
             storeShadow(
                 shadowEnabled,
@@ -342,14 +367,14 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         requestedShadowBlurRadius = blurRadius
         requestedShadowSpreadDistance = spreadDistance
         if (!isVisible) {
-            if (wasVisible) invalidate()
+            if (wasVisible) presentationContainer.invalidate()
             return
         }
         if (paintChanged || boxShadowPaint == null) updateBoxShadowPaint()
         if (pathChanged || !wasVisible || boxShadowPath == null) {
             rebuildBoxShadowPath()
         }
-        if (paintChanged || pathChanged || !wasVisible) invalidate()
+        if (paintChanged || pathChanged || !wasVisible) presentationContainer.invalidate()
     }
 
     private fun updateBoxShadowPaint() {
@@ -414,25 +439,28 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         val hostSaveCount = canvas.save()
         canvas.clipRect(0f, 0f, width.toFloat(), height.toFloat())
         try {
-            val shadowPath = boxShadowPath
-            val shadowPaint = boxShadowPaint
-            if (requestedShadowEnabled && !clipIsEmpty &&
-                requestedShadowAlpha > 0f && shadowPath != null &&
-                shadowPaint != null && !shadowPath.isEmpty
-            ) {
-                val apertureSaveCount = canvas.save()
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    canvas.clipOutPath(clipPath)
-                } else {
-                    @Suppress("DEPRECATION")
-                    canvas.clipPath(clipPath, Region.Op.DIFFERENCE)
-                }
-                canvas.drawPath(shadowPath, shadowPaint)
-                canvas.restoreToCount(apertureSaveCount)
-            }
             super.dispatchDraw(canvas)
         } finally {
             canvas.restoreToCount(hostSaveCount)
+        }
+    }
+
+    private fun drawBoxShadow(canvas: Canvas) {
+        val shadowPath = boxShadowPath
+        val shadowPaint = boxShadowPaint
+        if (requestedShadowEnabled && !clipIsEmpty &&
+            requestedShadowAlpha > 0f && shadowPath != null &&
+            shadowPaint != null && !shadowPath.isEmpty
+        ) {
+            val apertureSaveCount = canvas.save()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                canvas.clipOutPath(clipPath)
+            } else {
+                @Suppress("DEPRECATION")
+                canvas.clipPath(clipPath, Region.Op.DIFFERENCE)
+            }
+            canvas.drawPath(shadowPath, shadowPaint)
+            canvas.restoreToCount(apertureSaveCount)
         }
     }
 
@@ -470,10 +498,12 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         applyContentTransform()
 
         clipIsEmpty = isEmpty
+        applyPresentationTransform()
         reapplyClipPresentation()
 
         if (!geometryChanged) return
 
+        updateOverflowInsets()
         clipPath.reset()
         if (!isEmpty) {
             if (curveCode == CLIP_CURVE_CIRCULAR && radiiAreUniform) {
@@ -507,7 +537,29 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         } else {
             clipContainer.invalidate()
         }
-        if (requestedShadowEnabled) invalidate()
+        if (requestedShadowEnabled) presentationContainer.invalidate()
+    }
+
+    private fun updateOverflowInsets() {
+        // React Native's touch-target walk also needs to see the unrotated overflow.
+        val left = kotlin.math.floor(minOf(0f, clipLeft).toDouble()).toInt()
+        val top = kotlin.math.floor(minOf(0f, clipTop).toDouble()).toInt()
+        val right = kotlin.math.floor(minOf(0f, width - clipRight).toDouble()).toInt()
+        val bottom = kotlin.math.floor(minOf(0f, height - clipBottom).toDouble()).toInt()
+        presentationContainer.setOverflowInset(left, top, right, bottom)
+        clipContainer.setOverflowInset(left, top, right, bottom)
+    }
+
+    private fun applyPresentationTransform() {
+        // The pivot is immaterial at zero rotation; avoid dirtying a stationary parent.
+        val cx = if (requestedRotation == 0.0) 0f else (clipLeft + clipRight) / 2f
+        val cy = if (requestedRotation == 0.0) 0f else (clipTop + clipBottom) / 2f
+        // Keep unwrapped doubles in the registry. Only the render transform is periodic.
+        val degrees = Math.toDegrees(requestedRotation % (2 * Math.PI)).toFloat()
+        if (presentationContainer.pivotX != cx) presentationContainer.pivotX = cx
+        if (presentationContainer.pivotY != cy) presentationContainer.pivotY = cy
+        if (presentationContainer.rotation != degrees) presentationContainer.rotation = degrees
+        if (presentationContainer.alpha != requestedOpacity) presentationContainer.alpha = requestedOpacity
     }
 
     private fun applyContentTransform() {
@@ -525,8 +577,10 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        presentationContainer.layout(0, 0, w, h)
         clipContainer.layout(0, 0, w, h)
         contentContainer.layout(0, 0, w, h)
+        updateOverflowInsets()
         applyContentTransform()
         if (boundDriverId != 0.0) {
             // Host metrics only gate lifecycle readiness. Redelivery remains
@@ -602,7 +656,14 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     private fun containsRoundedPoint(x: Float, y: Float): Boolean {
         // Reuse the exact path supplied to the Outline. Hit testing therefore
         // follows the rendered aperture, including continuous corners.
-        return !clipIsEmpty && containsPathPoint(clipPath, x, y)
+        if (clipIsEmpty || requestedOpacity <= 0f) return false
+        val cx = (clipLeft + clipRight) / 2.0
+        val cy = (clipTop + clipBottom) / 2.0
+        val c = cos(requestedRotation)
+        val sn = sin(requestedRotation)
+        val localX = cx + c * (x - cx) + sn * (y - cy)
+        val localY = cy - sn * (x - cx) + c * (y - cy)
+        return containsPathPoint(clipPath, localX.toFloat(), localY.toFloat())
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -611,12 +672,34 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
             // The aperture gates admission only. Once accepted, the stream
             // belongs to Android until its real UP or CANCEL arrives.
             clearTouchState()
-            if (!containsRoundedPoint(event.x, event.y)) return false
+            if (event.x < 0 || event.y < 0 || event.x >= width || event.y >= height ||
+                !containsRoundedPoint(event.x, event.y)) return false
             acceptingTouchStream = true
+            presentationContainer.matrix.invert(inversePresentationMatrix)
+            touchPoint[0] = event.x
+            touchPoint[1] = event.y
+            inversePresentationMatrix.mapPoints(touchPoint)
+            forwardingOverflowTouchStream = touchPoint[0] < 0 || touchPoint[1] < 0 ||
+                touchPoint[0] >= width || touchPoint[1] >= height
         }
 
         if (!acceptingTouchStream) return false
-        val result = super.dispatchTouchEvent(event)
+        // ViewGroup's native dispatch rejects children outside their layout bounds,
+        // even when clipChildren=false. Bypass only the internal presentation wrapper
+        // for an overflow stream; the clip container still dispatches to transformed
+        // content normally. Retain this route through the real UP/CANCEL.
+        val result = if (forwardingOverflowTouchStream) {
+            presentationContainer.matrix.invert(inversePresentationMatrix)
+            val localEvent = MotionEvent.obtain(event)
+            try {
+                localEvent.transform(inversePresentationMatrix)
+                clipContainer.dispatchTouchEvent(localEvent)
+            } finally {
+                localEvent.recycle()
+            }
+        } else {
+            super.dispatchTouchEvent(event)
+        }
         if ((action == MotionEvent.ACTION_DOWN && !result) ||
             action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_UP
         ) {
@@ -627,6 +710,7 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
 
     private fun clearTouchState() {
         acceptingTouchStream = false
+        forwardingOverflowTouchStream = false
     }
 
     fun setRequestedImportantForAccessibility(value: Int) {
@@ -644,14 +728,14 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     fun reapplyClipPresentation() {
         val apertureVisible = apertureIntersectsHost()
         val expectedVisibility = renderVisibility(
-            apertureVisible || shadowIntersectsHost(),
+            requestedOpacity > 0f && (apertureVisible || shadowIntersectsHost()),
         )
         if (visibility != expectedVisibility) {
             visibility = expectedVisibility
         }
 
         val expectedAccessibility = clipAccessibility(
-            autonomousMotion || !apertureVisible,
+            autonomousMotion || !apertureVisible || requestedOpacity <= 0f,
             requestedImportantForAccessibility,
         )
         if (importantForAccessibility != expectedAccessibility) {
@@ -660,8 +744,11 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     }
 
     private fun apertureIntersectsHost(): Boolean =
-        !clipIsEmpty && clipRight > 0f && clipBottom > 0f &&
-            clipLeft < width.toFloat() && clipTop < height.toFloat()
+        !clipIsEmpty && rotatedRectIntersectsHost(
+            clipLeft.toDouble(), clipTop.toDouble(), clipRight.toDouble(), clipBottom.toDouble(),
+            (clipLeft + clipRight) / 2.0, (clipTop + clipBottom) / 2.0,
+            requestedRotation, width.toDouble(), height.toDouble(),
+        )
 
     private fun shadowIntersectsHost(): Boolean {
         if (clipIsEmpty || !requestedShadowEnabled || requestedShadowAlpha <= 0f) {
@@ -677,9 +764,12 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         // CSS blur is specified as a diameter-like radius. Expanding by the
         // full value is conservative and prevents culling a faint blur tail.
         val blurOutset = requestedShadowBlurRadius
-        return pathRight + blurOutset > 0f && pathBottom + blurOutset > 0f &&
-            pathLeft - blurOutset < width.toFloat() &&
-            pathTop - blurOutset < height.toFloat()
+        return rotatedRectIntersectsHost(
+            (pathLeft - blurOutset).toDouble(), (pathTop - blurOutset).toDouble(),
+            (pathRight + blurOutset).toDouble(), (pathBottom + blurOutset).toDouble(),
+            (clipLeft + clipRight) / 2.0, (clipTop + clipBottom) / 2.0,
+            requestedRotation, width.toDouble(), height.toDouble(),
+        )
     }
 
     fun resetClipState() {
@@ -697,6 +787,8 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         requestedContentTranslateX = 0f
         requestedContentTranslateY = 0f
         requestedContentScale = 1f
+        requestedRotation = 0.0
+        requestedOpacity = 1f
         requestedShadowEnabled = false
         requestedShadowRed = 0f
         requestedShadowGreen = 0f

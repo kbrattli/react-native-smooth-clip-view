@@ -2,6 +2,8 @@
 import type { ColorValue } from 'react-native';
 import { processColor } from 'react-native-reanimated';
 
+export type ClipRotation = `${number}deg` | `${number}rad`;
+
 export type ClipCurve = 'circular' | 'continuous';
 
 /** One numeric outset shadow following React Native's `boxShadow` field names. */
@@ -57,6 +59,10 @@ export type SmoothClipPresentation = Readonly<{
   contentTranslateY: number;
   /** Defaults to 1 when omitted. */
   contentScale?: number;
+  /** Clockwise rotation of aperture, content and shadow around the aperture center. */
+  rotation?: ClipRotation;
+  /** Opacity of the complete clipped object; defaults to 1. */
+  opacity?: number;
   boxShadow?: ClipBoxShadow;
 }>;
 
@@ -65,8 +71,29 @@ export type CanonicalSmoothClipPresentation = Readonly<{
   contentTranslateX: number;
   contentTranslateY: number;
   contentScale: number;
+  rotation: `${number}rad`;
+  opacity: number;
   boxShadow?: CanonicalClipBoxShadow;
 }>;
+
+/** Numeric native angle. Invalid input remains NaN for atomic validation. */
+export function rotationRadians(rotation: ClipRotation | undefined): number {
+  'worklet';
+  if (rotation === undefined) return 0;
+  if (
+    typeof rotation !== 'string' ||
+    !/^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?(?:deg|rad)$/.test(rotation)
+  ) {
+    return NaN;
+  }
+  const value = Number(rotation.slice(0, -3));
+  return rotation.endsWith('deg') ? value * (Math.PI / 180) : value;
+}
+
+function resolvedOpacity(presentation: SmoothClipPresentation): number {
+  'worklet';
+  return Math.max(0, Math.min(1, presentation.opacity ?? 1));
+}
 
 const DEFAULT_SHADOW_COLOR = '#000000ff';
 
@@ -218,6 +245,8 @@ export function isFiniteClipPresentation(
     Number.isFinite(presentation.contentTranslateY) &&
     Number.isFinite(contentScale) &&
     contentScale > 0 &&
+    Number.isFinite(rotationRadians(presentation.rotation)) &&
+    Number.isFinite(presentation.opacity ?? 1) &&
     shadow !== null
   );
 }
@@ -233,6 +262,8 @@ export function clipPresentationEquals(
     first.contentTranslateX === second.contentTranslateX &&
     first.contentTranslateY === second.contentTranslateY &&
     resolvedContentScale(first) === resolvedContentScale(second) &&
+    rotationRadians(first.rotation) === rotationRadians(second.rotation) &&
+    resolvedOpacity(first) === resolvedOpacity(second) &&
     clipBoxShadowEquals(first.boxShadow, second.boxShadow)
   );
 }
@@ -325,6 +356,8 @@ export function canonicalizeClipPresentation(
     contentTranslateX: presentation.contentTranslateX,
     contentTranslateY: presentation.contentTranslateY,
     contentScale: resolvedContentScale(presentation),
+    rotation: `${rotationRadians(presentation.rotation)}rad`,
+    opacity: resolvedOpacity(presentation),
     ...(boxShadow === undefined ? {} : { boxShadow }),
   };
 }
@@ -359,6 +392,8 @@ export function createClipPresentation(
     contentTranslateX,
     contentTranslateY,
     contentScale,
+    rotation: '0rad',
+    opacity: 1,
     ...(canonicalShadow === undefined
       ? {}
       : {

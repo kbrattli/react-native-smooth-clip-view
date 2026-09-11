@@ -246,6 +246,8 @@ describe('SmoothClipPresentation', () => {
       contentTranslateX: -11,
       contentTranslateY: 17,
       contentScale: 1,
+      rotation: '0rad',
+      opacity: 1,
     });
     expect(isFiniteClipPresentation(presentation)).toBe(true);
     expect(
@@ -339,6 +341,8 @@ describe('SmoothClipPresentation', () => {
       contentTranslateX: -11,
       contentTranslateY: 17,
       contentScale: 1.5,
+      rotation: '0rad',
+      opacity: 1,
     });
   });
 
@@ -395,6 +399,64 @@ describe('SmoothClipPresentation', () => {
           offsetY: Number.POSITIVE_INFINITY,
         })
       )
+    ).toBeNull();
+  });
+});
+
+describe('whole-object appearance', () => {
+  const frame = {
+    clip: { x: 0, y: 0, width: 100, height: 60, radius: 8 },
+    contentTranslateX: 0,
+    contentTranslateY: 0,
+  };
+  it('accepts both angle units without wrapping complete turns', () => {
+    const degrees = canonicalizeClipPresentation({
+      ...frame,
+      rotation: '810deg',
+      opacity: 0.25,
+    });
+    expect(degrees?.rotation).toBe(`${4.5 * Math.PI}rad`);
+    expect(degrees?.opacity).toBe(0.25);
+    expect(canonicalizeClipPresentation(degrees!)).toEqual(degrees);
+    expect(
+      clipPresentationEquals(
+        { ...frame, rotation: '180deg' },
+        { ...frame, rotation: `${Math.PI}rad` }
+      )
+    ).toBe(true);
+    expect(
+      clipPresentationEquals(frame, { ...frame, rotation: '360deg' })
+    ).toBe(false);
+    expect(clipPresentationEquals(frame, { ...frame, opacity: 0.5 })).toBe(
+      false
+    );
+  });
+  it.each([
+    '',
+    '12',
+    '12px',
+    'NaNrad',
+    'Infinitydeg',
+    '12degrad',
+    ' 12deg',
+    '1e999rad',
+  ])('rejects malformed rotation %s', (rotation) => {
+    expect(
+      canonicalizeClipPresentation({ ...frame, rotation } as Parameters<
+        typeof canonicalizeClipPresentation
+      >[0])
+    ).toBeNull();
+  });
+  it('clamps finite opacity and rejects nonfinite opacity', () => {
+    expect(
+      canonicalizeClipPresentation({ ...frame, opacity: -0.5 })?.opacity
+    ).toBe(0);
+    expect(
+      canonicalizeClipPresentation({ ...frame, opacity: 2 })?.opacity
+    ).toBe(1);
+    expect(canonicalizeClipPresentation({ ...frame, opacity: NaN })).toBeNull();
+    expect(
+      canonicalizeClipPresentation({ ...frame, opacity: Infinity })
     ).toBeNull();
   });
 });

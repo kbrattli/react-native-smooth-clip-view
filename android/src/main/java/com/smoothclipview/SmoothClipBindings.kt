@@ -43,6 +43,8 @@ internal object SmoothClipBindings {
         shadowOffsetY: Double,
         shadowBlurRadius: Double,
         shadowSpreadDistance: Double,
+        rotation: Double,
+        opacity: Double,
         density: Double,
         widthPx: Double,
         heightPx: Double,

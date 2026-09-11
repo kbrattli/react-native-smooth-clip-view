@@ -156,4 +156,24 @@ inline Geometry SmoothClipGeometry(const CanonicalClip &clip) {
   return geometry;
 }
 
+// Exact rectangle/host SAT; conservative for rounded corners, as before rotation.
+inline bool rotatedRectIntersectsHost(double x, double y, double width, double height,
+                                     double rotation, double hostWidth, double hostHeight) {
+  if (width <= 0 || height <= 0 || hostWidth <= 0 || hostHeight <= 0) return false;
+  if (rotation == 0) return x + width > 0 && y + height > 0 && x < hostWidth && y < hostHeight;
+  const double c = std::cos(rotation), s = std::sin(rotation);
+  const double ac = std::abs(c), as = std::abs(s);
+  const double dx = x + width / 2 - hostWidth / 2;
+  const double dy = y + height / 2 - hostHeight / 2;
+  return std::abs(dx) < hostWidth / 2 + ac * width / 2 + as * height / 2 &&
+      std::abs(dy) < hostHeight / 2 + as * width / 2 + ac * height / 2 &&
+      std::abs(c * dx + s * dy) < width / 2 + ac * hostWidth / 2 + as * hostHeight / 2 &&
+      std::abs(-s * dx + c * dy) < height / 2 + as * hostWidth / 2 + ac * hostHeight / 2;
+}
+
+inline double unwrapRotation(double principal, double reference) {
+  constexpr double turn = 6.28318530717958647692;
+  return principal + std::round((reference - principal) / turn) * turn;
+}
+
 } // namespace smoothclip

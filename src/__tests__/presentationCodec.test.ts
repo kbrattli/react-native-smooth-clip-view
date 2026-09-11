@@ -25,6 +25,8 @@ describe('presentation codec', () => {
       contentTranslateX: 11,
       contentTranslateY: -9,
       contentScale: 0.75,
+      rotation: '810deg',
+      opacity: 0.35,
       boxShadow: {
         color: '#33669980',
         offsetX: 3,

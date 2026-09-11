@@ -10,7 +10,7 @@
 namespace facebook::react {
 namespace {
 
-constexpr size_t kPresentationStride = 21;
+constexpr size_t kPresentationStride = 23;
 constexpr size_t kSnapshotStride = kPresentationStride + 1;
 constexpr size_t kMotionEntryStride = kPresentationStride * 2 + 2;
 
@@ -65,7 +65,9 @@ smoothclip::Presentation makePresentation(
     double shadowOffsetX = 0,
     double shadowOffsetY = 0,
     double shadowBlurRadius = 0,
-    double shadowSpreadDistance = 0) {
+    double shadowSpreadDistance = 0,
+    double rotation = 0,
+    double opacity = 1) {
   const bool uniform = topLeftRadius == topRightRadius &&
       topLeftRadius == bottomRightRadius &&
       topLeftRadius == bottomLeftRadius;
@@ -82,7 +84,8 @@ smoothclip::Presentation makePresentation(
       contentTranslateY,
       contentScale,
       {shadowEnabled, shadowRed, shadowGreen, shadowBlue, shadowAlpha,
-       shadowOffsetX, shadowOffsetY, shadowBlurRadius, shadowSpreadDistance}};
+       shadowOffsetX, shadowOffsetY, shadowBlurRadius, shadowSpreadDistance},
+      rotation, opacity};
 }
 
 bool finitePresentation(const smoothclip::Presentation &presentation) {
@@ -97,6 +100,7 @@ bool finitePresentation(const smoothclip::Presentation &presentation) {
       std::isfinite(presentation.contentTranslateY) &&
       std::isfinite(presentation.contentScale) &&
       presentation.contentScale > 0 &&
+      std::isfinite(presentation.rotation) && std::isfinite(presentation.opacity) &&
       std::isfinite(presentation.shadow.red) &&
       std::isfinite(presentation.shadow.green) &&
       std::isfinite(presentation.shadow.blue) &&
@@ -141,7 +145,7 @@ bool presentationAt(
       values[11],
       values[12] == 1,
       values[13], values[14], values[15], values[16],
-      values[17], values[18], values[19], values[20]);
+      values[17], values[18], values[19], values[20], values[21], values[22]);
   return finitePresentation(result);
 }
 
@@ -181,6 +185,8 @@ void writePresentation(
   result.setValueAtIndex(runtime, offset + 18, presentation.shadow.offsetY);
   result.setValueAtIndex(runtime, offset + 19, presentation.shadow.blurRadius);
   result.setValueAtIndex(runtime, offset + 20, presentation.shadow.spreadDistance);
+  result.setValueAtIndex(runtime, offset + 21, presentation.rotation);
+  result.setValueAtIndex(runtime, offset + 22, presentation.opacity);
 }
 
 jsi::Array snapshotArray(
@@ -226,6 +232,8 @@ std::vector<double> snapshotValues(
     result.push_back(presentation.shadow.offsetY);
     result.push_back(presentation.shadow.blurRadius);
     result.push_back(presentation.shadow.spreadDistance);
+    result.push_back(presentation.rotation);
+    result.push_back(presentation.opacity);
   }
   return result;
 }
@@ -504,13 +512,16 @@ void SmoothClipTurboModule::setClipFrameScalars(
     double shadowOffsetX,
     double shadowOffsetY,
     double shadowBlurRadius,
-    double shadowSpreadDistance) {
+    double shadowSpreadDistance,
+    double rotation,
+    double opacity) {
   const smoothclip::Presentation presentation = makePresentation(
       x, y, width, height, topLeftRadius, topRightRadius,
       bottomRightRadius, bottomLeftRadius, curveCode,
       contentTranslateX, contentTranslateY, contentScale,
       shadowEnabled, shadowRed, shadowGreen, shadowBlue, shadowAlpha,
-      shadowOffsetX, shadowOffsetY, shadowBlurRadius, shadowSpreadDistance);
+      shadowOffsetX, shadowOffsetY, shadowBlurRadius, shadowSpreadDistance,
+      rotation, opacity);
   if (!validDriverId(driverId) || !finitePresentation(presentation)) return;
   smoothclip::setPresentation(
       static_cast<uint64_t>(driverId), presentation, true, false, true);

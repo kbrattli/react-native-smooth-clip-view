@@ -20,6 +20,8 @@ export interface NativeProps extends ViewProps {
   initialContentTranslateX: CodegenTypes.Double;
   initialContentTranslateY: CodegenTypes.Double;
   initialContentScale: CodegenTypes.Double;
+  initialRotation: CodegenTypes.Double;
+  initialOpacity?: CodegenTypes.WithDefault<CodegenTypes.Double, 1>;
   initialClipBoxShadowEnabled: boolean;
   initialClipBoxShadowRed: CodegenTypes.Double;
   initialClipBoxShadowGreen: CodegenTypes.Double;
@@ -54,7 +56,9 @@ interface NativeCommands {
     shadowOffsetX: CodegenTypes.Double,
     shadowOffsetY: CodegenTypes.Double,
     shadowBlurRadius: CodegenTypes.Double,
-    shadowSpreadDistance: CodegenTypes.Double
+    shadowSpreadDistance: CodegenTypes.Double,
+    rotation: CodegenTypes.Double,
+    opacity: CodegenTypes.Double
   ) => void;
 }
 

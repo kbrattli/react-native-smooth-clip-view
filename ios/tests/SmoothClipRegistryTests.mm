@@ -13,6 +13,17 @@
 #include <unistd.h>
 
 @interface SmoothClipView (SmoothClipRegistryTests)
+- (void)smoothClipApplyPresentation:(smoothclip::Presentation)presentation;
+- (BOOL)smoothClipAnimateTiming:(smoothclip::Presentation)presentation
+                     animation:(smoothclip::TimingAnimation)animation
+                   animationId:(int32_t)animationId sharedBeginTime:(CFTimeInterval)beginTime;
+- (BOOL)smoothClipAnimateSpring:(smoothclip::Presentation)presentation
+                     animation:(smoothclip::SpringAnimation)animation
+                   animationId:(int32_t)animationId;
+- (BOOL)smoothClipPauseSpringAnimation:(int32_t)animationId atMediaTime:(CFTimeInterval)mediaTime;
+- (BOOL)smoothClipResumeSpringAnimation:(int32_t)animationId atMediaTime:(CFTimeInterval)mediaTime
+                            catchUpBy:(CFTimeInterval)catchUp;
+
 - (smoothclip::Presentation)smoothClipCurrentPresentation;
 - (void)smoothClipAnimationDidStopWithDriverId:(uint64_t)driverId
                                     animationId:(int32_t)animationId
@@ -37,7 +48,9 @@
                  shadowOffsetX:(double)shadowOffsetX
                  shadowOffsetY:(double)shadowOffsetY
               shadowBlurRadius:(double)shadowBlurRadius
-              shadowSpreadDistance:(double)shadowSpreadDistance;
+              shadowSpreadDistance:(double)shadowSpreadDistance
+                          rotation:(double)rotation
+                           opacity:(double)opacity;
 @end
 
 @interface SmoothClipRegistryTests : XCTestCase
@@ -339,7 +352,7 @@ static UIWindow *TestWindow(void) {
                  shadowOffsetX:0
                  shadowOffsetY:0
               shadowBlurRadius:0
-              shadowSpreadDistance:0];
+              shadowSpreadDistance:0 rotation:0 opacity:1];
   auto props = std::make_shared<facebook::react::SmoothClipViewProps>();
   props->initialClipX = 5;
   props->initialClipY = 6;
@@ -381,7 +394,7 @@ static UIWindow *TestWindow(void) {
                  shadowOffsetX:3
                  shadowOffsetY:4
               shadowBlurRadius:64
-              shadowSpreadDistance:5];
+              shadowSpreadDistance:5 rotation:0 opacity:1];
   const smoothclip::Presentation valid =
       [host smoothClipCurrentPresentation];
   XCTAssertEqualWithAccuracy(valid.clip.x, 10, 1e-9);
@@ -414,7 +427,7 @@ static UIWindow *TestWindow(void) {
                  shadowOffsetX:3
                  shadowOffsetY:4
               shadowBlurRadius:64
-              shadowSpreadDistance:5];
+              shadowSpreadDistance:5 rotation:0 opacity:1];
   const smoothclip::Presentation afterReject =
       [host smoothClipCurrentPresentation];
   XCTAssertEqualWithAccuracy(afterReject.clip.x, valid.clip.x, 1e-9);
@@ -448,7 +461,7 @@ static UIWindow *TestWindow(void) {
                  shadowOffsetX:3
                  shadowOffsetY:4
               shadowBlurRadius:64
-              shadowSpreadDistance:5];
+              shadowSpreadDistance:5 rotation:0 opacity:1];
   const smoothclip::Presentation afterNonFiniteReject =
       [host smoothClipCurrentPresentation];
   XCTAssertEqualWithAccuracy(
@@ -2818,6 +2831,132 @@ static UIWindow *TestWindow(void) {
   smoothclip::unregisterView(driverId, host);
   smoothclip::clearCompletionCallback((__bridge const void *)self);
   smoothclip::destroyDriver(driverId);
+}
+
+
+- (void)testAppearanceRotatesTheApertureAndShadowInsideTheFixedHost {
+  UIWindow *window = TestWindow();
+  SmoothClipView *host = DisplayableView(window, CGRectMake(0, 0, 100, 100));
+  auto frame = Presentation(20, 40, 60, 20, 0);
+  frame.rotation = M_PI_2;
+  frame.opacity = 0.5;
+  frame.shadow = BoxShadow(0.5, 0, 4, 8);
+  [host smoothClipApplyPresentation:frame];
+  UIView *group = [host valueForKey:@"presentationContainer"];
+  UIView *clip = [host valueForKey:@"clipContainer"];
+  CALayer *shadow = [host valueForKey:@"shadowLayer"];
+  XCTAssertTrue(host.clipsToBounds);
+  XCTAssertFalse(group.clipsToBounds);
+  XCTAssertEqual(clip.superview, group);
+  XCTAssertEqual(shadow.superlayer, group.layer);
+  XCTAssertEqualWithAccuracy(group.layer.opacity, 0.5, 1e-6);
+  XCTAssertTrue([host pointInside:CGPointMake(50, 25) withEvent:nil]);
+  XCTAssertFalse([host pointInside:CGPointMake(25, 50) withEvent:nil]);
+  CGPoint rotated = [group.layer convertPoint:CGPointMake(80, 50) toLayer:host.layer];
+  XCTAssertEqualWithAccuracy(rotated.x, 50, 1e-5);
+  XCTAssertEqualWithAccuracy(rotated.y, 80, 1e-5);
+  CGPathRef originalShadowPath = CGPathRetain(shadow.shadowPath);
+  frame.rotation = 5 * M_PI;
+  frame.opacity = 0;
+  [host smoothClipApplyPresentation:frame];
+  XCTAssertTrue(originalShadowPath == shadow.shadowPath);
+  CGPathRelease(originalShadowPath);
+  XCTAssertFalse([host pointInside:CGPointMake(50, 50) withEvent:nil]);
+  XCTAssertTrue(clip.accessibilityElementsHidden);
+  const auto snapshot = [host smoothClipCurrentPresentation];
+  XCTAssertEqualWithAccuracy(snapshot.rotation, 5 * M_PI, 1e-10);
+  XCTAssertEqual(snapshot.opacity, 0);
+}
+
+- (void)testAppearanceAnimationSharesPivotClockAndSurvivesSpringPause {
+  UIWindow *window = TestWindow();
+  SmoothClipView *host = DisplayableView(window, CGRectMake(0, 0, 200, 200));
+  auto from = Presentation(10, 20, 80, 40, 8);
+  [host smoothClipApplyPresentation:from];
+  auto to = Presentation(50, 60, 120, 80, 16);
+  to.rotation = 4 * M_PI;
+  to.opacity = 0;
+  smoothclip::SpringAnimation spring{};
+  spring.mass = 1; spring.stiffness = 100; spring.damping = 20;
+  XCTAssertTrue([host smoothClipAnimateSpring:to animation:spring animationId:12345]);
+  UIView *group = [host valueForKey:@"presentationContainer"];
+  CAAnimationGroup *animation = (CAAnimationGroup *)[group.layer animationForKey:@"smoothClip.appearance"];
+  XCTAssertNotNil(animation);
+  XCTAssertEqual(animation.animations.count, 6u);
+  XCTAssertTrue([host smoothClipPauseSpringAnimation:12345 atMediaTime:CACurrentMediaTime()]);
+  XCTAssertEqual([group.layer animationForKey:@"smoothClip.appearance"].speed, 0);
+  XCTAssertTrue([host smoothClipResumeSpringAnimation:12345 atMediaTime:CACurrentMediaTime() catchUpBy:0.016]);
+  XCTAssertEqual([group.layer animationForKey:@"smoothClip.appearance"].speed, 1);
+  [host smoothClipApplyPresentation:to];
+  XCTAssertNil([group.layer animationForKey:@"smoothClip.appearance"]);
+  XCTAssertEqualWithAccuracy([host smoothClipCurrentPresentation].rotation, 4 * M_PI, 1e-10);
+}
+
+
+- (void)testVisibleFullTurnRotationCanBeInterruptedWithoutWrapping {
+  UIWindow *window = TestWindow();
+  window.rootViewController = [UIViewController new];
+  [window makeKeyAndVisible];
+  SmoothClipView *host = DisplayableView(window, CGRectMake(0, 0, 200, 200));
+  auto from = Presentation(20, 40, 100, 60, 8);
+  [host smoothClipApplyPresentation:from];
+  [CATransaction flush];
+  auto target = from;
+  UIView *content = [host valueForKey:@"contentContainer"];
+  UIView *child = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 200, 200)];
+  [content addSubview:child];
+  target.rotation = 8 * M_PI;
+  target.opacity = 0;
+  const smoothclip::TimingAnimation timing{2000, 0, 0, 1, 1, 2};
+  XCTAssertTrue([host smoothClipAnimateTiming:target animation:timing
+      animationId:12346 sharedBeginTime:CACurrentMediaTime() - 0.6]);
+  [CATransaction flush];
+  [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+  const auto visible = [host smoothClipCurrentPresentation];
+  XCTAssertGreaterThan(visible.rotation, 2 * M_PI);
+  XCTAssertLessThan(visible.rotation, 4 * M_PI);
+  XCTAssertGreaterThan(visible.opacity, 0);
+  XCTAssertEqual([host hitTest:CGPointMake(70, 70) withEvent:nil], child);
+  XCTAssertLessThan(visible.opacity, 1);
+  [host smoothClipApplyPresentation:visible];
+  const auto frozen = [host smoothClipCurrentPresentation];
+  XCTAssertEqualWithAccuracy(frozen.rotation, visible.rotation, 1e-9);
+  XCTAssertEqualWithAccuracy(frozen.opacity, visible.opacity, 1e-6);
+  window.hidden = YES;
+}
+
+- (void)testRenderedRotatedFadeKeepsOverlappingChildrenInOneGroup {
+  UIWindow *window = TestWindow();
+  SmoothClipView *host = DisplayableView(window, CGRectMake(0, 0, 100, 100));
+  UIView *content = [host valueForKey:@"contentContainer"];
+  UIView *red = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 100, 100)];
+  red.backgroundColor = UIColor.redColor;
+  UIView *blue = [[UIView alloc] initWithFrame:CGRectMake(40, 0, 60, 100)];
+  blue.backgroundColor = UIColor.blueColor;
+  [content addSubview:red];
+  [content addSubview:blue];
+  auto frame = Presentation(20, 40, 60, 20, 0);
+  frame.rotation = M_PI_2;
+  frame.opacity = 0.5;
+  [host smoothClipApplyPresentation:frame];
+  uint8_t pixels[100 * 100 * 4] = {};
+  CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+  CGContextRef context = CGBitmapContextCreate(pixels, 100, 100, 8, 400, space,
+      kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+  CGContextTranslateCTM(context, 0, 100);
+  CGContextScaleCTM(context, 1, -1);
+  [host.layer renderInContext:context];
+  XCTAssertEqual(pixels[(50 * 100 + 25) * 4 + 3], 0);
+  XCTAssertEqualWithAccuracy(pixels[(25 * 100 + 50) * 4 + 3], 128, 1);
+  XCTAssertEqualWithAccuracy(pixels[(60 * 100 + 50) * 4 + 3], 128, 1);
+  CGImageRef image = CGBitmapContextCreateImage(context);
+  XCTAttachment *attachment = [XCTAttachment attachmentWithImage:[UIImage imageWithCGImage:image]];
+  attachment.name = @"Rotated group opacity";
+  attachment.lifetime = XCTAttachmentLifetimeKeepAlways;
+  [self addAttachment:attachment];
+  CGImageRelease(image);
+  CGContextRelease(context);
+  CGColorSpaceRelease(space);
 }
 
 @end

@@ -160,7 +160,9 @@ class SmoothClipTurboModule final
       double shadowOffsetX,
       double shadowOffsetY,
       double shadowBlurRadius,
-      double shadowSpreadDistance);
+      double shadowSpreadDistance,
+      double rotation,
+      double opacity);
   jsi::Array beginInteraction(jsi::Runtime &runtime, double driverId);
   jsi::Array snapshotCurrent(jsi::Runtime &runtime, double driverId);
 
