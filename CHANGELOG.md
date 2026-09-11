@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.4.4](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.4.4) — 2026-09-11
+
+- Allow the Expo 56 runtime baseline (React Native 0.85.3, Reanimated 4.3.1, Worklets 0.8.3).
+
 ## [0.4.3](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.4.3) — 2026-09-11
 
 ### Rotate and fade the whole clip
