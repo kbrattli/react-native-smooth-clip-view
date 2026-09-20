@@ -251,25 +251,52 @@ class SmoothClipViewRobolectricTest {
     }
 
     @Test
-    fun continuousCurveUsesPathHitTestingInsteadOfCircularCorners() {
+    fun continuousCornerKeepsTheCircularApex() {
+        setContinuousPresentationPx(100f, 20f)
+
+        // The apex sits on the radius-20 circle, at (94.14, 5.86). A curve
+        // pulled towards the corner point would still contain (95, 5).
+        assertFalse(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 95f, 5f)))
+        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 93.5f, 6.5f)))
+    }
+
+    @Test
+    fun continuousCornerLeavesTheEdgeBeforeACircularOne() {
+        setContinuousPresentationPx(1000f, 200f)
+
+        // The shoulder starts at 1.6 * radius = 320 from the corner. Where a
+        // circular corner would only begin (x = 800) it is already ~2 px in.
+        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 670f, 0.5f)))
+        assertFalse(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 800f, 1f)))
+        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 800f, 3f)))
+    }
+
+    @Test
+    fun continuousCornerWithoutShoulderRoomIsCircular() {
+        setContinuousPresentationPx(100f, 50f)
+
+        // No edge is left for a shoulder, so smoothing falls to zero: a circle
+        // of radius 50 about (50, 50) passes between these two points.
+        assertFalse(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 14f, 14f)))
+        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 16f, 16f)))
+    }
+
+    @Test
+    fun continuousCornersShareAnEdgeWithoutOverlapping() {
         view.setClipPresentationPx(
-            0f,
-            0f,
-            100f,
-            100f,
-            20f,
-            20f,
-            20f,
-            20f,
+            0f, 0f, 100f, 100f,
+            60f, 40f, 0f, 0f,
             CLIP_CURVE_CONTINUOUS,
-            0f,
-            0f,
-            1f,
+            0f, 0f, 1f,
         )
 
-        // This point is outside a radius-20 quarter circle but inside the
-        // library's continuous cubic, whose controls meet at the corner.
-        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 95f, 5f)))
+        // 1.6 * (60 + 40) exceeds the top edge, so both shoulders are clamped
+        // to their share of it. The square bottom corners stay plain vertices.
+        assertEquals(RectF(0f, 0f, 100f, 100f), clipBounds())
+        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 60f, 0.5f)))
+        assertFalse(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 2f, 2f)))
+        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 99f, 99f)))
+        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 1f, 99f)))
     }
 
     @Test
@@ -403,6 +430,17 @@ class SmoothClipViewRobolectricTest {
 
     private fun event(action: Int, x: Float, y: Float): MotionEvent =
         MotionEvent.obtain(10L, 20L, action, x, y, 0)
+
+    private fun setContinuousPresentationPx(size: Float, radius: Float) {
+        view.layout(0, 0, size.toInt(), size.toInt())
+        view.contentContainer.getChildAt(0).layout(0, 0, size.toInt(), size.toInt())
+        view.setClipPresentationPx(
+            0f, 0f, size, size,
+            radius, radius, radius, radius,
+            CLIP_CURVE_CONTINUOUS,
+            0f, 0f, 1f,
+        )
+    }
 
     private fun setUniformPresentationPx(
         target: SmoothClipView,

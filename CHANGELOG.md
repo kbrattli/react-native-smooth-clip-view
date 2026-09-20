@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Draw `continuous` corners on Android as a Figma smoothed corner (smoothing
+  0.6) instead of a single cubic pulled towards the corner point. The apex now
+  matches a circular corner of the same radius and the shoulders ease in from
+  1.6 × the radius, so a radius reads the same as on iOS and as
+  `react-native-fast-squircle` at `cornerSmoothing={0.6}`. Clip, shadow, and hit
+  testing share the path. The per-frame rebuild still allocates nothing and
+  does no trigonometry unless a shoulder has to be shortened to fit.
+  Existing Android `continuous` clips become visibly rounder at the same radius.
+
 ## [0.4.5](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.4.5) — 2026-09-20
 
 - Run native `animateTo` for uniform `continuous` clips. The autonomous gate now

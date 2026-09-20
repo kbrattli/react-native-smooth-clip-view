@@ -214,6 +214,11 @@ APIs share validation, run ownership, and completion behavior.
   reject the complete presentation. Spring opacity is clamped for rendering
   without clamping its internal spring state.
 - Circular and continuous curves and independent corner radii are supported.
+- `continuous` is the platform squircle: `CALayer.cornerCurve` on iOS for
+  uniform radii, and a Figma smoothed corner at smoothing 0.6 on Android (the
+  shape `react-native-fast-squircle` draws at `cornerSmoothing={0.6}`). The apex
+  matches a circular corner of the same radius; the shoulders start 1.6 × the
+  radius from the corner. The two platforms are close, not pixel-identical.
 - Native `animateTo` runs need uniform corner radii and one curve for the whole
   run, so a uniform `continuous` clip animates natively. Unequal radii or a
   curve change are static-only: set them with `setFrame`; `animateTo` returns
