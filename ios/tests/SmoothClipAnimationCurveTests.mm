@@ -203,21 +203,36 @@ Presentation presentationWithScale(double scale) {
       presentationWithScale(1), presentationWithScale(0.2), spring, 0));
 }
 
-- (void)testAutonomousGeometryIsLimitedToUniformCircularCorners {
+- (void)testAutonomousGeometryNeedsUniformRadiiAndOneCurveFamily {
   Presentation uniform{{0, 0, 100, 100, 12}, 0, 0, 1};
   uniform.clip.topLeftRadius = 12;
   uniform.clip.topRightRadius = 12;
   uniform.clip.bottomRightRadius = 12;
   uniform.clip.bottomLeftRadius = 12;
-  XCTAssertTrue(smoothclip::isAutonomousUniformCircular(uniform));
+  Presentation grown = uniform;
+  grown.clip.width = 200;
+  grown.clip.radius = 24;
+  grown.clip.topLeftRadius = 24;
+  grown.clip.topRightRadius = 24;
+  grown.clip.bottomRightRadius = 24;
+  grown.clip.bottomLeftRadius = 24;
+  XCTAssertTrue(smoothclip::isAutonomousUniformPair(uniform, grown));
 
-  Presentation unequal = uniform;
-  unequal.clip.topLeftRadius = 24;
-  XCTAssertFalse(smoothclip::isAutonomousUniformCircular(unequal));
+  Presentation unequal = grown;
+  unequal.clip.topLeftRadius = 6;
+  XCTAssertFalse(smoothclip::isAutonomousUniformPair(uniform, unequal));
+  XCTAssertFalse(smoothclip::isAutonomousUniformPair(unequal, uniform));
 
+  // Uniform continuous corners animate as a scalar radius under a constant
+  // cornerCurve; only a curve change needs path interpolation.
   Presentation continuous = uniform;
   continuous.clip.curve = smoothclip::ClipCurve::Continuous;
-  XCTAssertFalse(smoothclip::isAutonomousUniformCircular(continuous));
+  Presentation grownContinuous = grown;
+  grownContinuous.clip.curve = smoothclip::ClipCurve::Continuous;
+  XCTAssertTrue(
+      smoothclip::isAutonomousUniformPair(continuous, grownContinuous));
+  XCTAssertFalse(smoothclip::isAutonomousUniformPair(uniform, grownContinuous));
+  XCTAssertFalse(smoothclip::isAutonomousUniformPair(continuous, grown));
 }
 
 #pragma mark - Shadow endpoint normalization

@@ -1235,8 +1235,7 @@ int32_t startGroupCommon(
         : visiblePresentation(entry.driverId, iterator->second);
     if (!isFinitePresentation(resolvedStart) ||
         !isFinitePresentation(entry.target) ||
-        !isAutonomousUniformCircular(resolvedStart) ||
-        !isAutonomousUniformCircular(entry.target)) {
+        !isAutonomousUniformPair(resolvedStart, entry.target)) {
       return 0;
     }
     if (kind == AnimationKind::Spring) {

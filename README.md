@@ -214,6 +214,10 @@ APIs share validation, run ownership, and completion behavior.
   reject the complete presentation. Spring opacity is clamped for rendering
   without clamping its internal spring state.
 - Circular and continuous curves and independent corner radii are supported.
+- Native `animateTo` runs need uniform corner radii and one curve for the whole
+  run, so a uniform `continuous` clip animates natively. Unequal radii or a
+  curve change are static-only: set them with `setFrame`; `animateTo` returns
+  `null`.
 - One outset `boxShadow` is supported. It escapes the aperture but not the host.
 - A fully off-host aperture is not touchable, even when only its shadow overlaps.
 - Descendant accessibility is hidden during autonomous native motion and restored
