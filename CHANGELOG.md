@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.4.5](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.4.5) — 2026-09-20
 
 - Run native `animateTo` for uniform `continuous` clips. The autonomous gate now
   requires uniform corner radii and an unchanged curve instead of circular
