@@ -2,8 +2,11 @@ package com.smoothclipview
 
 import android.graphics.Path
 import android.view.View
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sin
+import kotlin.math.tan
 
 internal const val CLIP_CURVE_CIRCULAR = 0
 internal const val CLIP_CURVE_CONTINUOUS = 1
@@ -119,12 +122,40 @@ internal inline fun canonicalizeClipGeometryPx(
 }
 
 /**
- * Emits one fixed-topology rounded rectangle for both curve families.
- * Circular uses the standard quarter-circle cubic coefficient; continuous
- * keeps both control points at the rectangle corner (coefficient 1), yielding
- * zero endpoint curvature and a visibly smoother shoulder. "Continuous" is a
- * library-defined cross-platform curve, not a claim of pixel identity with
- * Apple's private continuous-corner implementation.
+ * Figma corner smoothing used by the continuous curve. 0.6 is the value Figma
+ * tuned against iOS continuous corners, and it is fixed so that every corner
+ * parameter below is a compile-time constant.
+ */
+private const val CONTINUOUS_SMOOTHING = 0.6f
+
+// Unit-radius Figma parameters at CONTINUOUS_SMOOTHING. They are linear in the
+// radius while the shoulder fits its budget, so the per-frame rebuild does no
+// trigonometry. Derivation, with arc = 90deg * (1 - s) and beta = 45deg * s:
+//   ARC_CHORD = sqrt(2) * sin(arc / 2)      axis distance covered by the arc
+//   C = tan(beta / 2) * cos(beta),  D = tan(beta / 2) * sin(beta)
+//   B = (1 + s - ARC_CHORD - C - D) / 3,    A = 2 * B
+//   ARC_HANDLE = 4/3 * tan(arc / 4)         cubic handle of the circular arc
+private const val CONTINUOUS_A = 0.5600525f
+private const val CONTINUOUS_B = 0.28002625f
+private const val CONTINUOUS_C = 0.21391174f
+private const val CONTINUOUS_D = 0.10899348f
+private const val CONTINUOUS_ARC_CHORD = 0.43701602f
+private const val CONTINUOUS_ARC_HANDLE = 0.21117925f
+private const val CONTINUOUS_COS_BETA = 0.8910065f
+private const val CONTINUOUS_SIN_BETA = 0.4539905f
+private const val QUARTER_PI = 0.7853982f
+private const val SQRT_2 = 1.4142135f
+
+/**
+ * Emits one rounded rectangle. Circular uses the standard quarter-circle
+ * cubic per corner. Continuous is the Figma smoothed corner at smoothing 0.6:
+ * a cubic shoulder that leaves the edge at 1.6 * radius, the real radius-R
+ * circle through the apex, and a mirrored shoulder. The apex therefore sits
+ * where a circular corner's does; only the shoulders are longer and eased. It
+ * is the same family as Apple's continuous corner, not pixel-identical to it.
+ *
+ * This runs every animation frame: it allocates nothing, and a continuous
+ * corner is always three cubics (the arc included), whatever its radius.
  */
 internal fun appendRoundedRectPath(
     path: Path,
@@ -138,11 +169,38 @@ internal fun appendRoundedRectPath(
     bottomLeftRadius: Float,
     curveCode: Int,
 ) {
-    val coefficient = if (curveCode == CLIP_CURVE_CONTINUOUS) {
-        1f
-    } else {
-        0.5522848f
+    if (curveCode == CLIP_CURVE_CONTINUOUS) {
+        val width = right - left
+        val height = bottom - top
+        appendContinuousCorner(
+            path, true, right, top, 1f, 0f, 0f, 1f, topRightRadius,
+            continuousBudget(
+                topRightRadius, topLeftRadius, width, bottomRightRadius, height,
+            ),
+        )
+        appendContinuousCorner(
+            path, false, right, bottom, 0f, 1f, -1f, 0f, bottomRightRadius,
+            continuousBudget(
+                bottomRightRadius, topRightRadius, height, bottomLeftRadius, width,
+            ),
+        )
+        appendContinuousCorner(
+            path, false, left, bottom, -1f, 0f, 0f, -1f, bottomLeftRadius,
+            continuousBudget(
+                bottomLeftRadius, bottomRightRadius, width, topLeftRadius, height,
+            ),
+        )
+        appendContinuousCorner(
+            path, false, left, top, 0f, -1f, 1f, 0f, topLeftRadius,
+            continuousBudget(
+                topLeftRadius, bottomLeftRadius, height, topRightRadius, width,
+            ),
+        )
+        path.close()
+        return
     }
+
+    val coefficient = 0.5522848f
 
     path.moveTo(left + topLeftRadius, top)
     path.lineTo(right - topRightRadius, top)
@@ -182,6 +240,129 @@ internal fun appendRoundedRectPath(
         top,
     )
     path.close()
+}
+
+/**
+ * Edge length one corner's shoulder may use. Each side is shared with the
+ * neighbouring corner in proportion to the radii, so two shoulders never
+ * overlap. Uniform radii give min(width, height) / 2, Figma's own budget.
+ */
+private fun continuousBudget(
+    radius: Float,
+    incomingNeighbourRadius: Float,
+    incomingSide: Float,
+    outgoingNeighbourRadius: Float,
+    outgoingSide: Float,
+): Float {
+    val incoming = if (incomingNeighbourRadius > 0f) {
+        incomingSide * radius / (radius + incomingNeighbourRadius)
+    } else {
+        incomingSide
+    }
+    val outgoing = if (outgoingNeighbourRadius > 0f) {
+        outgoingSide * radius / (radius + outgoingNeighbourRadius)
+    } else {
+        outgoingSide
+    }
+    return min(incoming, outgoing)
+}
+
+/**
+ * Appends one continuous corner, travelling clockwise. (ux, uy) is the unit
+ * direction of the edge running into the corner point and (vx, vy) of the edge
+ * leaving it, so one body serves all four orientations.
+ */
+private fun appendContinuousCorner(
+    path: Path,
+    isFirst: Boolean,
+    cornerX: Float,
+    cornerY: Float,
+    ux: Float,
+    uy: Float,
+    vx: Float,
+    vy: Float,
+    radius: Float,
+    budget: Float,
+) {
+    if (radius <= 0f) {
+        // A plain vertex: an all-square clip stays a rectangle the renderer
+        // can recognise, instead of a path of degenerate curves.
+        if (isFirst) path.moveTo(cornerX, cornerY) else path.lineTo(cornerX, cornerY)
+        return
+    }
+
+    val shoulder: Float
+    val a: Float
+    val b: Float
+    val c: Float
+    val d: Float
+    val arcChord: Float
+    val arcHandle: Float
+    val cosBeta: Float
+    val sinBeta: Float
+    if ((1f + CONTINUOUS_SMOOTHING) * radius <= budget) {
+        shoulder = (1f + CONTINUOUS_SMOOTHING) * radius
+        a = CONTINUOUS_A * radius
+        b = CONTINUOUS_B * radius
+        c = CONTINUOUS_C * radius
+        d = CONTINUOUS_D * radius
+        arcChord = CONTINUOUS_ARC_CHORD * radius
+        arcHandle = CONTINUOUS_ARC_HANDLE * radius
+        cosBeta = CONTINUOUS_COS_BETA
+        sinBeta = CONTINUOUS_SIN_BETA
+    } else {
+        // The shoulder does not fit (near-pill shapes). Figma reduces the
+        // smoothing until it does; at zero this is an exact circular corner.
+        shoulder = max(budget, radius)
+        val smoothing = (shoulder / radius - 1f)
+            .coerceIn(0f, CONTINUOUS_SMOOTHING)
+        val beta = QUARTER_PI * smoothing
+        val halfArc = QUARTER_PI * (1f - smoothing)
+        val tanHalfBeta = tan(beta / 2f)
+        cosBeta = cos(beta)
+        sinBeta = sin(beta)
+        c = radius * tanHalfBeta * cosBeta
+        d = radius * tanHalfBeta * sinBeta
+        arcChord = radius * SQRT_2 * sin(halfArc)
+        arcHandle = radius * (4f / 3f) * tan(halfArc / 2f)
+        b = (shoulder - arcChord - c - d) / 3f
+        a = 2f * b
+    }
+
+    val startX = cornerX - ux * shoulder
+    val startY = cornerY - uy * shoulder
+    if (isFirst) path.moveTo(startX, startY) else path.lineTo(startX, startY)
+
+    val arcStartX = startX + ux * (a + b + c) + vx * d
+    val arcStartY = startY + uy * (a + b + c) + vy * d
+    path.cubicTo(
+        startX + ux * a,
+        startY + uy * a,
+        startX + ux * (a + b),
+        startY + uy * (a + b),
+        arcStartX,
+        arcStartY,
+    )
+
+    val arcEndX = arcStartX + (ux + vx) * arcChord
+    val arcEndY = arcStartY + (uy + vy) * arcChord
+    path.cubicTo(
+        arcStartX + (ux * cosBeta + vx * sinBeta) * arcHandle,
+        arcStartY + (uy * cosBeta + vy * sinBeta) * arcHandle,
+        arcEndX - (ux * sinBeta + vx * cosBeta) * arcHandle,
+        arcEndY - (uy * sinBeta + vy * cosBeta) * arcHandle,
+        arcEndX,
+        arcEndY,
+    )
+
+    path.cubicTo(
+        arcEndX + ux * d + vx * c,
+        arcEndY + uy * d + vy * c,
+        arcEndX + ux * d + vx * (b + c),
+        arcEndY + uy * d + vy * (b + c),
+        cornerX + vx * shoulder,
+        cornerY + vy * shoulder,
+    )
 }
 
 /**

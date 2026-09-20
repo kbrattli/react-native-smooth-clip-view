@@ -149,13 +149,14 @@ NS_INLINE CGPathRef SmoothClipCreateRoundedRectPath(
   const CGFloat minY = CGRectGetMinY(rect);
   const CGFloat maxX = CGRectGetMaxX(rect);
   const CGFloat maxY = CGRectGetMaxY(rect);
-  // Circular is the exact cubic-circle coefficient. The portable continuous
-  // fallback uses kappa=1 so each cubic joins its straight edges with zero
-  // curvature, matching the portable Android path. Hit testing derives
-  // from this rendered path rather than maintaining a second curve model.
-  // Uniform
-  // continuous shapes use CALayer.cornerCurve for Apple's platform-native
-  // compositor shape and are intentionally not pixel-identical cross-platform.
+  // Circular is the exact cubic-circle coefficient. This continuous fallback
+  // uses kappa=1 so each cubic joins its straight edges with zero curvature
+  // in one segment, which keeps the topology Core Animation interpolates.
+  // It only feeds the unequal-radii mask and the shadow outline: uniform
+  // continuous shapes use CALayer.cornerCurve, Apple's platform-native
+  // compositor shape. Android draws continuous as a Figma smoothed corner
+  // instead, so this path does not mirror it. Hit testing derives from this
+  // rendered path rather than maintaining a second curve model.
   const CGFloat controlFactor =
       curve == SmoothClipCornerCurveContinuous
       ? 1.0
