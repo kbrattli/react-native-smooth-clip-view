@@ -238,14 +238,27 @@ inline bool hasVisibleShadow(const Presentation &presentation) {
       presentation.clip.width > 0 && presentation.clip.height > 0;
 }
 
-inline bool isAutonomousUniformCircular(
-    const Presentation &presentation) {
+inline bool hasUniformRadii(const Presentation &presentation) {
   const Geometry &clip = presentation.clip;
-  return clip.curve == ClipCurve::Circular && radiiAreUniform(
+  return radiiAreUniform(
       resolvedRadius(clip.topLeftRadius, clip.radius),
       resolvedRadius(clip.topRightRadius, clip.radius),
       resolvedRadius(clip.bottomRightRadius, clip.radius),
       resolvedRadius(clip.bottomLeftRadius, clip.radius));
+}
+
+/**
+ * An autonomous run may only interpolate scalar channels. Uniform radii with
+ * one curve family for the whole interval qualify: iOS animates
+ * CALayer.cornerRadius under a constant cornerCurve and Android rebuilds its
+ * fixed-topology path from the blended radius. Unequal radii or a curve change
+ * would need complex-path interpolation, which stays gated off.
+ */
+inline bool isAutonomousUniformPair(
+    const Presentation &from,
+    const Presentation &to) {
+  return from.clip.curve == to.clip.curve && hasUniformRadii(from) &&
+      hasUniformRadii(to);
 }
 
 /**

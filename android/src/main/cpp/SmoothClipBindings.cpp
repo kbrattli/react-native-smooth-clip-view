@@ -386,8 +386,10 @@ void installBindings(
       runtime, bindings, "supportsAutonomousComplexPathAnimation", 0,
       [](Runtime &, const Value &, const Value *, size_t) -> Value {
         // Static complex clipping is available. Autonomous complex-path
-        // animation is deliberately gated off until physical-device sampling
-        // proves the release tolerance and frame-time requirements.
+        // animation (unequal radii or a curve change; uniform continuous
+        // corners are scalar and already run natively) is deliberately gated
+        // off until physical-device sampling proves the release tolerance and
+        // frame-time requirements.
         return Value(false);
       });
 

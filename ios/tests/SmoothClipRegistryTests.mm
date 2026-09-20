@@ -864,6 +864,64 @@ static UIWindow *TestWindow(void) {
   smoothclip::destroyDriver(driverId);
 }
 
+- (void)testUniformContinuousGroupAnimatesCornerRadiusWithoutMask {
+  constexpr uint64_t driverId = 99075;
+  UIWindow *window = TestWindow();
+  SmoothClipView *host =
+      DisplayableView(window, CGRectMake(0, 0, 200, 200));
+  [host setValue:@(driverId) forKey:@"driverId"];
+  const smoothclip::Presentation initial = PresentationValue(
+      0, 0, 50, 50, 12, 12, 12, 12,
+      smoothclip::ClipCurve::Continuous, 0, 0, 1);
+  const smoothclip::Presentation target = PresentationValue(
+      20, 30, 140, 100, 20, 20, 20, 20,
+      smoothclip::ClipCurve::Continuous, 8, -6, 0.7);
+  smoothclip::registerView(driverId, host, initial);
+
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7090, {GroupEntry(driverId, true, initial, target)}, timing);
+  XCTAssertGreaterThan(groupId, 0);
+
+  CALayer *layer = ((UIView *)[host valueForKey:@"clipContainer"]).layer;
+  XCTAssertNil(layer.mask);
+  XCTAssertEqualObjects(layer.cornerCurve, kCACornerCurveContinuous);
+  XCTAssertEqualWithAccuracy(layer.cornerRadius, 20, 1e-9);
+  CAAnimationGroup *geometry = (CAAnimationGroup *)[layer
+      animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(geometry);
+  BOOL animatesCornerRadius = NO;
+  for (CAAnimation *animation in geometry.animations) {
+    if ([animation isKindOfClass:[CAPropertyAnimation class]] &&
+        [((CAPropertyAnimation *)animation).keyPath
+            isEqualToString:@"cornerRadius"]) {
+      animatesCornerRadius = YES;
+    }
+  }
+  XCTAssertTrue(animatesCornerRadius);
+
+  // An interruption snapshot keeps the curve, so the next run stays eligible.
+  const smoothclip::Presentation frozen = smoothclip::beginInteraction(driverId);
+  XCTAssertEqual(frozen.clip.curve, smoothclip::ClipCurve::Continuous);
+  XCTAssertGreaterThan(
+      smoothclip::animateTimingGroup(
+          7091, {GroupEntry(driverId, false, initial, target)}, timing),
+      0);
+
+  // A curve change still needs path interpolation and rejects.
+  const smoothclip::Presentation circularTarget = PresentationValue(
+      20, 30, 140, 100, 20, 20, 20, 20,
+      smoothclip::ClipCurve::Circular, 8, -6, 0.7);
+  XCTAssertEqual(
+      smoothclip::animateTimingGroup(
+          7092, {GroupEntry(driverId, true, initial, circularTarget)}, timing),
+      0);
+
+  smoothclip::unregisterView(driverId, host);
+  [host setValue:@0 forKey:@"driverId"];
+  smoothclip::destroyDriver(driverId);
+}
+
 - (void)testTimingSnapshotDoesNotCancelMaskAndScaleAnimation {
   constexpr uint64_t driverId = 9072;
   UIWindow *window = TestWindow();

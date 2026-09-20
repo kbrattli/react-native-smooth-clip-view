@@ -1275,8 +1275,7 @@ bool preflightGroupEntries(
         : canonicalVisiblePresentation(iterator->second);
     if (!isFinitePresentation(resolvedStart) ||
         !isFinitePresentation(entry.target) ||
-        !isAutonomousUniformCircular(resolvedStart) ||
-        !isAutonomousUniformCircular(entry.target)) {
+        !isAutonomousUniformPair(resolvedStart, entry.target)) {
       return false;
     }
     if (kind == AnimationKind::Spring) {
