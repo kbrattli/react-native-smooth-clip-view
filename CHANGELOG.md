@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.4.6](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.4.6) — 2026-09-20
 
 - Draw `continuous` corners on Android as a Figma smoothed corner (smoothing
   0.6) instead of a single cubic pulled towards the corner point. The apex now
