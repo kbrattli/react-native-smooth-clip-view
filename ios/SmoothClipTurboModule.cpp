@@ -123,10 +123,14 @@ bool presentationAt(
     size_t offset,
     smoothclip::Presentation &result) {
   double values[kPresentationStride];
+  // One length read for the whole packet: `size` is a JSI call of its own,
+  // and this runs per clip per drag frame.
+  if (offset + kPresentationStride > array.size(runtime)) return false;
   for (size_t index = 0; index < kPresentationStride; index += 1) {
-    if (!numberAt(runtime, array, offset + index, values[index])) {
-      return false;
-    }
+    const jsi::Value value = array.getValueAtIndex(runtime, offset + index);
+    if (!value.isNumber()) return false;
+    values[index] = value.asNumber();
+    if (!std::isfinite(values[index])) return false;
   }
   const int32_t curveCode = static_cast<int32_t>(values[8]);
   if (values[8] != curveCode || !validCurveCode(curveCode) ||

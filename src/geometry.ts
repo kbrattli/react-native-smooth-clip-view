@@ -340,23 +340,39 @@ export function canonicalizeClipGeometry(
   );
 }
 
+/**
+ * Validates and canonicalizes in one pass: this runs on the UI runtime for
+ * every `setFrame` of a drag, so the geometry is checked once, the shadow
+ * colour is parsed once and the rotation is parsed once. The result is null
+ * exactly when `isFiniteClipPresentation` is false.
+ */
 export function canonicalizeClipPresentation(
   presentation: SmoothClipPresentation
 ): CanonicalSmoothClipPresentation | null {
   'worklet';
-  if (!isFiniteClipPresentation(presentation)) return null;
-
   const clip = canonicalizeClipGeometry(presentation.clip);
   if (clip === null) return null;
   const boxShadow = canonicalizeClipBoxShadow(presentation.boxShadow);
   if (boxShadow === null) return null;
+  const contentScale = resolvedContentScale(presentation);
+  const rotation = rotationRadians(presentation.rotation);
+  if (
+    !Number.isFinite(presentation.contentTranslateX) ||
+    !Number.isFinite(presentation.contentTranslateY) ||
+    !Number.isFinite(contentScale) ||
+    contentScale <= 0 ||
+    !Number.isFinite(rotation) ||
+    !Number.isFinite(presentation.opacity ?? 1)
+  ) {
+    return null;
+  }
 
   return {
     clip,
     contentTranslateX: presentation.contentTranslateX,
     contentTranslateY: presentation.contentTranslateY,
-    contentScale: resolvedContentScale(presentation),
-    rotation: `${rotationRadians(presentation.rotation)}rad`,
+    contentScale,
+    rotation: `${rotation}rad`,
     opacity: resolvedOpacity(presentation),
     ...(boxShadow === undefined ? {} : { boxShadow }),
   };

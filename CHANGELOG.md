@@ -39,6 +39,10 @@
   group held pending longer (a host that could not display, the app inactive)
   or a stamp from a rescaled clock starts now instead of beginning fully
   elapsed.
+- `canonicalizeClipPresentation` validates and canonicalizes in one pass: the
+  shadow colour, the geometry and the rotation were each parsed twice per
+  `setFrame`. The iOS packet reader reads the array length once per
+  presentation instead of once per value.
 
 ## [0.4.6](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.4.6) — 2026-09-20
 
