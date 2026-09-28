@@ -3144,7 +3144,9 @@ static UIWindow *TestWindow(void) {
       smoothclip::ClipCurve::Continuous, 0, 0, 1, shadow)];
   XCTAssertNil(shadowLayer.contents);
   XCTAssertTrue(shadowLayer.shadowPath != NULL);
-  [host smoothClipApplyPresentation:full];
+  // (`rounder`, not `full`: the blur-path step below applies `full` and must
+  // see a change, an identical presentation is a no-op write.)
+  [host smoothClipApplyPresentation:rounder];
   XCTAssertNotNil(shadowLayer.contents);
   XCTAssertTrue(shadowLayer.shadowPath == NULL);
 
