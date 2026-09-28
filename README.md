@@ -234,7 +234,9 @@ APIs share validation, run ownership, and completion behavior.
   and a run's resting target (at install, so the run ends exact). Every other
   step bakes off the frame while the nearest cached step stands in, so a drag
   that crosses radius steps never blocks a frame. It needs uniform corner radii
-  (unequal radii keep the blur path for that frame or run); the tile corner
+  and a shape at least 2 × (1.5 × blur + radius) on each side, room for two
+  corner slices (unequal radii or a smaller shape keep the blur path for that
+  frame or run); the tile corner
   rounds up to the next step, so a shadow corner may be up to 4 pt rounder
   than its clip, which no blur the tile was made for resolves; a run that
   changes radius, blur or colour swaps tiles in steps along the way. The baked
@@ -250,7 +252,9 @@ APIs share validation, run ownership, and completion behavior.
   between. The translation goes on an inner content layer; the view's own
   `transform` style stays React Native's. A backdrop that binds while a run
   is in flight adopts the driver's current value and follows from the next
-  run.
+  run. While no backdrop is bound the channel is not interpolated: a snapshot
+  or freeze taken mid-run reports the run's target translation, which is what
+  a backdrop binding at that moment adopts.
 - A fully off-host aperture is not touchable, even when only its shadow overlaps.
 - Descendant accessibility is hidden during autonomous native motion and restored
   from aperture/host intersection at the endpoint.

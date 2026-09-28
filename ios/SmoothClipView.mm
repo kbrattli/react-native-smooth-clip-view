@@ -925,11 +925,6 @@ static CGRect SmoothClipBakedShadowLayerRect(
   return _shadowLayer;
 }
 
-- (BOOL)usesBakedShadowForGeometry:(SmoothClipCanonicalGeometry)geometry {
-  // Unequal radii have no single tile; they keep the blur path.
-  return _bakedShadows && SmoothClipCornerRadiiAreUniform(geometry.radii);
-}
-
 - (CGFloat)bakedShadowScale {
   const CGFloat scale = self.traitCollection.displayScale;
   return scale > 0 ? scale : UIScreen.mainScreen.scale;
@@ -942,13 +937,31 @@ static CGRect SmoothClipBakedShadowLayerRect(
       geometry.radii.topLeft, shadow.spreadDistance));
 }
 
+- (BOOL)usesBakedShadowForGeometry:(SmoothClipCanonicalGeometry)geometry
+                            shadow:(const smoothclip::Shadow &)shadow {
+  // Unequal radii have no single tile; they keep the blur path. So does a
+  // shape too small for two corner slices on a side, 2 x (margin + radius):
+  // the compositor would squash the slices rather than overlap the blur
+  // tails the way the true shadow does.
+  if (!_bakedShadows || !SmoothClipCornerRadiiAreUniform(geometry.radii)) {
+    return NO;
+  }
+  const CGFloat minimumSide = 2 *
+      (SmoothClipBakedShadowMargin(shadow) +
+       [self bakedShadowTileRadiusForGeometry:geometry shadow:shadow]);
+  const CGFloat spread = 2 * shadow.spreadDistance;
+  return CGRectGetWidth(geometry.rect) + spread >= minimumSide &&
+      CGRectGetHeight(geometry.rect) + spread >= minimumSide;
+}
+
 // A requested tile is cached: draw it, if the model still wants it and
 // nothing else owns the layer (a run in flight swaps tiles from its own
 // keyframes, and its completion writes the model again).
 - (void)shadowTileDidLand:(SmoothClipShadowTile *)tile {
   if (tile == nil || _activeAnimationId != 0 || !_hasShadowModel ||
       _shadowLayer == nil ||
-      ![self usesBakedShadowForGeometry:_shadowModelGeometry]) {
+      ![self usesBakedShadowForGeometry:_shadowModelGeometry
+                                 shadow:_shadowModel]) {
     return;
   }
   const CGFloat wanted = [self bakedShadowTileRadiusForGeometry:_shadowModelGeometry
@@ -1028,7 +1041,7 @@ static CGRect SmoothClipBakedShadowLayerRect(
                  geometry:(SmoothClipCanonicalGeometry)geometry {
   [self writeShadowModel:shadow
                 geometry:geometry
-                   baked:[self usesBakedShadowForGeometry:geometry]
+                   baked:[self usesBakedShadowForGeometry:geometry shadow:shadow]
              nearestTile:YES];
 }
 
@@ -1715,16 +1728,7 @@ static CGRect SmoothClipBakedShadowLayerRect(
   // Every key path shares one normalized trajectory. Derive the terminal
   // duration from the same relative-energy rule as Android/Reanimated instead
   // of asking each Core Animation property for an independent settle time.
-  smoothclip::ScalarSpringState state{0, velocity};
-  constexpr double step = 1.0 / 120.0;
-  double elapsed = 0;
-  while (elapsed < 10.0 &&
-         smoothclip::relativeSpringEnergy(state, _springAnimation) >
-             _springAnimation.energyThreshold) {
-    state = smoothclip::advanceScalarSpring(state, _springAnimation, step);
-    elapsed += step;
-  }
-  return elapsed;
+  return smoothclip::springSettleDuration(_springAnimation, velocity);
 }
 
 - (CASpringAnimation *)springAnimationForKeyPath:(NSString *)keyPath
@@ -1808,8 +1812,8 @@ static CGRect SmoothClipBakedShadowLayerRect(
   const BOOL bakedShadow =
       (SmoothBoxShadowVisible(fromGeometry, fromShadow) ||
        SmoothBoxShadowVisible(toGeometry, toShadow)) &&
-      [self usesBakedShadowForGeometry:fromGeometry] &&
-      [self usesBakedShadowForGeometry:toGeometry];
+      [self usesBakedShadowForGeometry:fromGeometry shadow:fromShadow] &&
+      [self usesBakedShadowForGeometry:toGeometry shadow:toShadow];
   // The target model layer is complete before any presentation animations are
   // attached. Core Animation may remove the terminal presentation animation
   // before its delegate runs, so correctness cannot depend on completion-time

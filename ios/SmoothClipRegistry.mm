@@ -420,8 +420,9 @@ void freezeBackdropsInto(const DriverState &state, Presentation &presentation) {
 }
 
 // Runs the pending animation's backdrop channel on every bound backdrop, on
-// the same epoch as the clip's group. A standalone spring that inherits its
-// velocity resolves it per clip host; the backdrop runs the plain spring.
+// the same epoch as the clip's group. An inherited spring velocity was
+// resolved once by the registry before dispatch (resolvedSpringVelocity), so
+// `active.spring` carries the same trajectory the clip host runs.
 void installBackdropAnimations(
     const DriverState &state,
     CFTimeInterval sharedBeginTime) {

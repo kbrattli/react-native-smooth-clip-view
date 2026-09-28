@@ -3136,6 +3136,18 @@ static UIWindow *TestWindow(void) {
   smoothclip::cancelAnimationGroup(
       groupId, smoothclip::GroupCancelBehavior::Finish);
 
+  // A shape with no room for two corner slices (2 x (24 + 20) = 88 pt on a
+  // side) keeps the blur path for that frame; a larger one takes the tile
+  // again.
+  [host smoothClipApplyPresentation:PresentationValue(
+      20, 250, 60, 60, 20, 20, 20, 20,
+      smoothclip::ClipCurve::Continuous, 0, 0, 1, shadow)];
+  XCTAssertNil(shadowLayer.contents);
+  XCTAssertTrue(shadowLayer.shadowPath != NULL);
+  [host smoothClipApplyPresentation:full];
+  XCTAssertNotNil(shadowLayer.contents);
+  XCTAssertTrue(shadowLayer.shadowPath == NULL);
+
   // Back to the blur path: the tile goes, the shadowPath returns.
   [host setValue:@NO forKey:@"bakedShadows"];
   [host smoothClipApplyPresentation:full];
@@ -3159,7 +3171,7 @@ static UIWindow *TestWindow(void) {
   // A colour no other test bakes, so this cache line starts cold.
   const smoothclip::Shadow shadow = BoxShadow(0.25, 0, 2, 16, 0, 0.2, 0, 0);
   const smoothclip::Presentation card = PresentationValue(
-      20, 250, 360, 100, 20, 20, 20, 20,
+      20, 100, 360, 200, 20, 20, 20, 20,
       smoothclip::ClipCurve::Continuous, 0, 0, 1, shadow);
   SmoothClipBakePendingShadowTilesForTesting();
   const NSUInteger bakedBefore = SmoothClipShadowTileBakeCountForTesting();
@@ -3174,7 +3186,7 @@ static UIWindow *TestWindow(void) {
   // A frame two steps rounder (a drag crossing steps): the cached tile
   // stands in and the exact one is requested, not baked inside the frame.
   const smoothclip::Presentation rounder = PresentationValue(
-      20, 250, 360, 100, 28, 28, 28, 28,
+      20, 100, 360, 200, 28, 28, 28, 28,
       smoothclip::ClipCurve::Continuous, 0, 0, 1, shadow);
   [host smoothClipApplyPresentation:rounder];
   XCTAssertEqual(SmoothClipShadowTileBakeCountForTesting(), bakedBefore + 1);
@@ -3219,6 +3231,22 @@ static UIWindow *TestWindow(void) {
   CALayer *content = ((UIView *)[backdrop valueForKey:@"content"]).layer;
   XCTAssertEqualWithAccuracy(content.transform.m41, -10, 1e-6);
   XCTAssertEqualWithAccuracy(content.transform.m42, 30, 1e-6);
+
+  // Fabric lays the view out after it set the props that bound it. A layout
+  // pass under a non-zero channel must leave the content centred in the
+  // view with the translation intact (a frame write would fold the
+  // translation into the position through the transform's inverse).
+  facebook::react::LayoutMetrics metrics;
+  metrics.frame = facebook::react::Rect{
+      facebook::react::Point{0, 0}, facebook::react::Size{400, 400}};
+  [backdrop updateLayoutMetrics:metrics
+               oldLayoutMetrics:facebook::react::LayoutMetrics{}];
+  XCTAssertEqualWithAccuracy(content.position.x, 200, 1e-6);
+  XCTAssertEqualWithAccuracy(content.position.y, 200, 1e-6);
+  XCTAssertEqualWithAccuracy(content.transform.m41, -10, 1e-6);
+  XCTAssertEqualWithAccuracy(content.transform.m42, 30, 1e-6);
+  XCTAssertEqualWithAccuracy(content.frame.origin.x, -10, 1e-6);
+  XCTAssertEqualWithAccuracy(content.frame.origin.y, 30, 1e-6);
 
   // A setFrame moves it in the same write as the clip.
   smoothclip::Presentation frame = initial;

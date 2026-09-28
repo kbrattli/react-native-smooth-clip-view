@@ -368,6 +368,27 @@ inline double relativeSpringEnergy(
   return currentEnergy / initialEnergy;
 }
 
+/**
+ * Seconds until the normalized spring trajectory started with `velocity`
+ * settles under the animation's relative-energy threshold, sampled at 120 Hz
+ * and capped at ten seconds. Every layer of a run (clip, content, shadow,
+ * backdrop) derives its Core Animation duration from this one rule, so they
+ * are removed in the same frame.
+ */
+inline double springSettleDuration(
+    const SpringAnimation &animation,
+    double velocity) {
+  ScalarSpringState state{0, velocity};
+  constexpr double step = 1.0 / 120.0;
+  double elapsed = 0;
+  while (elapsed < 10.0 &&
+         relativeSpringEnergy(state, animation) > animation.energyThreshold) {
+    state = advanceScalarSpring(state, animation, step);
+    elapsed += step;
+  }
+  return elapsed;
+}
+
 inline bool springScaleStaysPositive(
     const Presentation &start,
     const Presentation &target,

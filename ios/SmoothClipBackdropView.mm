@@ -84,7 +84,14 @@ static NSString *const kSmoothClipBackdropAnimationKey = @"smoothClip.backdrop";
 - (void)updateLayoutMetrics:(const LayoutMetrics &)layoutMetrics
            oldLayoutMetrics:(const LayoutMetrics &)oldLayoutMetrics {
   [super updateLayoutMetrics:layoutMetrics oldLayoutMetrics:oldLayoutMetrics];
-  _content.frame = self.bounds;
+  // Bounds and centre, never frame: the content layer carries the channel as
+  // a translation transform, and a frame write under a transform re-derives
+  // the position through the transform's inverse, folding the current
+  // translation into the position for good. Fabric sets props (and so the
+  // channel) before it lays the view out.
+  const CGRect bounds = self.bounds;
+  _content.bounds = bounds;
+  _content.center = CGPointMake(CGRectGetMidX(bounds), CGRectGetMidY(bounds));
 }
 
 - (void)updateProps:(const Props::Shared &)props
@@ -192,15 +199,8 @@ static NSString *const kSmoothClipBackdropAnimationKey = @"smoothClip.backdrop";
   if (self.window == nil) return NO;
   // The same normalized trajectory and settling rule as the clip host, so
   // both layers stop in the same frame.
-  smoothclip::ScalarSpringState state{0, spring.initialVelocity};
-  constexpr double step = 1.0 / 120.0;
-  double duration = 0;
-  while (duration < 10.0 &&
-         smoothclip::relativeSpringEnergy(state, spring) >
-             spring.energyThreshold) {
-    state = smoothclip::advanceScalarSpring(state, spring, step);
-    duration += step;
-  }
+  const double duration =
+      smoothclip::springSettleDuration(spring, spring.initialVelocity);
   const auto animation = [&](NSString *keyPath, double fromValue, double toValue) {
     CASpringAnimation *result = [CASpringAnimation animationWithKeyPath:keyPath];
     result.fromValue = @(fromValue);

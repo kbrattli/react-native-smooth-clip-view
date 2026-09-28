@@ -27,8 +27,9 @@
   Animation's own shadow path so it matches a `shadowPath` layer; Android
   bakes it with the same `BlurMaskFilter` as the blur path. Runs animate the
   tile layer's frame and opacity and swap tiles in steps where the radius,
-  blur or colour changes. Uniform radii only; unequal radii keep the blur
-  path. Default stays `"blur"`.
+  blur or colour changes. Uniform radii only, and a shape at least
+  2 × (1.5 × blur + radius) on a side; unequal radii or a smaller shape keep
+  the blur path. Default stays `"blur"`.
 - Android builds a uniform circular corner with `addRoundRect` in the shared
   path builder, so the shadow path (not only the clip) stays an rrect the
   renderer can clip and blur analytically. Paths are `rewind()` instead of
