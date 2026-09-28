@@ -444,25 +444,79 @@ static CGFloat SmoothClipBakedShadowMargin(const smoothclip::Shadow &shadow) {
 // process. Rendered through Core Animation's own shadow path so the tile is
 // the pure blurred shape the compositor draws for a `shadowPath` layer, with
 // nothing filled in on top of it; colour alpha is applied as layer opacity.
-static SmoothClipShadowTile *SmoothClipBakedShadowTile(
-    CGFloat radius,
-    SmoothClipCornerCurve curve,
-    const smoothclip::Shadow &shadow,
-    CGFloat scale) {
+static NSCache<NSString *, SmoothClipShadowTile *> *SmoothClipShadowTileCache(void) {
   static NSCache<NSString *, SmoothClipShadowTile *> *cache;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
     cache = [NSCache new];
     cache.countLimit = 24;
   });
-  const CGFloat tileRadius = SmoothClipBakedShadowTileRadius(radius);
-  const CGFloat margin = SmoothClipBakedShadowMargin(shadow);
-  NSString *key = [NSString stringWithFormat:@"%g|%d|%g|%g|%g|%g|%g",
+  return cache;
+}
+
+static NSString *SmoothClipShadowTileKey(
+    CGFloat tileRadius,
+    SmoothClipCornerCurve curve,
+    const smoothclip::Shadow &shadow,
+    CGFloat scale) {
+  return [NSString stringWithFormat:@"%g|%d|%g|%g|%g|%g|%g",
       tileRadius, (int)curve, MAX(0, shadow.blurRadius),
       smoothclip::clamp01(shadow.red), smoothclip::clamp01(shadow.green),
       smoothclip::clamp01(shadow.blue), scale];
-  SmoothClipShadowTile *tile = [cache objectForKey:key];
+}
+
+// The cached tile for this radius step, or nil. Never bakes.
+static SmoothClipShadowTile *SmoothClipCachedShadowTile(
+    CGFloat tileRadius,
+    SmoothClipCornerCurve curve,
+    const smoothclip::Shadow &shadow,
+    CGFloat scale) {
+  return [SmoothClipShadowTileCache()
+      objectForKey:SmoothClipShadowTileKey(tileRadius, curve, shadow, scale)];
+}
+
+// Radius steps searched on either side of a missing tile for one to show
+// while it bakes.
+static const int kSmoothClipShadowTileSearchSteps = 16;
+
+// The cached tile nearest to `tileRadius`: the exact one, else at each
+// distance the rounder neighbour before the tighter one (a tile corner
+// tighter than the clip corner over it reads as a dark sliver; a rounder one
+// only recedes under the clip). Never bakes.
+static SmoothClipShadowTile *SmoothClipNearestCachedShadowTile(
+    CGFloat tileRadius,
+    SmoothClipCornerCurve curve,
+    const smoothclip::Shadow &shadow,
+    CGFloat scale) {
+  for (int distance = 0; distance <= kSmoothClipShadowTileSearchSteps;
+       distance += 1) {
+    const CGFloat delta = distance * kSmoothClipShadowTileRadiusStep;
+    SmoothClipShadowTile *tile =
+        SmoothClipCachedShadowTile(tileRadius + delta, curve, shadow, scale);
+    if (tile != nil) return tile;
+    if (distance == 0 || tileRadius - delta < 0) continue;
+    tile = SmoothClipCachedShadowTile(tileRadius - delta, curve, shadow, scale);
+    if (tile != nil) return tile;
+  }
+  return nil;
+}
+
+// Bakes on the calling thread and caches the result: about a millisecond for
+// a 16 pt blur at 3x, growing with blur² × scale². The callers reach for it
+// only when nothing else can be shown (a cold cache, at mount) and for a
+// run's resting target, which must be exact from the run's last frame on;
+// every other tile bakes through SmoothClipRequestShadowTile, off the frame.
+static NSUInteger gSmoothClipShadowTileBakeCount = 0;
+static SmoothClipShadowTile *SmoothClipBakeShadowTile(
+    CGFloat tileRadius,
+    SmoothClipCornerCurve curve,
+    const smoothclip::Shadow &shadow,
+    CGFloat scale) {
+  NSString *key = SmoothClipShadowTileKey(tileRadius, curve, shadow, scale);
+  SmoothClipShadowTile *tile = [SmoothClipShadowTileCache() objectForKey:key];
   if (tile != nil) return tile;
+  gSmoothClipShadowTileBakeCount += 1;
+  const CGFloat margin = SmoothClipBakedShadowMargin(shadow);
 
   const CGFloat side = 2 * (2 * margin + tileRadius) + kSmoothClipShadowTileBand;
   const size_t pixels = (size_t)MAX(1, ceil(side * scale));
@@ -500,8 +554,124 @@ static SmoothClipShadowTile *SmoothClipBakedShadowTile(
                                                 side:side
                                                scale:scale];
   CGImageRelease(image);
-  [cache setObject:tile forKey:key];
+  [SmoothClipShadowTileCache() setObject:tile forKey:key];
   return tile;
+}
+
+typedef void (^SmoothClipShadowTileCompletion)(SmoothClipShadowTile *tile);
+
+@interface SmoothClipShadowTileRequest : NSObject
+@property(nonatomic) CGFloat tileRadius;
+@property(nonatomic) SmoothClipCornerCurve curve;
+@property(nonatomic) smoothclip::Shadow shadow;
+@property(nonatomic) CGFloat scale;
+@property(nonatomic, readonly)
+    NSMutableArray<SmoothClipShadowTileCompletion> *completions;
+@end
+
+@implementation SmoothClipShadowTileRequest
+- (instancetype)init {
+  if (self = [super init]) {
+    _completions = [NSMutableArray array];
+  }
+  return self;
+}
+@end
+
+// Tiles requested off the frame's critical path, in request order, one per
+// main-queue drain: a block enqueued from inside a drain runs in the next
+// one, so a burst of missing steps costs one bake per run-loop turn rather
+// than all of them inside the transaction that asked for them.
+static NSMutableArray<SmoothClipShadowTileRequest *> *SmoothClipPendingShadowTiles(void) {
+  static NSMutableArray<SmoothClipShadowTileRequest *> *pending;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    pending = [NSMutableArray array];
+  });
+  return pending;
+}
+
+static NSMutableDictionary<NSString *, SmoothClipShadowTileRequest *> *
+SmoothClipPendingShadowTilesByKey(void) {
+  static NSMutableDictionary<NSString *, SmoothClipShadowTileRequest *> *pending;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    pending = [NSMutableDictionary dictionary];
+  });
+  return pending;
+}
+
+static BOOL gSmoothClipShadowTileBakeScheduled = NO;
+static void SmoothClipScheduleShadowTileBake(void);
+
+static void SmoothClipBakeNextShadowTile(void) {
+  gSmoothClipShadowTileBakeScheduled = NO;
+  NSMutableArray<SmoothClipShadowTileRequest *> *pending =
+      SmoothClipPendingShadowTiles();
+  SmoothClipShadowTileRequest *request = pending.firstObject;
+  if (request == nil) return;
+  [pending removeObjectAtIndex:0];
+  [SmoothClipPendingShadowTilesByKey() removeObjectForKey:SmoothClipShadowTileKey(
+      request.tileRadius, request.curve, request.shadow, request.scale)];
+  SmoothClipShadowTile *tile = SmoothClipBakeShadowTile(
+      request.tileRadius, request.curve, request.shadow, request.scale);
+  for (SmoothClipShadowTileCompletion completion in request.completions) {
+    completion(tile);
+  }
+  if (pending.count > 0) SmoothClipScheduleShadowTileBake();
+}
+
+static void SmoothClipScheduleShadowTileBake(void) {
+  if (gSmoothClipShadowTileBakeScheduled) return;
+  gSmoothClipShadowTileBakeScheduled = YES;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    SmoothClipBakeNextShadowTile();
+  });
+}
+
+// Asks for the tile without baking it now. `completion` runs on the main
+// thread once the tile is cached, at once when it already is.
+static void SmoothClipRequestShadowTile(
+    CGFloat tileRadius,
+    SmoothClipCornerCurve curve,
+    const smoothclip::Shadow &shadow,
+    CGFloat scale,
+    SmoothClipShadowTileCompletion completion) {
+  SmoothClipShadowTile *cached =
+      SmoothClipCachedShadowTile(tileRadius, curve, shadow, scale);
+  if (cached != nil) {
+    if (completion != nil) completion(cached);
+    return;
+  }
+  NSString *key = SmoothClipShadowTileKey(tileRadius, curve, shadow, scale);
+  NSMutableDictionary<NSString *, SmoothClipShadowTileRequest *> *byKey =
+      SmoothClipPendingShadowTilesByKey();
+  SmoothClipShadowTileRequest *request = byKey[key];
+  if (request == nil) {
+    request = [SmoothClipShadowTileRequest new];
+    request.tileRadius = tileRadius;
+    request.curve = curve;
+    request.shadow = shadow;
+    request.scale = scale;
+    byKey[key] = request;
+    [SmoothClipPendingShadowTiles() addObject:request];
+  }
+  if (completion != nil) [request.completions addObject:[completion copy]];
+  SmoothClipScheduleShadowTileBake();
+}
+
+NSUInteger SmoothClipShadowTileBakeCountForTesting(void) {
+  return gSmoothClipShadowTileBakeCount;
+}
+
+NSUInteger SmoothClipPendingShadowTileCountForTesting(void) {
+  return SmoothClipPendingShadowTiles().count;
+}
+
+void SmoothClipBakePendingShadowTilesForTesting(void) {
+  while (SmoothClipPendingShadowTiles().count > 0) {
+    SmoothClipBakeNextShadowTile();
+  }
 }
 
 // The shadow layer's frame for a baked tile: the shape rect (aperture grown by
@@ -761,21 +931,73 @@ static CGRect SmoothClipBakedShadowLayerRect(
   return scale > 0 ? scale : UIScreen.mainScreen.scale;
 }
 
-- (SmoothClipShadowTile *)bakedShadowTileForGeometry:
-                              (SmoothClipCanonicalGeometry)geometry
-                                             shadow:(const smoothclip::Shadow &)shadow {
-  return SmoothClipBakedShadowTile(
-      SmoothClipAdjustedShadowRadius(
-          geometry.radii.topLeft, shadow.spreadDistance),
-      geometry.curve, shadow, [self bakedShadowScale]);
+// Radius step of the tile a geometry's shadow draws from.
+- (CGFloat)bakedShadowTileRadiusForGeometry:(SmoothClipCanonicalGeometry)geometry
+                                     shadow:(const smoothclip::Shadow &)shadow {
+  return SmoothClipBakedShadowTileRadius(SmoothClipAdjustedShadowRadius(
+      geometry.radii.topLeft, shadow.spreadDistance));
 }
 
+// A requested tile is cached: draw it, if the model still wants it and
+// nothing else owns the layer (a run in flight swaps tiles from its own
+// keyframes, and its completion writes the model again).
+- (void)shadowTileDidLand:(SmoothClipShadowTile *)tile {
+  if (tile == nil || _activeAnimationId != 0 || !_hasShadowModel ||
+      _shadowLayer == nil ||
+      ![self usesBakedShadowForGeometry:_shadowModelGeometry]) {
+    return;
+  }
+  const CGFloat wanted = [self bakedShadowTileRadiusForGeometry:_shadowModelGeometry
+                                                         shadow:_shadowModel];
+  if (SmoothClipCachedShadowTile(wanted, _shadowModelGeometry.curve,
+                                 _shadowModel, [self bakedShadowScale]) != tile ||
+      _shadowLayer.contents == (__bridge id)tile.image) {
+    return;
+  }
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  [self writeBakedShadowModel:_shadowModel
+                     geometry:_shadowModelGeometry
+                      visible:SmoothBoxShadowVisible(_shadowModelGeometry, _shadowModel)
+                  nearestTile:NO
+                        layer:_shadowLayer];
+  [CATransaction commit];
+}
+
+// `allowNearest`: a missing tile may be stood in for by the nearest cached
+// step until the exact one lands (a drag crossing a step, a model write); a
+// run's resting target passes NO and bakes now, so its last frame is exact.
 - (void)writeBakedShadowModel:(const smoothclip::Shadow &)shadow
                      geometry:(SmoothClipCanonicalGeometry)geometry
                       visible:(BOOL)visible
+                  nearestTile:(BOOL)allowNearest
                         layer:(CALayer *)shadowLayer {
-  SmoothClipShadowTile *tile =
-      visible ? [self bakedShadowTileForGeometry:geometry shadow:shadow] : nil;
+  SmoothClipShadowTile *tile = nil;
+  if (visible) {
+    const CGFloat tileRadius =
+        [self bakedShadowTileRadiusForGeometry:geometry shadow:shadow];
+    const CGFloat scale = [self bakedShadowScale];
+    tile = SmoothClipCachedShadowTile(tileRadius, geometry.curve, shadow, scale);
+    if (tile == nil && allowNearest) {
+      tile = SmoothClipNearestCachedShadowTile(
+          tileRadius, geometry.curve, shadow, scale);
+      if (tile != nil) {
+        // A neighbouring step for now (one step off is invisible under the
+        // blur the tile was made for); the exact tile lands off this frame.
+        __weak SmoothClipView *weakSelf = self;
+        SmoothClipRequestShadowTile(
+            tileRadius, geometry.curve, shadow, scale,
+            ^(SmoothClipShadowTile *exact) {
+              [weakSelf shadowTileDidLand:exact];
+            });
+      }
+    }
+    if (tile == nil) {
+      // Nothing near enough to show meanwhile (a cold cache, at mount), or a
+      // resting target that must be exact.
+      tile = SmoothClipBakeShadowTile(tileRadius, geometry.curve, shadow, scale);
+    }
+  }
   // Leave no blur-path state behind: a tile layer that kept a shadowPath
   // would draw both.
   if (shadowLayer.shadowPath != NULL) shadowLayer.shadowPath = NULL;
@@ -802,12 +1024,14 @@ static CGRect SmoothClipBakedShadowLayerRect(
                  geometry:(SmoothClipCanonicalGeometry)geometry {
   [self writeShadowModel:shadow
                 geometry:geometry
-                   baked:[self usesBakedShadowForGeometry:geometry]];
+                   baked:[self usesBakedShadowForGeometry:geometry]
+             nearestTile:YES];
 }
 
 - (void)writeShadowModel:(const smoothclip::Shadow &)shadow
                  geometry:(SmoothClipCanonicalGeometry)geometry
-                    baked:(BOOL)baked {
+                    baked:(BOOL)baked
+              nearestTile:(BOOL)allowNearest {
   const smoothclip::Shadow effectiveShadow =
       SmoothBoxShadowWithEffectiveAlpha(geometry, shadow);
   const BOOL visible = SmoothBoxShadowVisible(geometry, effectiveShadow);
@@ -824,6 +1048,7 @@ static CGRect SmoothClipBakedShadowLayerRect(
     [self writeBakedShadowModel:effectiveShadow
                        geometry:geometry
                         visible:visible
+                    nearestTile:allowNearest
                           layer:shadowLayer];
     return;
   }
@@ -864,10 +1089,21 @@ static CGRect SmoothClipBakedShadowLayerRect(
                                       spring:(BOOL)spring
                                     velocity:(double)velocity
                                     duration:(CFTimeInterval)duration {
-  SmoothClipShadowTile *fromTile =
-      [self bakedShadowTileForGeometry:fromGeometry shadow:fromShadow];
-  SmoothClipShadowTile *toTile =
-      [self bakedShadowTileForGeometry:toGeometry shadow:toShadow];
+  const CGFloat scale = [self bakedShadowScale];
+  const CGFloat fromRadius =
+      [self bakedShadowTileRadiusForGeometry:fromGeometry shadow:fromShadow];
+  const CGFloat toRadius =
+      [self bakedShadowTileRadiusForGeometry:toGeometry shadow:toShadow];
+  // The start is whatever the model shows (its step or a stand-in); the
+  // target was baked by the model write just before this and must be exact.
+  SmoothClipShadowTile *fromTile = SmoothClipNearestCachedShadowTile(
+      fromRadius, fromGeometry.curve, fromShadow, scale);
+  if (fromTile == nil) {
+    fromTile = SmoothClipBakeShadowTile(
+        fromRadius, fromGeometry.curve, fromShadow, scale);
+  }
+  SmoothClipShadowTile *toTile = SmoothClipBakeShadowTile(
+      toRadius, toGeometry.curve, toShadow, scale);
   const CGFloat fromMargin = fromTile != nil
       ? fromTile.margin : SmoothClipBakedShadowMargin(fromShadow);
   const CGFloat toMargin = toTile != nil
@@ -950,6 +1186,8 @@ static CGRect SmoothClipBakedShadowLayerRect(
   } else {
     const BOOL growing = toTile.radius > fromTile.radius;
     const CGFloat step = kSmoothClipShadowTileRadiusStep * (growing ? 1 : -1);
+    // Key time a missing step hands to the next cached tile on a growing run.
+    double carriedTime = -1;
     for (CGFloat tileRadius = fromTile.radius + step;
          growing ? tileRadius <= toTile.radius : tileRadius >= toTile.radius;
          tileRadius += step) {
@@ -958,11 +1196,23 @@ static CGRect SmoothClipBakedShadowLayerRect(
       const CGFloat threshold = growing
           ? tileRadius - kSmoothClipShadowTileRadiusStep : tileRadius;
       const double progress = (threshold - rawFrom) / (rawTo - rawFrom);
-      SmoothClipShadowTile *tile = SmoothClipBakedShadowTile(
-          tileRadius, toGeometry.curve, toShadow, [self bakedShadowScale]);
-      if (tile == nil) continue;
+      SmoothClipShadowTile *tile = SmoothClipCachedShadowTile(
+          tileRadius, toGeometry.curve, toShadow, scale);
+      if (tile == nil) {
+        // Not baked inside this transaction: it lands for the next run. A
+        // growing run swaps to the next cached (rounder) tile at this step's
+        // time instead, so the shown corner is never tighter than the clip's;
+        // a shrinking run simply keeps the rounder tile a step longer.
+        SmoothClipRequestShadowTile(
+            tileRadius, toGeometry.curve, toShadow, scale, nil);
+        if (growing && carriedTime < 0) carriedTime = timeForProgress(progress);
+        continue;
+      }
+      const double ownTime = timeForProgress(progress);
       const double time = std::max(
-          keyTimes.lastObject.doubleValue, timeForProgress(progress));
+          keyTimes.lastObject.doubleValue,
+          carriedTime >= 0 ? std::min(carriedTime, ownTime) : ownTime);
+      carriedTime = -1;
       if (time <= keyTimes.lastObject.doubleValue + 1e-6) {
         // Same instant as the previous swap (leaving a step value at t = 0):
         // the later tile is the one shown; key times must strictly increase.
@@ -976,6 +1226,10 @@ static CGRect SmoothClipBakedShadowLayerRect(
     }
   }
   if (images.count < 2) return animations;
+  // Discrete key times bracket their values: one more entry than values, the
+  // last at 1 (CAKeyframeAnimation.keyTimes). Without the closing entry Core
+  // Animation ignores the array and spaces the swaps evenly over the run.
+  [keyTimes addObject:@1];
   CAKeyframeAnimation *contents =
       [CAKeyframeAnimation animationWithKeyPath:@"contents"];
   contents.values = images;
@@ -1556,7 +1810,10 @@ static CGRect SmoothClipBakedShadowLayerRect(
   // attached. Core Animation may remove the terminal presentation animation
   // before its delegate runs, so correctness cannot depend on completion-time
   // cleanup hiding a stale path or opaque color.
-  [self writeShadowModel:toShadow geometry:toGeometry baked:bakedShadow];
+  [self writeShadowModel:toShadow
+                geometry:toGeometry
+                   baked:bakedShadow
+             nearestTile:NO];
   if (usesMask) {
     // Keep one mask representation for the full interval, including an
     // unequal→uniform transition. Switching layer.mask mid-animation would

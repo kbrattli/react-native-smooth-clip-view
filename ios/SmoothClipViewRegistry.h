@@ -32,3 +32,10 @@ size_t registeredViewCount(uint64_t driverId);
 bool hasActiveAnimation(uint64_t driverId);
 
 } // namespace smoothclip
+
+// Baked shadow tile cache (SmoothClipView.mm), for tests: tiles baked so far
+// in this process, tiles waiting to bake off the frame, and a synchronous
+// drain of that queue.
+NSUInteger SmoothClipShadowTileBakeCountForTesting(void);
+NSUInteger SmoothClipPendingShadowTileCountForTesting(void);
+void SmoothClipBakePendingShadowTilesForTesting(void);

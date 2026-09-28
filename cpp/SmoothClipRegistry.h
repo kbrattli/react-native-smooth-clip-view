@@ -73,10 +73,11 @@ struct AnimationStart {
   // Reanimated-rule start stamp, captured on the UI runtime at animateTo time
   // as `__frameTimestamp || _getAnimationTimestamp()` and converted to
   // CLOCK_MONOTONIC seconds. NaN means no stamp was captured (older callers,
-  // tests, platforms that ignore it): the integrator then falls back to its
-  // own clock plus the min() frame-clock anchor. iOS constructs this struct
-  // without the member and inherits the NaN default — CoreAnimation anchors
-  // its own animations, so the hint is Android-only by design.
+  // tests): the integrator then falls back to its own clock plus the min()
+  // frame-clock anchor. iOS does not use this member: it carries the same
+  // stamp on the animation group (`GroupState::beginTimeHint` in
+  // SmoothClipRegistry.mm) and applies it as the shared Core Animation
+  // `beginTime`, bounded by the same sanity window.
   double startedAtHintS = std::numeric_limits<double>::quiet_NaN();
 };
 

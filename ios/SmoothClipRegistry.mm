@@ -122,6 +122,11 @@ struct GroupState {
 
 // A frame stamp sits at most one frame ahead of the commit that carries it.
 // Anything further ahead is not a frame stamp and must not hold the run.
+// Behind the commit it is trusted only within the same window the Android
+// frame loop uses (kStartStampSanityWindowS): a group held pending longer than
+// that (a host that could not display, the app inactive) or a stamp from a
+// rescaled clock (Slow Animations) would otherwise begin fully elapsed and
+// snap to its target.
 constexpr CFTimeInterval kMaxBeginTimeLeadS = 0.25;
 
 std::unordered_map<uint64_t, DriverState> &registry() {
@@ -782,12 +787,15 @@ void tryStartGroup(int32_t groupId) {
   // Anchor the run to the UI frame that started it when JS stamped one
   // (Reanimated's target vsync): a `withTiming` begun in that same frame and
   // this Core Animation run then trace one epoch, instead of the run leading
-  // by the rest of the frame. A stale stamp (a run held pending until its host
-  // could display) starts partway through, as that JS clock did.
+  // by the rest of the frame. A recent stale stamp (a run held pending until
+  // its host could display) starts partway through, as that JS clock did; one
+  // outside the sanity window starts now.
   const CFTimeInterval now = CACurrentMediaTime();
   const CFTimeInterval hint = groupIterator->second.beginTimeHint;
   const CFTimeInterval sharedBeginTime =
-      hint > 0 && hint <= now + kMaxBeginTimeLeadS ? hint : now;
+      hint > 0 && hint <= now + kMaxBeginTimeLeadS &&
+          hint >= now - kStartStampSanityWindowS
+      ? hint : now;
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   for (const uint64_t driverId : driverIds) {

@@ -13,6 +13,10 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Region
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
+import android.os.Process
 import android.os.Trace
 import android.view.MotionEvent
 import android.view.View
@@ -21,6 +25,8 @@ import com.facebook.proguard.annotations.DoNotStrip
 import com.facebook.react.uimanager.PixelUtil
 import com.facebook.react.uimanager.ThemedReactContext
 import com.facebook.react.views.view.ReactViewGroup
+import java.lang.ref.WeakReference
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.roundToInt
 import kotlin.math.abs
 import kotlin.math.pow
@@ -498,8 +504,17 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         if (current != null && current.matches(tileRadius, clipCurveCode, requestedShadowBlurRadius, rgb)) {
             return current
         }
-        return BakedShadowTiles.get(tileRadius, clipCurveCode, requestedShadowBlurRadius, rgb, band)
-            .also { bakedShadowTile = it }
+        // A stand-in from a neighbouring step does not match, so the next
+        // frame asks again and picks up the exact tile once it has landed.
+        return BakedShadowTiles.getOrRequest(
+            tileRadius, clipCurveCode, requestedShadowBlurRadius, rgb, band, step, this,
+        ).also { bakedShadowTile = it }
+    }
+
+    /** The exact tile for the current radius step has landed: draw it. */
+    internal fun shadowTileDidLand() {
+        if (!requestedShadowEnabled || requestedShadowAlpha <= 0f || !usesBakedShadow()) return
+        presentationContainer.invalidate()
     }
 
     private fun drawBakedBoxShadow(canvas: Canvas) {
@@ -913,23 +928,128 @@ internal class BakedShadowTile(
             this.blurRadius == blurRadius && this.rgb == rgb
 }
 
-/** Process-wide tile cache: a handful of (radius step, curve, blur, colour). */
+/**
+ * Process-wide tile cache: a handful of (radius step, curve, blur, colour).
+ *
+ * A bake costs a bitmap allocation plus a software blur, growing with
+ * blur² × density², so it stays off the frame: a missing tile is requested on
+ * a background thread while the nearest cached step stands in, and only a
+ * cold cache (nothing near to show, at mount) bakes on the calling thread.
+ */
 internal object BakedShadowTiles {
     private const val MAX_TILES = 12
+    /** Radius steps searched on either side of a missing tile for a stand-in. */
+    private const val SEARCH_STEPS = 16
     private val tiles = LinkedHashMap<String, BakedShadowTile>(MAX_TILES, 0.75f, true)
+    private val pending = LinkedHashMap<String, PendingTile>()
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+    private val worker by lazy {
+        val thread = HandlerThread("SmoothClipShadowTiles", Process.THREAD_PRIORITY_BACKGROUND)
+        thread.start()
+        Handler(thread.looper)
+    }
+    /** Where a requested bake runs and where its result lands; tests swap in queues they drain. */
+    internal var runBake: (Runnable) -> Unit = { worker.post(it) }
+    internal var runOnMain: (Runnable) -> Unit = { mainHandler.post(it) }
+    /** Tiles baked so far in this process; tests read it. */
+    val bakeCount = AtomicInteger()
 
+    private class PendingTile(
+        val radius: Float,
+        val curveCode: Int,
+        val blurRadius: Float,
+        val rgb: Int,
+        val band: Int,
+    ) {
+        val requesters = mutableListOf<WeakReference<SmoothClipView>>()
+    }
+
+    private fun key(radius: Float, curveCode: Int, blurRadius: Float, rgb: Int, band: Int): String =
+        "$radius|$curveCode|$blurRadius|$rgb|$band"
+
+    /** The exact tile, baked now when missing: for callers that must not draw a stand-in. */
     @Synchronized
     fun get(radius: Float, curveCode: Int, blurRadius: Float, rgb: Int, band: Int): BakedShadowTile? {
-        val key = "$radius|$curveCode|$blurRadius|$rgb|$band"
+        val key = key(radius, curveCode, blurRadius, rgb, band)
         tiles[key]?.let { return it }
-        val tile = bake(radius, curveCode, blurRadius, rgb, band) ?: return null
+        return bake(radius, curveCode, blurRadius, rgb, band)?.also { store(key, it) }
+    }
+
+    /**
+     * The tile for this radius step when cached. Otherwise the nearest cached
+     * step (the rounder neighbour first: a tile corner tighter than the clip
+     * corner over it reads as a dark sliver, a rounder one only recedes under
+     * the clip) while the exact tile bakes on the background thread, after
+     * which [requester] is asked to draw again. Nothing near: baked now.
+     */
+    @Synchronized
+    fun getOrRequest(
+        radius: Float,
+        curveCode: Int,
+        blurRadius: Float,
+        rgb: Int,
+        band: Int,
+        stepPx: Float,
+        requester: SmoothClipView?,
+    ): BakedShadowTile? {
+        val key = key(radius, curveCode, blurRadius, rgb, band)
+        tiles[key]?.let { return it }
+        val standIn = if (stepPx > 0f) nearest(radius, curveCode, blurRadius, rgb, band, stepPx) else null
+        if (standIn == null) {
+            return bake(radius, curveCode, blurRadius, rgb, band)?.also { store(key, it) }
+        }
+        request(key, PendingTile(radius, curveCode, blurRadius, rgb, band), requester)
+        return standIn
+    }
+
+    private fun nearest(
+        radius: Float,
+        curveCode: Int,
+        blurRadius: Float,
+        rgb: Int,
+        band: Int,
+        stepPx: Float,
+    ): BakedShadowTile? {
+        for (distance in 1..SEARCH_STEPS) {
+            val delta = distance * stepPx
+            tiles[key(radius + delta, curveCode, blurRadius, rgb, band)]?.let { return it }
+            if (radius - delta < 0f) continue
+            tiles[key(radius - delta, curveCode, blurRadius, rgb, band)]?.let { return it }
+        }
+        return null
+    }
+
+    private fun store(key: String, tile: BakedShadowTile) {
         tiles[key] = tile
         if (tiles.size > MAX_TILES) {
             val eldest = tiles.entries.iterator()
             eldest.next()
             eldest.remove()
         }
-        return tile
+    }
+
+    private fun request(key: String, tile: PendingTile, requester: SmoothClipView?) {
+        val existing = pending[key]
+        if (existing != null) {
+            if (requester != null) existing.requesters += WeakReference(requester)
+            return
+        }
+        if (requester != null) tile.requesters += WeakReference(requester)
+        pending[key] = tile
+        runBake {
+            val baked = bake(tile.radius, tile.curveCode, tile.blurRadius, tile.rgb, tile.band)
+            runOnMain { land(key, baked) }
+        }
+    }
+
+    private fun land(key: String, tile: BakedShadowTile?) {
+        val entry = synchronized(this) {
+            val removed = pending.remove(key)
+            if (tile != null && removed != null) store(key, tile)
+            removed
+        }
+        if (tile == null || entry == null) return
+        for (requester in entry.requesters) requester.get()?.shadowTileDidLand()
     }
 
     private fun bake(radius: Float, curveCode: Int, blurRadius: Float, rgb: Int, band: Int): BakedShadowTile? {
@@ -937,6 +1057,7 @@ internal object BakedShadowTiles {
         val corner = 2 * margin + radius.roundToInt()
         val side = 2 * corner + band
         if (side <= 0 || side > 4096) return null
+        bakeCount.incrementAndGet()
         val bitmap = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
         val path = Path()
         val inset = margin.toFloat()

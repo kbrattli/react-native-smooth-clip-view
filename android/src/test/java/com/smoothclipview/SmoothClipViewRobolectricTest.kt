@@ -520,6 +520,55 @@ class SmoothClipViewRobolectricTest {
         assertEquals(RectF(0f, 2f, 100f, 102f), boxShadowBounds())
     }
 
+    @Test
+    fun bakedShadowsShowTheNearestTileWhileTheExactOneBakesOffTheMainThread() {
+        view.setBakedShadows(true)
+        // Requested bakes queue here instead of the background thread, so the
+        // test decides when they run; results land synchronously.
+        val queued = mutableListOf<Runnable>()
+        BakedShadowTiles.runBake = { queued += it }
+        BakedShadowTiles.runOnMain = { it.run() }
+        // A colour no other test bakes, so this cache line starts cold.
+        val red = 0.2f
+        val before = BakedShadowTiles.bakeCount.get()
+        view.setClipPresentationPx(
+            0f, 0f, 100f, 100f,
+            20f, 20f, 20f, 20f,
+            CLIP_CURVE_CONTINUOUS,
+            0f, 0f, 1f,
+            true, red, 0f, 0f, 0.25f, 0f, 2f, 16f, 0f,
+        )
+        view.presentationContainer.draw(Canvas())
+        // Nothing near to show: the first tile bakes on the calling thread.
+        val first = privateObject("bakedShadowTile") as BakedShadowTile
+        assertEquals(before + 1, BakedShadowTiles.bakeCount.get())
+        // Two steps rounder: the cached tile stands in and the exact one is
+        // requested, not baked inside the frame.
+        view.setClipPresentationPx(
+            0f, 0f, 100f, 100f,
+            28f, 28f, 28f, 28f,
+            CLIP_CURVE_CONTINUOUS,
+            0f, 0f, 1f,
+            true, red, 0f, 0f, 0.25f, 0f, 2f, 16f, 0f,
+        )
+        view.presentationContainer.draw(Canvas())
+        assertTrue(first === privateObject("bakedShadowTile"))
+        assertEquals(before + 1, BakedShadowTiles.bakeCount.get())
+        assertEquals(1, queued.size)
+        // The same frame again asks for nothing more.
+        view.presentationContainer.draw(Canvas())
+        assertEquals(1, queued.size)
+        // Once it lands, the next draw picks it up.
+        queued.removeAt(0).run()
+        assertEquals(before + 2, BakedShadowTiles.bakeCount.get())
+        view.presentationContainer.draw(Canvas())
+        val exact = privateObject("bakedShadowTile") as BakedShadowTile
+        val step = BAKED_SHADOW_RADIUS_STEP_DP * view.resources.displayMetrics.density
+        assertEquals(kotlin.math.ceil(28f / step) * step, exact.radius)
+        assertTrue(first !== exact)
+        assertTrue(queued.isEmpty())
+    }
+
     private fun privatePath(name: String): Path =
         SmoothClipView::class.java.getDeclaredField(name).let { field ->
             field.isAccessible = true

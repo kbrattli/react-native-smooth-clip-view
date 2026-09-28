@@ -23,6 +23,22 @@
   path builder, so the shadow path (not only the clip) stays an rrect the
   renderer can clip and blur analytically. Paths are `rewind()` instead of
   `reset()` between frames, keeping their storage.
+- Baked tiles no longer bake inside the frame. A shadow's first tile bakes on
+  the calling thread (at mount, when nothing else can be shown) and a run's
+  resting target bakes at install, so the run ends exact; every other radius
+  step bakes off the frame (one per main-queue turn on iOS, a background
+  thread on Android) while the nearest cached step stands in, and the model
+  takes the exact tile when it lands. A run whose intermediate steps are not
+  cached yet swaps to the next cached, rounder tile at the missing step's key
+  time, so the shown corner is never tighter than the clip's.
+- iOS discrete tile swaps carry the closing key time Core Animation's discrete
+  mode requires (`keyTimes` has one more entry than `values`, ending at 1), so
+  each swap lands where the radius crosses its step rather than on an even
+  grid.
+- iOS trusts a frame stamp only within the same ±1 s window as Android. A
+  group held pending longer (a host that could not display, the app inactive)
+  or a stamp from a rescaled clock starts now instead of beginning fully
+  elapsed.
 
 ## [0.4.6](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.4.6) — 2026-09-20
 
