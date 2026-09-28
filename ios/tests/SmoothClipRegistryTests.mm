@@ -2966,14 +2966,20 @@ static UIWindow *TestWindow(void) {
   [content addSubview:child];
   target.rotation = 8 * M_PI;
   target.opacity = 0;
-  const smoothclip::TimingAnimation timing{2000, 0, 0, 1, 1, 2};
+  // A long linear run begun well in the past: the read below lands between
+  // one turn (t = 5 s) and the end (t = 20 s) however long the flush and the
+  // run loop take on a loaded machine. With a 2 s run begun 0.6 s ago the
+  // window was 0.35 s wide and CI overran it (rotation 4.6 turns > 4 pi).
+  const smoothclip::TimingAnimation timing{20000, 0, 0, 1, 1, 2};
   XCTAssertTrue([host smoothClipAnimateTiming:target animation:timing
-      animationId:12346 sharedBeginTime:CACurrentMediaTime() - 0.6]);
+      animationId:12346 sharedBeginTime:CACurrentMediaTime() - 8.0]);
   [CATransaction flush];
   [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
   const auto visible = [host smoothClipCurrentPresentation];
+  // Beyond one full turn: the read is unwrapped against the run, not the
+  // matrix's (-pi, pi]. Below the target: the run is still in flight.
   XCTAssertGreaterThan(visible.rotation, 2 * M_PI);
-  XCTAssertLessThan(visible.rotation, 4 * M_PI);
+  XCTAssertLessThan(visible.rotation, 8 * M_PI);
   XCTAssertGreaterThan(visible.opacity, 0);
   XCTAssertEqual([host hitTest:CGPointMake(70, 70) withEvent:nil], child);
   XCTAssertLessThan(visible.opacity, 1);
