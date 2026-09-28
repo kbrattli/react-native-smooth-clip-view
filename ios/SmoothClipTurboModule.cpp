@@ -5,12 +5,13 @@
 #include "SmoothClipRegistrySnapshot.h"
 
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace facebook::react {
 namespace {
 
-constexpr size_t kPresentationStride = 23;
+constexpr size_t kPresentationStride = 25;
 constexpr size_t kSnapshotStride = kPresentationStride + 1;
 constexpr size_t kMotionEntryStride = kPresentationStride * 2 + 2;
 
@@ -67,7 +68,9 @@ smoothclip::Presentation makePresentation(
     double shadowBlurRadius = 0,
     double shadowSpreadDistance = 0,
     double rotation = 0,
-    double opacity = 1) {
+    double opacity = 1,
+    double backdropTranslateX = 0,
+    double backdropTranslateY = 0) {
   const bool uniform = topLeftRadius == topRightRadius &&
       topLeftRadius == bottomRightRadius &&
       topLeftRadius == bottomLeftRadius;
@@ -85,7 +88,7 @@ smoothclip::Presentation makePresentation(
       contentScale,
       {shadowEnabled, shadowRed, shadowGreen, shadowBlue, shadowAlpha,
        shadowOffsetX, shadowOffsetY, shadowBlurRadius, shadowSpreadDistance},
-      rotation, opacity};
+      rotation, opacity, backdropTranslateX, backdropTranslateY};
 }
 
 bool finitePresentation(const smoothclip::Presentation &presentation) {
@@ -101,6 +104,8 @@ bool finitePresentation(const smoothclip::Presentation &presentation) {
       std::isfinite(presentation.contentScale) &&
       presentation.contentScale > 0 &&
       std::isfinite(presentation.rotation) && std::isfinite(presentation.opacity) &&
+      std::isfinite(presentation.backdropTranslateX) &&
+      std::isfinite(presentation.backdropTranslateY) &&
       std::isfinite(presentation.shadow.red) &&
       std::isfinite(presentation.shadow.green) &&
       std::isfinite(presentation.shadow.blue) &&
@@ -122,10 +127,14 @@ bool presentationAt(
     size_t offset,
     smoothclip::Presentation &result) {
   double values[kPresentationStride];
+  // One length read for the whole packet: `size` is a JSI call of its own,
+  // and this runs per clip per drag frame.
+  if (offset + kPresentationStride > array.size(runtime)) return false;
   for (size_t index = 0; index < kPresentationStride; index += 1) {
-    if (!numberAt(runtime, array, offset + index, values[index])) {
-      return false;
-    }
+    const jsi::Value value = array.getValueAtIndex(runtime, offset + index);
+    if (!value.isNumber()) return false;
+    values[index] = value.asNumber();
+    if (!std::isfinite(values[index])) return false;
   }
   const int32_t curveCode = static_cast<int32_t>(values[8]);
   if (values[8] != curveCode || !validCurveCode(curveCode) ||
@@ -145,7 +154,8 @@ bool presentationAt(
       values[11],
       values[12] == 1,
       values[13], values[14], values[15], values[16],
-      values[17], values[18], values[19], values[20], values[21], values[22]);
+      values[17], values[18], values[19], values[20], values[21], values[22],
+      values[23], values[24]);
   return finitePresentation(result);
 }
 
@@ -187,6 +197,8 @@ void writePresentation(
   result.setValueAtIndex(runtime, offset + 20, presentation.shadow.spreadDistance);
   result.setValueAtIndex(runtime, offset + 21, presentation.rotation);
   result.setValueAtIndex(runtime, offset + 22, presentation.opacity);
+  result.setValueAtIndex(runtime, offset + 23, presentation.backdropTranslateX);
+  result.setValueAtIndex(runtime, offset + 24, presentation.backdropTranslateY);
 }
 
 jsi::Array snapshotArray(
@@ -387,6 +399,16 @@ bool SmoothClipTurboModule::setClipPresentationBatch(
   return smoothclip::setPresentationBatch(parsed);
 }
 
+// JS stamps a run with Reanimated's frame timestamp in milliseconds on the
+// CACurrentMediaTime base; the registry takes seconds. Anything else means
+// "start now".
+static double startedAtHintSeconds(double startTimestampMs) {
+  if (!std::isfinite(startTimestampMs) || startTimestampMs <= 0) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return startTimestampMs / 1000.0;
+}
+
 int32_t SmoothClipTurboModule::animateTimingGroup(
     jsi::Runtime &runtime,
     double controllerId,
@@ -399,7 +421,6 @@ int32_t SmoothClipTurboModule::animateTimingGroup(
     int32_t reduceMotion,
     int32_t completionTag,
     double startTimestamp) {
-  (void)startTimestamp;
   std::vector<smoothclip::GroupMotionEntry> parsed;
   if (!validDriverId(controllerId) ||
       !fixedGroupEntriesAt(runtime, entries, parsed) ||
@@ -417,7 +438,8 @@ int32_t SmoothClipTurboModule::animateTimingGroup(
        controlPoint2X,
        controlPoint2Y,
        reduceMotion},
-      completionTag);
+      completionTag,
+      startedAtHintSeconds(startTimestamp));
 }
 
 int32_t SmoothClipTurboModule::animateSpringGroup(
@@ -432,7 +454,6 @@ int32_t SmoothClipTurboModule::animateSpringGroup(
     int32_t reduceMotion,
     int32_t completionTag,
     double startTimestamp) {
-  (void)startTimestamp;
   std::vector<smoothclip::GroupMotionEntry> parsed;
   if (!validDriverId(controllerId) ||
       !fixedGroupEntriesAt(runtime, entries, parsed) ||
@@ -452,7 +473,8 @@ int32_t SmoothClipTurboModule::animateSpringGroup(
        false,
        reduceMotion,
        energyThreshold},
-      completionTag);
+      completionTag,
+      startedAtHintSeconds(startTimestamp));
 }
 
 jsi::Array SmoothClipTurboModule::cancelAnimationGroup(

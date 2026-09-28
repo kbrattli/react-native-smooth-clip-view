@@ -3,7 +3,7 @@ import {
   canonicalizeClipPresentation,
   type SmoothClipPresentation,
 } from '../geometry';
-import { presentationPacket } from '../presentationCodec';
+import { PRESENTATION_STRIDE, presentationPacket } from '../presentationCodec';
 
 let completionListener:
   | ((event: {
@@ -101,7 +101,8 @@ describe('useSmoothClipController', () => {
     expect(native.setClipPresentationBatch).toHaveBeenCalledTimes(1);
     const packet = native.setClipPresentationBatch.mock
       .calls[0]?.[0] as number[];
-    expect(packet).toHaveLength(24);
+    // The driver id plus one presentation packet.
+    expect(packet).toHaveLength(PRESENTATION_STRIDE + 1);
     expect(packet.slice(1, 5)).toEqual([-40, 120, 180, 90]);
   });
 

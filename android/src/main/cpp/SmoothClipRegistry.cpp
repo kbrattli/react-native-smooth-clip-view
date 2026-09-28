@@ -90,11 +90,20 @@ struct ViewEntry {
   ViewParticipation participation = ViewParticipation::Deferred;
 };
 
+// A backdrop view bound to the driver. It is translated by the presentation's
+// backdrop channel on every delivery and has no displayability of its own: the
+// clip host decides when a run may start.
+struct BackdropEntry {
+  global_ref<JSmoothClipBackdropView> view;
+  double density = 1;
+};
+
 struct DriverState {
   Presentation latest{{0, 0, 0, 0, 0}, 0, 0};
   bool hasLatest = false;
   Ownership ownership = Ownership::Interactive;
   std::vector<ViewEntry> views;
+  std::vector<BackdropEntry> backdrops;
   std::optional<ActiveAnimation> animation;
   // Set by destroyDriver while views are still registered (StrictMode effect
   // replay, hosts mounted in another subtree). The entry is erased when the
@@ -461,10 +470,28 @@ void deliverToView(const ViewEntry &entry, const Presentation &presentation) {
       shadowPx, presentation.rotation, presentation.opacity);
 }
 
+void deliverToBackdrop(
+    const BackdropEntry &entry,
+    const Presentation &presentation) {
+  const double x = presentation.backdropTranslateX * entry.density;
+  const double y = presentation.backdropTranslateY * entry.density;
+  if (!std::isfinite(x) || !std::isfinite(y)) return;
+  entry.view->applyBackdropPx(x, y);
+}
+
+void deliverToBackdrops(
+    const DriverState &state,
+    const Presentation &presentation) {
+  for (const BackdropEntry &entry : state.backdrops) {
+    deliverToBackdrop(entry, presentation);
+  }
+}
+
 void applyToViews(DriverState &state, const Presentation &presentation) {
   for (const auto &entry : state.views) {
     deliverToView(entry, presentation);
   }
+  deliverToBackdrops(state, presentation);
 }
 
 void setAutonomousMotion(DriverState &state, bool active) {
@@ -481,6 +508,7 @@ void applyAnimationFrameToViews(
       deliverToView(entry, presentation);
     }
   }
+  deliverToBackdrops(state, presentation);
 }
 
 void applyPresentation(DriverState &state, const Presentation &presentation) {
@@ -1667,7 +1695,7 @@ void destroyDriver(uint64_t driverId) {
   // refresh the staleness clock with motion no finger produced. (iOS clears
   // its per-view histories at the same point.)
   state.samples = VelocitySampleHistory{};
-  if (state.views.empty()) {
+  if (state.views.empty() && state.backdrops.empty()) {
     registry().erase(iterator);
   } else {
     // Views can outlive the hook briefly (StrictMode effect replay, hosts in
@@ -1793,6 +1821,61 @@ void JSmoothClipView::setAutonomousMotion(bool active) const {
   static const auto method =
       javaClassStatic()->getMethod<void(jboolean)>("setAutonomousMotion");
   method(self(), active);
+}
+
+void JSmoothClipBackdropView::applyBackdropPx(
+    double translateXPx,
+    double translateYPx) const {
+  static const auto method =
+      javaClassStatic()->getMethod<void(jfloat, jfloat)>(
+          "setBackdropTranslationPx");
+  method(
+      self(),
+      static_cast<jfloat>(translateXPx),
+      static_cast<jfloat>(translateYPx));
+}
+
+void registerBackdropViewAndroid(
+    uint64_t driverId,
+    alias_ref<JSmoothClipBackdropView> view,
+    double density) {
+  if (!isOnMainThread()) return;
+  auto &state = registry()[driverId];
+  JNIEnv *env = facebook::jni::Environment::current();
+  for (auto &entry : state.backdrops) {
+    if (!env->IsSameObject(entry.view.get(), view.get())) continue;
+    entry.density = density;
+    if (state.hasLatest) {
+      deliverToBackdrop(entry, visiblePresentation(driverId, state));
+    }
+    return;
+  }
+  BackdropEntry entry{facebook::jni::make_global(view), density};
+  // A backdrop that binds mid-run adopts the driver's current value and
+  // follows from the next delivery; a pending run's start is what shows.
+  if (state.hasLatest) {
+    deliverToBackdrop(entry, visiblePresentation(driverId, state));
+  }
+  state.backdrops.push_back(std::move(entry));
+}
+
+void unregisterBackdropViewAndroid(
+    uint64_t driverId,
+    alias_ref<JSmoothClipBackdropView> view) {
+  auto iterator = registry().find(driverId);
+  if (iterator == registry().end()) return;
+  auto &state = iterator->second;
+  JNIEnv *env = facebook::jni::Environment::current();
+  for (auto entry = state.backdrops.begin(); entry != state.backdrops.end();) {
+    if (env->IsSameObject(entry->view.get(), view.get())) {
+      entry = state.backdrops.erase(entry);
+    } else {
+      ++entry;
+    }
+  }
+  if (state.destroyed && state.views.empty() && state.backdrops.empty()) {
+    registry().erase(iterator);
+  }
 }
 
 void registerViewAndroid(
@@ -1921,7 +2004,7 @@ void unregisterViewAndroid(
   if (removed && state.groupId != 0 && isOnMainThread()) {
     reconcileGroupReadiness(driverId);
   }
-  if (state.destroyed && state.views.empty()) {
+  if (state.destroyed && state.views.empty() && state.backdrops.empty()) {
     registry().erase(iterator);
   }
 }

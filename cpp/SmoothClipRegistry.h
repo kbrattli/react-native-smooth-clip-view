@@ -46,6 +46,12 @@ struct Presentation {
   Shadow shadow{};
   double rotation = 0; // Unwrapped radians, clockwise in host coordinates.
   double opacity = 1;
+  // Translation of every SmoothClipBackdropView bound to the driver, in
+  // host points. A channel of the same run as the aperture, so content that
+  // must stay locked to the window (a canvas centred in it) is sampled by
+  // the same native clock as the clip and never lands a frame late.
+  double backdropTranslateX = 0;
+  double backdropTranslateY = 0;
 };
 
 struct TimingAnimation {
@@ -73,10 +79,11 @@ struct AnimationStart {
   // Reanimated-rule start stamp, captured on the UI runtime at animateTo time
   // as `__frameTimestamp || _getAnimationTimestamp()` and converted to
   // CLOCK_MONOTONIC seconds. NaN means no stamp was captured (older callers,
-  // tests, platforms that ignore it): the integrator then falls back to its
-  // own clock plus the min() frame-clock anchor. iOS constructs this struct
-  // without the member and inherits the NaN default — CoreAnimation anchors
-  // its own animations, so the hint is Android-only by design.
+  // tests): the integrator then falls back to its own clock plus the min()
+  // frame-clock anchor. iOS does not use this member: it carries the same
+  // stamp on the animation group (`GroupState::beginTimeHint` in
+  // SmoothClipRegistry.mm) and applies it as the shared Core Animation
+  // `beginTime`, bounded by the same sanity window.
   double startedAtHintS = std::numeric_limits<double>::quiet_NaN();
 };
 

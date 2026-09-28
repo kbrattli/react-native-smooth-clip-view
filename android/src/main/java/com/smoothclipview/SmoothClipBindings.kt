@@ -45,11 +45,26 @@ internal object SmoothClipBindings {
         shadowSpreadDistance: Double,
         rotation: Double,
         opacity: Double,
+        backdropTranslateX: Double,
+        backdropTranslateY: Double,
         density: Double,
         widthPx: Double,
         heightPx: Double,
         lifecycleVisible: Boolean,
     )
+
+    /**
+     * Binds a backdrop view to a driver: the registry translates it by the
+     * presentation's backdrop channel on every delivery. Re-registering an
+     * already bound view only updates its density.
+     */
+    external fun nativeRegisterBackdropView(
+        driverId: Double,
+        view: SmoothClipBackdropView,
+        density: Double,
+    )
+
+    external fun nativeUnregisterBackdropView(driverId: Double, view: SmoothClipBackdropView)
 
     /**
      * Pushes a registered view's density and pixel host size. Density converts

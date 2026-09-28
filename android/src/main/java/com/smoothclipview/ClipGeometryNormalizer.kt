@@ -200,6 +200,24 @@ internal fun appendRoundedRectPath(
         return
     }
 
+    if (topLeftRadius == topRightRadius && topLeftRadius == bottomRightRadius &&
+        topLeftRadius == bottomLeftRadius
+    ) {
+        // A uniform circular corner stays an rrect-tagged path: the renderer
+        // keeps its analytic clip and blur fast paths for it, which the cubic
+        // outline below, though the same shape, would lose.
+        path.addRoundRect(
+            left,
+            top,
+            right,
+            bottom,
+            topLeftRadius,
+            topLeftRadius,
+            Path.Direction.CW,
+        )
+        return
+    }
+
     val coefficient = 0.5522848f
 
     path.moveTo(left + topLeftRadius, top)

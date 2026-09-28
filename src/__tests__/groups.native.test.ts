@@ -7,7 +7,7 @@ import {
   canonicalizeClipPresentation,
   type SmoothClipPresentation,
 } from '../geometry';
-import { presentationPacket } from '../presentationCodec';
+import { PRESENTATION_STRIDE, presentationPacket } from '../presentationCodec';
 
 let completionListener:
   | ((event: {
@@ -117,10 +117,13 @@ describe('useSmoothClipGroup', () => {
     expect(native.setClipPresentationBatch).toHaveBeenCalledTimes(1);
     const packet = native.setClipPresentationBatch.mock
       .calls[0]?.[0] as number[];
+    // One id plus one presentation packet per clip.
+    const stride = PRESENTATION_STRIDE + 1;
+    expect(packet).toHaveLength(2 * stride);
     expect(packet[0]).toBe(unwrapSmoothClipRef(first)?.id);
-    expect(packet[24]).toBe(unwrapSmoothClipRef(second)?.id);
+    expect(packet[stride]).toBe(unwrapSmoothClipRef(second)?.id);
     expect(packet[1]).toBe(-20);
-    expect(packet[25]).toBe(220);
+    expect(packet[stride + 1]).toBe(220);
   });
 
   it('treats a pre-ready streamed batch rejection as a dropped frame', () => {
@@ -153,6 +156,21 @@ describe('useSmoothClipGroup', () => {
 
     await expect(run.finished).resolves.toBe(false);
     expect(native.snapshotGroup).not.toHaveBeenCalled();
+  });
+
+  it('stamps a run with the frame timestamp on every platform', () => {
+    const group = useSmoothClipGroup();
+    const runtime = globalThis as { __frameTimestamp?: number };
+    runtime.__frameTimestamp = 123456.5;
+    try {
+      expect(
+        group.ui.animateTo([{ clip: first, target }], timing)
+      ).not.toBeNull();
+    } finally {
+      delete runtime.__frameTimestamp;
+    }
+    const call = native.animateTimingGroup.mock.calls.at(-1) as unknown[];
+    expect(call.at(-1)).toBe(123456.5);
   });
 
   it('delivers a UI-runtime completion tag exactly once', () => {

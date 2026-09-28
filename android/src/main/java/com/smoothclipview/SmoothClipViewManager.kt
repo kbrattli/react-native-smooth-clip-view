@@ -39,6 +39,8 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
         var shadowSpreadDistance: Double = 0.0,
         var rotation: Double = 0.0,
         var opacity: Double = 1.0,
+        var backdropTranslateX: Double = 0.0,
+        var backdropTranslateY: Double = 0.0,
         var driverId: Double = 0.0,
         // Whether any prop setter ran in the current update transaction.
         var dirty: Boolean = false,
@@ -181,6 +183,21 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
     @ReactProp(name = "initialOpacity", defaultDouble = 1.0)
     override fun setInitialOpacity(view: SmoothClipView, value: Double) { pending(view).opacity = value }
 
+    @ReactProp(name = "shadowRendering", defaultInt = 0)
+    override fun setShadowRendering(view: SmoothClipView, value: Int) {
+        view.setBakedShadows(value == 1)
+    }
+
+    @ReactProp(name = "initialBackdropTranslateX", defaultDouble = 0.0)
+    override fun setInitialBackdropTranslateX(view: SmoothClipView, value: Double) {
+        pending(view).backdropTranslateX = value
+    }
+
+    @ReactProp(name = "initialBackdropTranslateY", defaultDouble = 0.0)
+    override fun setInitialBackdropTranslateY(view: SmoothClipView, value: Double) {
+        pending(view).backdropTranslateY = value
+    }
+
     override fun setClipPresentation(
         view: SmoothClipView,
         x: Double,
@@ -276,6 +293,8 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
                     initial.shadowSpreadDistance,
                     initial.rotation,
                     initial.opacity,
+                    initial.backdropTranslateX,
+                    initial.backdropTranslateY,
                     view.densityScale(),
                     view.width.toDouble(),
                     view.height.toDouble(),

@@ -1,4 +1,5 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, type jest } from '@jest/globals';
+import { processColor } from 'react-native-reanimated';
 
 import {
   canonicalizeClipGeometry,
@@ -248,6 +249,7 @@ describe('SmoothClipPresentation', () => {
       contentScale: 1,
       rotation: '0rad',
       opacity: 1,
+      backdrop: { translateX: 0, translateY: 0 },
     });
     expect(isFiniteClipPresentation(presentation)).toBe(true);
     expect(
@@ -343,6 +345,7 @@ describe('SmoothClipPresentation', () => {
       contentScale: 1.5,
       rotation: '0rad',
       opacity: 1,
+      backdrop: { translateX: 0, translateY: 0 },
     });
   });
 
@@ -369,6 +372,66 @@ describe('SmoothClipPresentation', () => {
       spreadDistance: -3,
     });
     expect(canonicalizeClipPresentation(canonical!)).toEqual(canonical);
+  });
+
+  it('parses the shadow colour once per canonicalization', () => {
+    // A drag canonicalizes one presentation per frame on the UI runtime;
+    // validation must not parse the colour (or the geometry) a second time.
+    const parse = processColor as unknown as jest.Mock;
+    parse.mockClear();
+    const canonical = canonicalizeClipPresentation({
+      clip: { x: 0, y: 0, width: 40, height: 30, radius: 8 },
+      contentTranslateX: 0,
+      contentTranslateY: 0,
+      rotation: '90deg',
+      boxShadow: { color: 'rgba(0, 0, 0, 0.25)', offsetX: 0, offsetY: 2 },
+    });
+    expect(canonical?.boxShadow?.color).toBe(0x00000040);
+    expect(parse).toHaveBeenCalledTimes(1);
+    expect(isFiniteClipPresentation(canonical!)).toBe(true);
+  });
+
+  it('canonicalizes the backdrop channel and rejects a non-finite one atomically', () => {
+    const base = {
+      clip: { x: 0, y: 0, width: 40, height: 30, radius: 8 },
+      contentTranslateX: 0,
+      contentTranslateY: 0,
+    } as const;
+    expect(canonicalizeClipPresentation(base)?.backdrop).toEqual({
+      translateX: 0,
+      translateY: 0,
+    });
+    expect(
+      canonicalizeClipPresentation({
+        ...base,
+        backdrop: { translateX: -20, translateY: 8 },
+      })?.backdrop
+    ).toEqual({ translateX: -20, translateY: 8 });
+    expect(
+      canonicalizeClipPresentation({
+        ...base,
+        backdrop: { translateX: Number.NaN, translateY: 8 },
+      })
+    ).toBeNull();
+    expect(
+      isFiniteClipPresentation({
+        ...base,
+        backdrop: { translateX: 0, translateY: Number.POSITIVE_INFINITY },
+      })
+    ).toBe(false);
+    // The channel takes part in equality like every other one.
+    expect(
+      clipPresentationEquals(base, {
+        ...base,
+        backdrop: { translateX: 0, translateY: 0 },
+      })
+    ).toBe(true);
+    expect(
+      clipPresentationEquals(base, {
+        ...base,
+        backdrop: { translateX: 1, translateY: 0 },
+      })
+    ).toBe(false);
   });
 
   it('distinguishes absent shadows and rejects non-finite shadow channels atomically', () => {

@@ -1,5 +1,6 @@
 #import "SmoothClipViewRegistry.h"
 
+#import "SmoothClipBackdropView.h"
 #import "SmoothClipView.h"
 
 #import <React/RCTUtils.h>
@@ -57,6 +58,21 @@
 - (void)smoothClipClearVelocitySamples;
 @end
 
+@interface SmoothClipBackdropView (Registry)
+- (CGPoint)smoothClipBackdropCurrentTranslation;
+- (void)smoothClipApplyBackdrop:(CGPoint)translation;
+- (BOOL)smoothClipAnimateBackdropTo:(CGPoint)target
+                             timing:(smoothclip::TimingAnimation)timing
+                    sharedBeginTime:(CFTimeInterval)sharedBeginTime;
+- (BOOL)smoothClipAnimateBackdropTo:(CGPoint)target
+                             spring:(smoothclip::SpringAnimation)spring
+                    sharedBeginTime:(CFTimeInterval)sharedBeginTime;
+- (void)smoothClipCancelBackdropUsingTarget:(BOOL)useTarget;
+- (BOOL)smoothClipPauseBackdropAtMediaTime:(CFTimeInterval)mediaTime;
+- (BOOL)smoothClipResumeBackdropAtMediaTime:(CFTimeInterval)mediaTime
+                                  catchUpBy:(CFTimeInterval)catchUp;
+@end
+
 namespace smoothclip {
 namespace {
 
@@ -91,6 +107,9 @@ struct DriverState {
   bool hasLatest = false;
   Ownership ownership = Ownership::Interactive;
   std::vector<ViewKey> views;
+  // Backdrop views bound to the driver: translated by the presentation's
+  // backdrop channel on every write and animated on every run's epoch.
+  std::vector<ViewKey> backdrops;
   std::optional<ActiveAnimation> animation;
   // Set by destroyDriver while views are still registered (StrictMode effect
   // replay, hosts mounted in another subtree). The entry is erased when the
@@ -116,7 +135,18 @@ struct GroupState {
   std::unordered_set<uint64_t> remainingDriverIds;
   bool finished = true;
   bool mutating = false;
+  // Media time the caller's UI frame was stamped with; 0 when none was given.
+  CFTimeInterval beginTimeHint = 0;
 };
+
+// A frame stamp sits at most one frame ahead of the commit that carries it.
+// Anything further ahead is not a frame stamp and must not hold the run.
+// Behind the commit it is trusted only within the same window the Android
+// frame loop uses (kStartStampSanityWindowS): a group held pending longer than
+// that (a host that could not display, the app inactive) or a stamp from a
+// rescaled clock (Slow Animations) would otherwise begin fully elapsed and
+// snap to its target.
+constexpr CFTimeInterval kMaxBeginTimeLeadS = 0.25;
 
 std::unordered_map<uint64_t, DriverState> &registry() {
   static std::unordered_map<uint64_t, DriverState> value;
@@ -199,6 +229,7 @@ void tryStartGroup(int32_t groupId);
 void finishGroupForHostLoss(int32_t groupId);
 DriverSnapshot snapshotForDriver(uint64_t driverId);
 SmoothClipView *viewForKey(ViewKey key);
+SmoothClipBackdropView *backdropForKey(ViewKey key);
 
 bool animationNeedsForegroundReconciliation(const DriverState &state) {
   if (!state.animation.has_value()) return false;
@@ -248,6 +279,9 @@ bool pauseSpringForInactivity(
         smoothClipPauseSpringAnimation:animation.animationId
                            atMediaTime:mediaTime] && paused;
   }
+  for (const ViewKey key : state.backdrops) {
+    [backdropForKey(key) smoothClipPauseBackdropAtMediaTime:mediaTime];
+  }
   if (!paused) animation.needsForegroundReconciliation = true;
   return paused;
 }
@@ -267,6 +301,10 @@ bool resumeSpringAfterInactivity(
         smoothClipResumeSpringAnimation:animation.animationId
                             atMediaTime:mediaTime
                              catchUpBy:catchUp] && resumed;
+  }
+  for (const ViewKey key : state.backdrops) {
+    [backdropForKey(key) smoothClipResumeBackdropAtMediaTime:mediaTime
+                                                   catchUpBy:catchUp];
   }
   if (!resumed) animation.needsForegroundReconciliation = true;
   return resumed;
@@ -326,6 +364,83 @@ ViewKey keyForView(SmoothClipView *view) {
 
 SmoothClipView *viewForKey(ViewKey key) {
   return (__bridge SmoothClipView *)(reinterpret_cast<void *>(key));
+}
+
+ViewKey keyForBackdrop(SmoothClipBackdropView *view) {
+  return reinterpret_cast<ViewKey>((__bridge void *)view);
+}
+
+SmoothClipBackdropView *backdropForKey(ViewKey key) {
+  return (__bridge SmoothClipBackdropView *)(reinterpret_cast<void *>(key));
+}
+
+CGPoint backdropTranslation(const Presentation &presentation) {
+  return CGPointMake(
+      presentation.backdropTranslateX, presentation.backdropTranslateY);
+}
+
+// The clip host knows nothing of the backdrop channel, so a presentation
+// read back from it carries none. A bound backdrop's visible translation is
+// the truth; without one, the driver's model (a pending run's start, else the
+// latest target).
+void overlayBackdrop(const DriverState &state, Presentation &presentation) {
+  if (!state.backdrops.empty()) {
+    const CGPoint translation = [backdropForKey(state.backdrops.front())
+        smoothClipBackdropCurrentTranslation];
+    presentation.backdropTranslateX = translation.x;
+    presentation.backdropTranslateY = translation.y;
+    return;
+  }
+  const Presentation &model =
+      state.animation.has_value() && !state.animation->started
+      ? state.animation->start
+      : state.latest;
+  presentation.backdropTranslateX = model.backdropTranslateX;
+  presentation.backdropTranslateY = model.backdropTranslateY;
+}
+
+void applyBackdrops(const DriverState &state, const Presentation &presentation) {
+  const CGPoint translation = backdropTranslation(presentation);
+  for (const ViewKey key : state.backdrops) {
+    [backdropForKey(key) smoothClipApplyBackdrop:translation];
+  }
+}
+
+void cancelBackdrops(const DriverState &state, bool useTarget) {
+  for (const ViewKey key : state.backdrops) {
+    [backdropForKey(key) smoothClipCancelBackdropUsingTarget:useTarget];
+  }
+}
+
+// Freezes every bound backdrop where it is and reads the channel back into
+// the frozen presentation.
+void freezeBackdropsInto(const DriverState &state, Presentation &presentation) {
+  cancelBackdrops(state, false);
+  overlayBackdrop(state, presentation);
+}
+
+// Runs the pending animation's backdrop channel on every bound backdrop, on
+// the same epoch as the clip's group. An inherited spring velocity was
+// resolved once by the registry before dispatch (resolvedSpringVelocity), so
+// `active.spring` carries the same trajectory the clip host runs.
+void installBackdropAnimations(
+    const DriverState &state,
+    CFTimeInterval sharedBeginTime) {
+  if (!state.animation.has_value() || state.backdrops.empty()) return;
+  const ActiveAnimation &active = *state.animation;
+  const CGPoint target = backdropTranslation(state.latest);
+  for (const ViewKey key : state.backdrops) {
+    SmoothClipBackdropView *backdrop = backdropForKey(key);
+    if (active.kind == AnimationKind::Timing) {
+      [backdrop smoothClipAnimateBackdropTo:target
+                                     timing:active.timing
+                            sharedBeginTime:sharedBeginTime];
+    } else {
+      [backdrop smoothClipAnimateBackdropTo:target
+                                     spring:active.spring
+                            sharedBeginTime:sharedBeginTime];
+    }
+  }
 }
 
 bool shouldReduceMotion(int32_t setting) {
@@ -468,6 +583,7 @@ Presentation canonicalFrozenPresentation(
   if (!hasCanonical && hasParticipantFallback) {
     canonical = participantFallback;
   }
+  freezeBackdropsInto(state, canonical);
   return canonical;
 }
 
@@ -478,7 +594,9 @@ Presentation canonicalVisiblePresentation(const DriverState &state) {
   for (const ViewKey key : state.views) {
     SmoothClipView *candidate = viewForKey(key);
     if ([candidate smoothClipIsJoinable]) {
-      return [candidate smoothClipCurrentPresentation];
+      Presentation visible = [candidate smoothClipCurrentPresentation];
+      overlayBackdrop(state, visible);
+      return visible;
     }
   }
   return state.latest;
@@ -554,11 +672,13 @@ std::vector<DriverSnapshot> cancelGroupInternal(
       for (const ViewKey key : state.views) {
         [viewForKey(key) smoothClipCancelAnimationUsingTarget:YES];
       }
+      cancelBackdrops(state, true);
       if (wasPending) {
         for (const ViewKey key : state.views) {
           [viewForKey(key) smoothClipApplyPresentation:resolved
                                   recordVelocitySample:NO];
         }
+        applyBackdrops(state, resolved);
       }
     } else {
       resolved = canonicalFrozenPresentation(state);
@@ -614,6 +734,7 @@ void cancelActive(
   for (const ViewKey key : state.views) {
     [viewForKey(key) smoothClipCancelAnimationUsingTarget:useTarget];
   }
+  cancelBackdrops(state, useTarget);
   emitCompletion(driverId, state, animationId, false);
 }
 
@@ -628,6 +749,7 @@ void finishStandaloneAtTarget(uint64_t driverId, DriverState &state) {
   for (const ViewKey key : state.views) {
     [viewForKey(key) smoothClipCancelAnimationUsingTarget:YES];
   }
+  cancelBackdrops(state, true);
   state.ownership = Ownership::Interactive;
   emitCompletion(driverId, state, animationId, true);
 }
@@ -646,6 +768,7 @@ void finishIfNoInstalledParticipants(uint64_t driverId, DriverState &state) {
   for (const ViewKey key : state.views) {
     [viewForKey(key) smoothClipCancelAnimationUsingTarget:YES];
   }
+  cancelBackdrops(state, true);
   state.ownership = Ownership::Interactive;
   emitCompletion(driverId, state, animationId, finished);
 }
@@ -662,6 +785,7 @@ void applyPresentation(
     [viewForKey(key) smoothClipApplyPresentation:presentation
                               recordVelocitySample:recordVelocitySample];
   }
+  applyBackdrops(state, presentation);
 }
 
 void prepareAnimation(
@@ -753,6 +877,7 @@ void startPendingAnimation(DriverState &state) {
     [participant smoothClipApplyPresentation:start recordVelocitySample:NO];
     installPendingAnimation(state, participant, key, start);
   }
+  installBackdropAnimations(state, 0);
 }
 
 void tryStartGroup(int32_t groupId) {
@@ -773,7 +898,18 @@ void tryStartGroup(int32_t groupId) {
     }
   }
 
-  const CFTimeInterval sharedBeginTime = CACurrentMediaTime();
+  // Anchor the run to the UI frame that started it when JS stamped one
+  // (Reanimated's target vsync): a `withTiming` begun in that same frame and
+  // this Core Animation run then trace one epoch, instead of the run leading
+  // by the rest of the frame. A recent stale stamp (a run held pending until
+  // its host could display) starts partway through, as that JS clock did; one
+  // outside the sanity window starts now.
+  const CFTimeInterval now = CACurrentMediaTime();
+  const CFTimeInterval hint = groupIterator->second.beginTimeHint;
+  const CFTimeInterval sharedBeginTime =
+      hint > 0 && hint <= now + kMaxBeginTimeLeadS &&
+          hint >= now - kStartStampSanityWindowS
+      ? hint : now;
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   for (const uint64_t driverId : driverIds) {
@@ -788,6 +924,7 @@ void tryStartGroup(int32_t groupId) {
       installPendingAnimation(
           state, participant, key, start, sharedBeginTime);
     }
+    installBackdropAnimations(state, sharedBeginTime);
   }
   [CATransaction commit];
 }
@@ -947,6 +1084,7 @@ void registerView(
     state.views.push_back(key);
   }
   [view smoothClipApplyPresentation:visible recordVelocitySample:NO];
+  applyBackdrops(state, visible);
   if (startsPendingRun) {
     startPendingAnimation(state);
   }
@@ -1002,7 +1140,45 @@ void unregisterView(uint64_t driverId, SmoothClipView *view) {
   state.views.erase(
       std::remove(state.views.begin(), state.views.end(), key),
       state.views.end());
-  if (state.destroyed && state.views.empty()) registry().erase(iterator);
+  if (state.destroyed && state.views.empty() && state.backdrops.empty()) {
+    registry().erase(iterator);
+  }
+}
+
+void registerBackdropView(uint64_t driverId, SmoothClipBackdropView *view) {
+  NSCAssert(NSThread.isMainThread, @"SmoothClip registry is main-thread only");
+  auto &state = registry()[driverId];
+  const ViewKey key = keyForBackdrop(view);
+  if (std::find(state.backdrops.begin(), state.backdrops.end(), key) !=
+      state.backdrops.end()) {
+    return;
+  }
+  // Adopt the driver's current value: a pending run's start, an already
+  // bound backdrop's visible value mid-run, else the model. A backdrop bound
+  // while a run is in flight follows from the next run.
+  Presentation visible =
+      state.animation.has_value() && !state.animation->started
+      ? state.animation->start
+      : state.latest;
+  if (!state.backdrops.empty()) overlayBackdrop(state, visible);
+  state.backdrops.push_back(key);
+  if (state.hasLatest) {
+    [view smoothClipApplyBackdrop:backdropTranslation(visible)];
+  }
+}
+
+void unregisterBackdropView(uint64_t driverId, SmoothClipBackdropView *view) {
+  NSCAssert(NSThread.isMainThread, @"SmoothClip registry is main-thread only");
+  auto iterator = registry().find(driverId);
+  if (iterator == registry().end()) return;
+  DriverState &state = iterator->second;
+  const ViewKey key = keyForBackdrop(view);
+  state.backdrops.erase(
+      std::remove(state.backdrops.begin(), state.backdrops.end(), key),
+      state.backdrops.end());
+  if (state.destroyed && state.views.empty() && state.backdrops.empty()) {
+    registry().erase(iterator);
+  }
 }
 
 void setPresentation(
@@ -1325,7 +1501,8 @@ int32_t createGroupAnimation(
     SpringAnimation spring,
     double durationMs,
     int32_t reduceMotion,
-    int32_t completionTag) {
+    int32_t completionTag,
+    double startedAtHintS) {
   std::vector<Presentation> resolvedStarts;
   bool reduced = false;
   if (!NSThread.isMainThread || controllerId == 0 ||
@@ -1377,6 +1554,9 @@ int32_t createGroupAnimation(
       driverIds,
       std::unordered_set<uint64_t>(driverIds.begin(), driverIds.end()),
   };
+  if (std::isfinite(startedAtHintS) && startedAtHintS > 0) {
+    group.beginTimeHint = startedAtHintS;
+  }
   groupRegistry().emplace(groupId, std::move(group));
 
   for (std::size_t entryIndex = 0; entryIndex < entries.size(); entryIndex += 1) {
@@ -1420,7 +1600,6 @@ int32_t animateTimingGroup(
     TimingAnimation animation,
     int32_t completionTag,
     double startedAtHintS) {
-  (void)startedAtHintS;
   return createGroupAnimation(
       controllerId,
       std::move(entries),
@@ -1429,7 +1608,8 @@ int32_t animateTimingGroup(
       {},
       animation.durationMs,
       animation.reduceMotion,
-      completionTag);
+      completionTag,
+      startedAtHintS);
 }
 
 int32_t animateSpringGroup(
@@ -1438,7 +1618,6 @@ int32_t animateSpringGroup(
     SpringAnimation animation,
     int32_t completionTag,
     double startedAtHintS) {
-  (void)startedAtHintS;
   return createGroupAnimation(
       controllerId,
       std::move(entries),
@@ -1447,7 +1626,8 @@ int32_t animateSpringGroup(
       animation,
       0,
       animation.reduceMotion,
-      completionTag);
+      completionTag,
+      startedAtHintS);
 }
 
 std::vector<DriverSnapshot> cancelAnimationGroup(
@@ -1544,6 +1724,7 @@ int32_t animateTiming(
       state.animation->participants.insert(key);
     }
   }
+  installBackdropAnimations(state, 0);
   return animationId;
 }
 
@@ -1633,6 +1814,7 @@ int32_t animateSpring(
       state.animation->participants.insert(key);
     }
   }
+  installBackdropAnimations(state, 0);
   return animationId;
 }
 
@@ -1709,6 +1891,7 @@ CancelResult cancelAnimation(
         [viewForKey(key) smoothClipApplyPresentation:target
                                 recordVelocitySample:NO];
       }
+      applyBackdrops(state, target);
     }
     state.ownership = Ownership::Interactive;
     return {true, target};
@@ -1733,7 +1916,7 @@ void destroyDriver(uint64_t driverId) {
   for (const ViewKey key : state.views) {
     [viewForKey(key) smoothClipClearVelocitySamples];
   }
-  if (state.views.empty()) {
+  if (state.views.empty() && state.backdrops.empty()) {
     registry().erase(iterator);
   } else {
     // Views can outlive the hook briefly (StrictMode effect replay, hosts in

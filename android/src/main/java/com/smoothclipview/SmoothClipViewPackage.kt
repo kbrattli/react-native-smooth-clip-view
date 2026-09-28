@@ -10,7 +10,7 @@ import com.facebook.react.uimanager.ViewManager
 class SmoothClipViewPackage : BaseReactPackage() {
     override fun createViewManagers(
         reactContext: ReactApplicationContext,
-    ): List<ViewManager<*, *>> = listOf(SmoothClipViewManager())
+    ): List<ViewManager<*, *>> = listOf(SmoothClipViewManager(), SmoothClipBackdropViewManager())
 
     override fun getModule(
         name: String,

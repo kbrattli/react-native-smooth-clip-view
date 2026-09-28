@@ -141,6 +141,9 @@
       "components": {
         "SmoothClipView": {
           "className": "SmoothClipView"
+        },
+        "SmoothClipBackdropView": {
+          "className": "SmoothClipBackdropView"
         }
       },
       "modulesProvider": {

@@ -1,5 +1,60 @@
 # Changelog
 
+## Unreleased
+
+- **Backdrop channel.** A presentation gains `backdrop: { translateX,
+  translateY }`, and the new `SmoothClipBackdropView` (`controller={clip}`)
+  is translated by it: every `setFrame` writes the channel in the same native
+  call as the clip, and every run animates it on the clip's own epoch (a
+  translation group on the shared Core Animation `beginTime` on iOS, the same
+  Choreographer advance on Android). Content that must stay locked to the
+  aperture no longer needs a Reanimated mapper, which can land a frame after
+  the clip. The native packet grows by two values (stride 23 → 25) and the
+  host takes `initialBackdropTranslateX/Y`, so a native rebuild is required;
+  a JavaScript-only update cannot upgrade an older native build.
+- iOS anchors a native run to the frame stamp JS passes (Reanimated's
+  `__frameTimestamp`, the display link's target vsync) as the shared Core
+  Animation `beginTime`, the way the Android frame loop already did. A run and
+  a `withTiming` begun in the same UI frame now trace one epoch; before, the
+  run began at its install time and led the Reanimated model by the rest of
+  that frame (about 14 ms at 60 Hz). Animation groups carry backwards fill so a
+  stamp up to one frame ahead of the commit shows the run's first frame, not
+  the target. JS now stamps runs on every platform.
+- `shadowRendering="baked"` on `SmoothClipView` renders the box shadow from one
+  pre-blurred tile per 4 pt corner-radius step that the compositor stretches
+  (`contentsCenter` on iOS, nine bitmap pieces on Android), so an animated or
+  dragged aperture costs no blur per frame. iOS bakes the tile through Core
+  Animation's own shadow path so it matches a `shadowPath` layer; Android
+  bakes it with the same `BlurMaskFilter` as the blur path. Runs animate the
+  tile layer's frame and opacity and swap tiles in steps where the radius,
+  blur or colour changes. Uniform radii only, and a shape at least
+  2 × (1.5 × blur + radius) on a side; unequal radii or a smaller shape keep
+  the blur path. Default stays `"blur"`.
+- Android builds a uniform circular corner with `addRoundRect` in the shared
+  path builder, so the shadow path (not only the clip) stays an rrect the
+  renderer can clip and blur analytically. Paths are `rewind()` instead of
+  `reset()` between frames, keeping their storage.
+- Baked tiles no longer bake inside the frame. A shadow's first tile bakes on
+  the calling thread (at mount, when nothing else can be shown) and a run's
+  resting target bakes at install, so the run ends exact; every other radius
+  step bakes off the frame (one per main-queue turn on iOS, a background
+  thread on Android) while the nearest cached step stands in, and the model
+  takes the exact tile when it lands. A run whose intermediate steps are not
+  cached yet swaps to the next cached, rounder tile at the missing step's key
+  time, so the shown corner is never tighter than the clip's.
+- iOS discrete tile swaps carry the closing key time Core Animation's discrete
+  mode requires (`keyTimes` has one more entry than `values`, ending at 1), so
+  each swap lands where the radius crosses its step rather than on an even
+  grid.
+- iOS trusts a frame stamp only within the same ±1 s window as Android. A
+  group held pending longer (a host that could not display, the app inactive)
+  or a stamp from a rescaled clock starts now instead of beginning fully
+  elapsed.
+- `canonicalizeClipPresentation` validates and canonicalizes in one pass: the
+  shadow colour, the geometry and the rotation were each parsed twice per
+  `setFrame`. The iOS packet reader reads the array length once per
+  presentation instead of once per value.
+
 ## [0.4.6](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.4.6) — 2026-09-20
 
 - Draw `continuous` corners on Android as a Figma smoothed corner (smoothing

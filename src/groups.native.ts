@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react';
-import { Platform } from 'react-native';
 import { scheduleOnRN, scheduleOnUI } from 'react-native-worklets';
 import type {
   ClipReduceMotion,
@@ -44,7 +43,6 @@ const cancelAnimationGroupHostFunction =
 
 const SNAPSHOT_STRIDE = PRESENTATION_STRIDE + 1;
 const MOTION_ENTRY_STRIDE = PRESENTATION_STRIDE * 2 + 2;
-const NEEDS_START_STAMP = Platform.OS === 'android';
 const DEFAULT_MASS = 4;
 const DEFAULT_STIFFNESS = 900;
 const DEFAULT_DAMPING = 120;
@@ -177,9 +175,17 @@ function reduceMotionCode(value: ClipReduceMotion | undefined): number {
   return 0;
 }
 
+/**
+ * The Reanimated frame stamp (`__frameTimestamp`, milliseconds) when the run
+ * starts inside a UI frame, else the animation clock. Both platforms anchor
+ * the native run to it: the Android frame loop advances from it, and iOS uses
+ * it as the shared Core Animation `beginTime`. A run and a `withTiming` begun
+ * in the same UI frame therefore share one epoch. Reanimated stamps a frame
+ * with the display link's target vsync, so an install-time
+ * `CACurrentMediaTime()` would put the native run about one frame ahead.
+ */
 function startTimestamp(): number {
   'worklet';
-  if (!NEEDS_START_STAMP) return Number.NaN;
   const runtime = globalThis as {
     __frameTimestamp?: number;
     _getAnimationTimestamp?: () => number;

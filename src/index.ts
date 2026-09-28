@@ -1,5 +1,10 @@
 export { SmoothClipView } from './SmoothClipView';
-export type { SmoothClipViewProps } from './SmoothClipView';
+export type {
+  SmoothClipShadowRendering,
+  SmoothClipViewProps,
+} from './SmoothClipView';
+export { SmoothClipBackdropView } from './SmoothClipBackdropView';
+export type { SmoothClipBackdropViewProps } from './SmoothClipBackdropView';
 export { useSmoothClipController } from './controllers';
 export { useSmoothClipGroup } from './groups';
 export { getSmoothClipCapabilities } from './capabilities';
@@ -36,6 +41,7 @@ export type {
   CanonicalClipGeometry,
   CanonicalClipBoxShadow,
   CanonicalSmoothClipPresentation,
+  ClipBackdrop,
   ClipCurve,
   ClipRotation,
   ClipGeometry,

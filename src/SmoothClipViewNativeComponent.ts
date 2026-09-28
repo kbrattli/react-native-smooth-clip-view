@@ -31,6 +31,10 @@ export interface NativeProps extends ViewProps {
   initialClipBoxShadowOffsetY: CodegenTypes.Double;
   initialClipBoxShadowBlurRadius: CodegenTypes.Double;
   initialClipBoxShadowSpreadDistance: CodegenTypes.Double;
+  /** 0 = blur the shadow path each frame, 1 = stretch a baked tile. */
+  shadowRendering?: CodegenTypes.WithDefault<CodegenTypes.Int32, 0>;
+  initialBackdropTranslateX?: CodegenTypes.WithDefault<CodegenTypes.Double, 0>;
+  initialBackdropTranslateY?: CodegenTypes.WithDefault<CodegenTypes.Double, 0>;
 }
 
 interface NativeCommands {

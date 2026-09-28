@@ -138,10 +138,11 @@ inline double cubicBezier(
 
 // --- Presentation channels ------------------------------------------------
 
-// The first thirteen channels are geometry/content/appearance; the final eight are shadow.
-// Curve and shadow presence are categorical and stay outside the scalar array.
-constexpr std::size_t kBaseChannelCount = 13;
-constexpr std::size_t kChannelCount = 21;
+// The first fifteen channels are geometry/content/appearance/backdrop; the
+// final eight are shadow. Curve and shadow presence are categorical and stay
+// outside the scalar array.
+constexpr std::size_t kBaseChannelCount = 15;
+constexpr std::size_t kChannelCount = 23;
 using Channels = std::array<double, kChannelCount>;
 
 inline double resolvedRadius(double overrideValue, double shorthand) {
@@ -179,6 +180,8 @@ inline Channels toChannels(const Presentation &presentation) {
           presentation.contentScale,
           presentation.rotation,
           presentation.opacity,
+          presentation.backdropTranslateX,
+          presentation.backdropTranslateY,
           presentation.shadow.red,
           presentation.shadow.green,
           presentation.shadow.blue,
@@ -365,6 +368,27 @@ inline double relativeSpringEnergy(
   return currentEnergy / initialEnergy;
 }
 
+/**
+ * Seconds until the normalized spring trajectory started with `velocity`
+ * settles under the animation's relative-energy threshold, sampled at 120 Hz
+ * and capped at ten seconds. Every layer of a run (clip, content, shadow,
+ * backdrop) derives its Core Animation duration from this one rule, so they
+ * are removed in the same frame.
+ */
+inline double springSettleDuration(
+    const SpringAnimation &animation,
+    double velocity) {
+  ScalarSpringState state{0, velocity};
+  constexpr double step = 1.0 / 120.0;
+  double elapsed = 0;
+  while (elapsed < 10.0 &&
+         relativeSpringEnergy(state, animation) > animation.energyThreshold) {
+    state = advanceScalarSpring(state, animation, step);
+    elapsed += step;
+  }
+  return elapsed;
+}
+
 inline bool springScaleStaysPositive(
     const Presentation &start,
     const Presentation &target,
@@ -460,16 +484,17 @@ inline Presentation fromChannels(
   geometry.curve = curve;
   Shadow shadow{
       shadowEnabled,
-      std::clamp(channels[13], 0.0, 1.0),
-      std::clamp(channels[14], 0.0, 1.0),
       std::clamp(channels[15], 0.0, 1.0),
       std::clamp(channels[16], 0.0, 1.0),
-      channels[17],
-      channels[18],
-      std::max(0.0, channels[19]),
-      channels[20]};
+      std::clamp(channels[17], 0.0, 1.0),
+      std::clamp(channels[18], 0.0, 1.0),
+      channels[19],
+      channels[20],
+      std::max(0.0, channels[21]),
+      channels[22]};
   return Presentation{
-      geometry, channels[8], channels[9], channels[10], shadow, channels[11], clamp01(channels[12])};
+      geometry, channels[8], channels[9], channels[10], shadow, channels[11],
+      clamp01(channels[12]), channels[13], channels[14]};
 }
 
 inline Presentation interpolate(

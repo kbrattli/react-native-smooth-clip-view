@@ -1,6 +1,7 @@
 package com.smoothclipview
 
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
@@ -8,8 +9,14 @@ import android.graphics.Outline
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.Region
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
+import android.os.Process
 import android.os.Trace
 import android.view.MotionEvent
 import android.view.View
@@ -18,6 +25,8 @@ import com.facebook.proguard.annotations.DoNotStrip
 import com.facebook.react.uimanager.PixelUtil
 import com.facebook.react.uimanager.ThemedReactContext
 import com.facebook.react.views.view.ReactViewGroup
+import java.lang.ref.WeakReference
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.roundToInt
 import kotlin.math.abs
 import kotlin.math.pow
@@ -87,6 +96,18 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     private var clipCurveCode = CLIP_CURVE_CIRCULAR
     private var boxShadowPath: Path? = null
     private var boxShadowPaint: Paint? = null
+    // `shadowRendering="baked"`: draw the shadow from one pre-blurred tile per
+    // radius step, stretched in nine pieces, instead of blurring a path on
+    // every frame the aperture moves. Like iOS, the tile is drawn under the
+    // aperture too (the blur path cuts it out); content is expected opaque.
+    private var bakedShadows = false
+    private var bakedShadowTile: BakedShadowTile? = null
+    private var bakedShadowPaint: Paint? = null
+    private val bakedSrc = Rect()
+    private val bakedDst = RectF()
+    private val bakedXs = FloatArray(4)
+    private val bakedYs = FloatArray(4)
+    private val bakedSx = IntArray(4)
     private var clipIsEmpty = true
     private var requestedImportantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_AUTO
     private var autonomousMotion = false
@@ -410,10 +431,51 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         return (radius + spread * multiplier).coerceAtLeast(0f)
     }
 
+    fun setBakedShadows(enabled: Boolean) {
+        if (bakedShadows == enabled) return
+        bakedShadows = enabled
+        if (!enabled) bakedShadowTile = null
+        if (requestedShadowEnabled && requestedShadowAlpha > 0f) {
+            rebuildBoxShadowPath()
+            presentationContainer.invalidate()
+        }
+    }
+
+    private fun usesBakedShadow(): Boolean {
+        if (!bakedShadows || clipTopLeftRadius != clipTopRightRadius ||
+            clipTopLeftRadius != clipBottomRightRadius ||
+            clipTopLeftRadius != clipBottomLeftRadius
+        ) {
+            return false
+        }
+        // A shape too small for two corner pieces on a side, 2 x (margin +
+        // radius), keeps the blur path: overlapping pieces do not add up to
+        // the blur tails the true shadow overlaps.
+        val margin = kotlin.math.ceil(1.5f * requestedShadowBlurRadius.coerceAtLeast(0f))
+        val minimumSide = 2f * (margin + bakedShadowTileRadius())
+        val spread = 2f * requestedShadowSpreadDistance
+        return clipRight - clipLeft + spread >= minimumSide &&
+            clipBottom - clipTop + spread >= minimumSide
+    }
+
+    /** Radius step, in px, of the tile the current shadow draws from. */
+    private fun bakedShadowTileRadius(): Float {
+        val radius = adjustedRadiusForSpread(clipTopLeftRadius, requestedShadowSpreadDistance)
+        val step = BAKED_SHADOW_RADIUS_STEP_DP * resources.displayMetrics.density
+        return if (step > 0f) kotlin.math.ceil(radius / step) * step else radius
+    }
+
     private fun rebuildBoxShadowPath() {
         if (!requestedShadowEnabled || requestedShadowAlpha <= 0f) return
+        if (usesBakedShadow()) {
+            // The tile replaces the path; a stale path must not be drawn if
+            // the radii later stop being uniform before a rebuild.
+            boxShadowPath?.rewind()
+            return
+        }
         val path = boxShadowPath ?: Path().also { boxShadowPath = it }
-        path.reset()
+        // Keeps the path's storage across frames; reset() may free it.
+        path.rewind()
         if (clipIsEmpty) return
         val spread = requestedShadowSpreadDistance
         val left = clipLeft - spread + requestedShadowOffsetX
@@ -445,13 +507,75 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         }
     }
 
+    private fun bakedShadowTile(): BakedShadowTile? {
+        val density = resources.displayMetrics.density
+        val step = BAKED_SHADOW_RADIUS_STEP_DP * density
+        val tileRadius = bakedShadowTileRadius()
+        val band = maxOf(2, (2f * density).roundToInt())
+        val rgb = Color.rgb(
+            (requestedShadowRed * 255f).roundToInt(),
+            (requestedShadowGreen * 255f).roundToInt(),
+            (requestedShadowBlue * 255f).roundToInt(),
+        )
+        val current = bakedShadowTile
+        if (current != null && current.matches(tileRadius, clipCurveCode, requestedShadowBlurRadius, rgb)) {
+            return current
+        }
+        // A stand-in from a neighbouring step does not match, so the next
+        // frame asks again and picks up the exact tile once it has landed.
+        return BakedShadowTiles.getOrRequest(
+            tileRadius, clipCurveCode, requestedShadowBlurRadius, rgb, band, step, this,
+        ).also { bakedShadowTile = it }
+    }
+
+    /** The exact tile for the current radius step has landed: draw it. */
+    internal fun shadowTileDidLand() {
+        if (!requestedShadowEnabled || requestedShadowAlpha <= 0f || !usesBakedShadow()) return
+        presentationContainer.invalidate()
+    }
+
+    private fun drawBakedBoxShadow(canvas: Canvas) {
+        val tile = bakedShadowTile() ?: return
+        val spread = requestedShadowSpreadDistance
+        val margin = tile.margin.toFloat()
+        val left = clipLeft - spread + requestedShadowOffsetX - margin
+        val top = clipTop - spread + requestedShadowOffsetY - margin
+        val right = clipRight + spread + requestedShadowOffsetX + margin
+        val bottom = clipBottom + spread + requestedShadowOffsetY + margin
+        if (right <= left || bottom <= top) return
+        val paint = bakedShadowPaint ?: Paint(Paint.FILTER_BITMAP_FLAG).also {
+            bakedShadowPaint = it
+        }
+        paint.alpha = (requestedShadowAlpha * 255f).roundToInt().coerceIn(0, 255)
+        val corner = tile.corner.toFloat()
+        // Nine pieces: corners keep their size, edges stretch one way, the
+        // centre both ways. A destination too small for two corners draws
+        // them overlapping and skips the middle pieces.
+        bakedXs[0] = left; bakedXs[1] = left + corner
+        bakedXs[2] = right - corner; bakedXs[3] = right
+        bakedYs[0] = top; bakedYs[1] = top + corner
+        bakedYs[2] = bottom - corner; bakedYs[3] = bottom
+        bakedSx[0] = 0; bakedSx[1] = tile.corner
+        bakedSx[2] = tile.corner + tile.band; bakedSx[3] = tile.side
+        for (row in 0 until 3) {
+            for (col in 0 until 3) {
+                bakedDst.set(bakedXs[col], bakedYs[row], bakedXs[col + 1], bakedYs[row + 1])
+                if (bakedDst.right <= bakedDst.left || bakedDst.bottom <= bakedDst.top) continue
+                bakedSrc.set(bakedSx[col], bakedSx[row], bakedSx[col + 1], bakedSx[row + 1])
+                canvas.drawBitmap(tile.bitmap, bakedSrc, bakedDst, paint)
+            }
+        }
+    }
+
     private fun drawBoxShadow(canvas: Canvas) {
+        if (!requestedShadowEnabled || clipIsEmpty || requestedShadowAlpha <= 0f) return
+        if (usesBakedShadow()) {
+            drawBakedBoxShadow(canvas)
+            return
+        }
         val shadowPath = boxShadowPath
         val shadowPaint = boxShadowPaint
-        if (requestedShadowEnabled && !clipIsEmpty &&
-            requestedShadowAlpha > 0f && shadowPath != null &&
-            shadowPaint != null && !shadowPath.isEmpty
-        ) {
+        if (shadowPath != null && shadowPaint != null && !shadowPath.isEmpty) {
             val apertureSaveCount = canvas.save()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 canvas.clipOutPath(clipPath)
@@ -487,9 +611,6 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         clipTop = top
         clipRight = right
         clipBottom = bottom
-        val radiiAreUniform = topLeftRadius == topRightRadius &&
-            topLeftRadius == bottomRightRadius &&
-            topLeftRadius == bottomLeftRadius
         clipTopLeftRadius = topLeftRadius
         clipTopRightRadius = topRightRadius
         clipBottomRightRadius = bottomRightRadius
@@ -504,32 +625,22 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         if (!geometryChanged) return
 
         updateOverflowInsets()
-        clipPath.reset()
+        clipPath.rewind()
         if (!isEmpty) {
-            if (curveCode == CLIP_CURVE_CIRCULAR && radiiAreUniform) {
-                clipPath.addRoundRect(
-                    left,
-                    top,
-                    right,
-                    bottom,
-                    topLeftRadius,
-                    topLeftRadius,
-                    Path.Direction.CW,
-                )
-            } else {
-                appendRoundedRectPath(
-                    clipPath,
-                    left,
-                    top,
-                    right,
-                    bottom,
-                    topLeftRadius,
-                    topRightRadius,
-                    bottomRightRadius,
-                    bottomLeftRadius,
-                    curveCode,
-                )
-            }
+            // One builder for clip, shadow and hit testing; it keeps a uniform
+            // circular corner as an rrect for the renderer's fast paths.
+            appendRoundedRectPath(
+                clipPath,
+                left,
+                top,
+                right,
+                bottom,
+                topLeftRadius,
+                topRightRadius,
+                bottomRightRadius,
+                bottomLeftRadius,
+                curveCode,
+            )
         }
         rebuildBoxShadowPath()
         if (supportsPathOutlineClipping) {
@@ -800,9 +911,180 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         requestedShadowSpreadDistance = 0f
         boxShadowPaint = null
         boxShadowPath = null
+        bakedShadowTile = null
         applyContentTransform()
-        clipPath.reset()
+        clipPath.rewind()
         requestedImportantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_AUTO
         applyRequestedGeometry()
+    }
+}
+
+/** Corner-radius step baked shadow tiles are rounded up to, in dp. */
+internal const val BAKED_SHADOW_RADIUS_STEP_DP = 4f
+
+/**
+ * One pre-blurred rounded-rect shadow, square, with the shape inset by
+ * [margin] (3σ = 1.5 × the CSS blur) on every side and a stretchable band of
+ * [band] px between the corner regions of [corner] px. Colour is opaque; the
+ * shadow alpha is applied by the drawing paint.
+ */
+internal class BakedShadowTile(
+    val bitmap: Bitmap,
+    val radius: Float,
+    val curveCode: Int,
+    val blurRadius: Float,
+    val rgb: Int,
+    val margin: Int,
+    val band: Int,
+) {
+    val corner: Int = 2 * margin + radius.roundToInt()
+    val side: Int = bitmap.width
+
+    fun matches(radius: Float, curveCode: Int, blurRadius: Float, rgb: Int): Boolean =
+        this.radius == radius && this.curveCode == curveCode &&
+            this.blurRadius == blurRadius && this.rgb == rgb
+}
+
+/**
+ * Process-wide tile cache: a handful of (radius step, curve, blur, colour).
+ *
+ * A bake costs a bitmap allocation plus a software blur, growing with
+ * blur² × density², so it stays off the frame: a missing tile is requested on
+ * a background thread while the nearest cached step stands in, and only a
+ * cold cache (nothing near to show, at mount) bakes on the calling thread.
+ */
+internal object BakedShadowTiles {
+    private const val MAX_TILES = 12
+    /** Radius steps searched on either side of a missing tile for a stand-in. */
+    private const val SEARCH_STEPS = 16
+    private val tiles = LinkedHashMap<String, BakedShadowTile>(MAX_TILES, 0.75f, true)
+    private val pending = LinkedHashMap<String, PendingTile>()
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+    private val worker by lazy {
+        val thread = HandlerThread("SmoothClipShadowTiles", Process.THREAD_PRIORITY_BACKGROUND)
+        thread.start()
+        Handler(thread.looper)
+    }
+    /** Where a requested bake runs and where its result lands; tests swap in queues they drain. */
+    internal var runBake: (Runnable) -> Unit = { worker.post(it) }
+    internal var runOnMain: (Runnable) -> Unit = { mainHandler.post(it) }
+    /** Tiles baked so far in this process; tests read it. */
+    val bakeCount = AtomicInteger()
+
+    private class PendingTile(
+        val radius: Float,
+        val curveCode: Int,
+        val blurRadius: Float,
+        val rgb: Int,
+        val band: Int,
+    ) {
+        val requesters = mutableListOf<WeakReference<SmoothClipView>>()
+    }
+
+    private fun key(radius: Float, curveCode: Int, blurRadius: Float, rgb: Int, band: Int): String =
+        "$radius|$curveCode|$blurRadius|$rgb|$band"
+
+    /**
+     * The tile for this radius step when cached. Otherwise the nearest cached
+     * step (the rounder neighbour first: a tile corner tighter than the clip
+     * corner over it reads as a dark sliver, a rounder one only recedes under
+     * the clip) while the exact tile bakes on the background thread, after
+     * which [requester] is asked to draw again. Nothing near: baked now.
+     */
+    @Synchronized
+    fun getOrRequest(
+        radius: Float,
+        curveCode: Int,
+        blurRadius: Float,
+        rgb: Int,
+        band: Int,
+        stepPx: Float,
+        requester: SmoothClipView?,
+    ): BakedShadowTile? {
+        val key = key(radius, curveCode, blurRadius, rgb, band)
+        tiles[key]?.let { return it }
+        val standIn = if (stepPx > 0f) nearest(radius, curveCode, blurRadius, rgb, band, stepPx) else null
+        if (standIn == null) {
+            return bake(radius, curveCode, blurRadius, rgb, band)?.also { store(key, it) }
+        }
+        request(key, PendingTile(radius, curveCode, blurRadius, rgb, band), requester)
+        return standIn
+    }
+
+    private fun nearest(
+        radius: Float,
+        curveCode: Int,
+        blurRadius: Float,
+        rgb: Int,
+        band: Int,
+        stepPx: Float,
+    ): BakedShadowTile? {
+        for (distance in 1..SEARCH_STEPS) {
+            val delta = distance * stepPx
+            tiles[key(radius + delta, curveCode, blurRadius, rgb, band)]?.let { return it }
+            if (radius - delta < 0f) continue
+            tiles[key(radius - delta, curveCode, blurRadius, rgb, band)]?.let { return it }
+        }
+        return null
+    }
+
+    private fun store(key: String, tile: BakedShadowTile) {
+        tiles[key] = tile
+        if (tiles.size > MAX_TILES) {
+            val eldest = tiles.entries.iterator()
+            eldest.next()
+            eldest.remove()
+        }
+    }
+
+    private fun request(key: String, tile: PendingTile, requester: SmoothClipView?) {
+        val existing = pending[key]
+        if (existing != null) {
+            // One entry per view: a stand-in never matches, so the same view
+            // asks again on every draw until the exact tile lands.
+            if (requester != null && existing.requesters.none { it.get() === requester }) {
+                existing.requesters += WeakReference(requester)
+            }
+            return
+        }
+        if (requester != null) tile.requesters += WeakReference(requester)
+        pending[key] = tile
+        runBake {
+            val baked = bake(tile.radius, tile.curveCode, tile.blurRadius, tile.rgb, tile.band)
+            runOnMain { land(key, baked) }
+        }
+    }
+
+    private fun land(key: String, tile: BakedShadowTile?) {
+        val entry = synchronized(this) {
+            val removed = pending.remove(key)
+            if (tile != null && removed != null) store(key, tile)
+            removed
+        }
+        if (tile == null || entry == null) return
+        for (requester in entry.requesters) requester.get()?.shadowTileDidLand()
+    }
+
+    private fun bake(radius: Float, curveCode: Int, blurRadius: Float, rgb: Int, band: Int): BakedShadowTile? {
+        val margin = kotlin.math.ceil(1.5f * blurRadius.coerceAtLeast(0f)).toInt()
+        val corner = 2 * margin + radius.roundToInt()
+        val side = 2 * corner + band
+        if (side <= 0 || side > 4096) return null
+        bakeCount.incrementAndGet()
+        val bitmap = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
+        val path = Path()
+        val inset = margin.toFloat()
+        appendRoundedRectPath(
+            path, inset, inset, side - inset, side - inset,
+            radius, radius, radius, radius, curveCode,
+        )
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        paint.color = rgb or (0xFF shl 24)
+        val sigma = blurRadius * 0.5f
+        if (sigma > 0.5f) {
+            paint.maskFilter = BlurMaskFilter((sigma - 0.5f) / 0.57735f, BlurMaskFilter.Blur.NORMAL)
+        }
+        Canvas(bitmap).drawPath(path, paint)
+        return BakedShadowTile(bitmap, radius, curveCode, blurRadius, rgb, margin, band)
     }
 }
