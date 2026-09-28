@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `useSmoothClipController` validates and canonicalizes its initial
+  presentation on the first render only, the render that seeds the host. A
+  caller that rebuilds the object every render (a presentation derived from a
+  layout width) no longer pays a canonicalization per render; a later invalid
+  value is ignored rather than thrown, as it was already never applied.
+- Test: the full-turn rotation interruption XCTest reads a 20 s run begun 8 s
+  in the past instead of a 2 s run begun 0.6 s ago, so a loaded CI machine can
+  no longer overrun its window (it read 4.6 turns, past the `< 4 pi` bound).
+
 ## [0.5.1](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.5.1) — 2026-09-28
 
 - **Fix: iOS baked shadows were invisible.** `shadowRendering="baked"` baked

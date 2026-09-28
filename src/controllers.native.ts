@@ -28,16 +28,21 @@ export function useSmoothClipController(
   // validation, native dispatch, cancellation, completion, and lifecycle races
   // on the same path as multi-member transitions.
   const group = useSmoothClipGroup(options);
-  const initialRequested =
-    'clip' in initialValue
-      ? initialValue
-      : createClipPresentation(initialValue);
-  const canonicalInitial = canonicalizeClipPresentation(initialRequested);
-  if (canonicalInitial === null) {
-    throw new Error('[SmoothClipView] Initial presentation must be finite.');
-  }
+  // Only the first render's value seeds the host, so it is validated and
+  // canonicalized once; a caller that rebuilds the object every render (a
+  // presentation derived from a layout width, say) pays nothing after that.
   const initialFrameRef = useRef<CanonicalSmoothClipPresentation | null>(null);
-  initialFrameRef.current ??= canonicalInitial;
+  if (initialFrameRef.current === null) {
+    const initialRequested =
+      'clip' in initialValue
+        ? initialValue
+        : createClipPresentation(initialValue);
+    const canonicalInitial = canonicalizeClipPresentation(initialRequested);
+    if (canonicalInitial === null) {
+      throw new Error('[SmoothClipView] Initial presentation must be finite.');
+    }
+    initialFrameRef.current = canonicalInitial;
+  }
   const initialFrame = initialFrameRef.current;
 
   const idRef = useRef(0);
