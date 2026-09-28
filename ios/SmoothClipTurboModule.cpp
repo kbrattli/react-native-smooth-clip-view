@@ -11,7 +11,7 @@
 namespace facebook::react {
 namespace {
 
-constexpr size_t kPresentationStride = 23;
+constexpr size_t kPresentationStride = 25;
 constexpr size_t kSnapshotStride = kPresentationStride + 1;
 constexpr size_t kMotionEntryStride = kPresentationStride * 2 + 2;
 
@@ -68,7 +68,9 @@ smoothclip::Presentation makePresentation(
     double shadowBlurRadius = 0,
     double shadowSpreadDistance = 0,
     double rotation = 0,
-    double opacity = 1) {
+    double opacity = 1,
+    double backdropTranslateX = 0,
+    double backdropTranslateY = 0) {
   const bool uniform = topLeftRadius == topRightRadius &&
       topLeftRadius == bottomRightRadius &&
       topLeftRadius == bottomLeftRadius;
@@ -86,7 +88,7 @@ smoothclip::Presentation makePresentation(
       contentScale,
       {shadowEnabled, shadowRed, shadowGreen, shadowBlue, shadowAlpha,
        shadowOffsetX, shadowOffsetY, shadowBlurRadius, shadowSpreadDistance},
-      rotation, opacity};
+      rotation, opacity, backdropTranslateX, backdropTranslateY};
 }
 
 bool finitePresentation(const smoothclip::Presentation &presentation) {
@@ -102,6 +104,8 @@ bool finitePresentation(const smoothclip::Presentation &presentation) {
       std::isfinite(presentation.contentScale) &&
       presentation.contentScale > 0 &&
       std::isfinite(presentation.rotation) && std::isfinite(presentation.opacity) &&
+      std::isfinite(presentation.backdropTranslateX) &&
+      std::isfinite(presentation.backdropTranslateY) &&
       std::isfinite(presentation.shadow.red) &&
       std::isfinite(presentation.shadow.green) &&
       std::isfinite(presentation.shadow.blue) &&
@@ -150,7 +154,8 @@ bool presentationAt(
       values[11],
       values[12] == 1,
       values[13], values[14], values[15], values[16],
-      values[17], values[18], values[19], values[20], values[21], values[22]);
+      values[17], values[18], values[19], values[20], values[21], values[22],
+      values[23], values[24]);
   return finitePresentation(result);
 }
 
@@ -192,6 +197,8 @@ void writePresentation(
   result.setValueAtIndex(runtime, offset + 20, presentation.shadow.spreadDistance);
   result.setValueAtIndex(runtime, offset + 21, presentation.rotation);
   result.setValueAtIndex(runtime, offset + 22, presentation.opacity);
+  result.setValueAtIndex(runtime, offset + 23, presentation.backdropTranslateX);
+  result.setValueAtIndex(runtime, offset + 24, presentation.backdropTranslateY);
 }
 
 jsi::Array snapshotArray(

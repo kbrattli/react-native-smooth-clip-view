@@ -53,6 +53,17 @@ export type CanonicalClipGeometry = Readonly<{
   curve: ClipCurve;
 }>;
 
+/**
+ * Translation, in host points, of every `SmoothClipBackdropView` bound to the
+ * clip's controller. It rides the same native run and `setFrame` stream as
+ * the aperture, so content that must stay locked to the window (a canvas
+ * centred in it) is sampled by the same clock as the clip.
+ */
+export type ClipBackdrop = Readonly<{
+  translateX: number;
+  translateY: number;
+}>;
+
 export type SmoothClipPresentation = Readonly<{
   clip: ClipGeometry;
   contentTranslateX: number;
@@ -64,6 +75,8 @@ export type SmoothClipPresentation = Readonly<{
   /** Opacity of the complete clipped object; defaults to 1. */
   opacity?: number;
   boxShadow?: ClipBoxShadow;
+  /** Defaults to no translation when omitted. */
+  backdrop?: ClipBackdrop;
 }>;
 
 export type CanonicalSmoothClipPresentation = Readonly<{
@@ -74,6 +87,7 @@ export type CanonicalSmoothClipPresentation = Readonly<{
   rotation: `${number}rad`;
   opacity: number;
   boxShadow?: CanonicalClipBoxShadow;
+  backdrop: ClipBackdrop;
 }>;
 
 /** Numeric native angle. Invalid input remains NaN for atomic validation. */
@@ -96,6 +110,19 @@ function resolvedOpacity(presentation: SmoothClipPresentation): number {
 }
 
 const DEFAULT_SHADOW_COLOR = '#000000ff';
+const NO_BACKDROP: ClipBackdrop = { translateX: 0, translateY: 0 };
+
+function resolvedBackdrop(presentation: SmoothClipPresentation): ClipBackdrop {
+  'worklet';
+  return presentation.backdrop ?? NO_BACKDROP;
+}
+
+function isFiniteBackdrop(backdrop: ClipBackdrop): boolean {
+  'worklet';
+  return (
+    Number.isFinite(backdrop.translateX) && Number.isFinite(backdrop.translateY)
+  );
+}
 
 function isClipCurve(curve: ClipCurve | undefined): boolean {
   'worklet';
@@ -247,6 +274,7 @@ export function isFiniteClipPresentation(
     contentScale > 0 &&
     Number.isFinite(rotationRadians(presentation.rotation)) &&
     Number.isFinite(presentation.opacity ?? 1) &&
+    isFiniteBackdrop(resolvedBackdrop(presentation)) &&
     shadow !== null
   );
 }
@@ -264,6 +292,10 @@ export function clipPresentationEquals(
     resolvedContentScale(first) === resolvedContentScale(second) &&
     rotationRadians(first.rotation) === rotationRadians(second.rotation) &&
     resolvedOpacity(first) === resolvedOpacity(second) &&
+    resolvedBackdrop(first).translateX ===
+      resolvedBackdrop(second).translateX &&
+    resolvedBackdrop(first).translateY ===
+      resolvedBackdrop(second).translateY &&
     clipBoxShadowEquals(first.boxShadow, second.boxShadow)
   );
 }
@@ -356,13 +388,15 @@ export function canonicalizeClipPresentation(
   if (boxShadow === null) return null;
   const contentScale = resolvedContentScale(presentation);
   const rotation = rotationRadians(presentation.rotation);
+  const backdrop = resolvedBackdrop(presentation);
   if (
     !Number.isFinite(presentation.contentTranslateX) ||
     !Number.isFinite(presentation.contentTranslateY) ||
     !Number.isFinite(contentScale) ||
     contentScale <= 0 ||
     !Number.isFinite(rotation) ||
-    !Number.isFinite(presentation.opacity ?? 1)
+    !Number.isFinite(presentation.opacity ?? 1) ||
+    !isFiniteBackdrop(backdrop)
   ) {
     return null;
   }
@@ -375,6 +409,10 @@ export function canonicalizeClipPresentation(
     rotation: `${rotation}rad`,
     opacity: resolvedOpacity(presentation),
     ...(boxShadow === undefined ? {} : { boxShadow }),
+    backdrop:
+      backdrop === NO_BACKDROP
+        ? NO_BACKDROP
+        : { translateX: backdrop.translateX, translateY: backdrop.translateY },
   };
 }
 
@@ -410,6 +448,7 @@ export function createClipPresentation(
     contentScale,
     rotation: '0rad',
     opacity: 1,
+    backdrop: NO_BACKDROP,
     ...(canonicalShadow === undefined
       ? {}
       : {

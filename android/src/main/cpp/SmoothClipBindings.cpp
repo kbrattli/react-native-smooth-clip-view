@@ -27,7 +27,7 @@ namespace smoothclip {
 namespace {
 
 constexpr double kMaxSafeJavaScriptInteger = 9007199254740991.0;
-constexpr size_t kPresentationStride = 23;
+constexpr size_t kPresentationStride = 25;
 constexpr size_t kSnapshotStride = kPresentationStride + 1;
 constexpr size_t kMotionEntryStride = kPresentationStride * 2 + 2;
 
@@ -155,7 +155,8 @@ bool presentationAt(
       Shadow{
           packet[12] == 1.0,
           packet[13], packet[14], packet[15], packet[16],
-          packet[17], packet[18], packet[19], packet[20]}, packet[21], packet[22]};
+          packet[17], packet[18], packet[19], packet[20]}, packet[21], packet[22],
+      packet[23], packet[24]};
   return finitePresentation(result);
 }
 
@@ -193,6 +194,8 @@ void appendPresentation(
   result.setValueAtIndex(runtime, offset++, presentation.shadow.spreadDistance);
   result.setValueAtIndex(runtime, offset++, presentation.rotation);
   result.setValueAtIndex(runtime, offset++, presentation.opacity);
+  result.setValueAtIndex(runtime, offset++, presentation.backdropTranslateX);
+  result.setValueAtIndex(runtime, offset++, presentation.backdropTranslateY);
 }
 
 Array presentationArray(Runtime &runtime, const Presentation &presentation) {
@@ -835,11 +838,15 @@ void nativeRegisterView(
     jdouble shadowSpreadDistance,
     jdouble rotation,
     jdouble opacity,
+    jdouble backdropTranslateX,
+    jdouble backdropTranslateY,
     jdouble density,
     jdouble widthPx,
     jdouble heightPx,
     jboolean lifecycleVisible) {
   if (driverId <= 0 || !std::isfinite(driverId) || !std::isfinite(x) ||
+      !std::isfinite(backdropTranslateX) ||
+      !std::isfinite(backdropTranslateY) ||
       !std::isfinite(y) || !std::isfinite(width) || !std::isfinite(height) ||
       !std::isfinite(topLeftRadius) || !std::isfinite(topRightRadius) ||
       !std::isfinite(bottomRightRadius) || !std::isfinite(bottomLeftRadius) ||
@@ -882,11 +889,34 @@ void nativeRegisterView(
       static_cast<uint64_t>(driverId),
       view,
       smoothclip::Presentation{
-          geometry, contentTranslateX, contentTranslateY, contentScale, shadow, rotation, opacity},
+          geometry, contentTranslateX, contentTranslateY, contentScale, shadow,
+          rotation, opacity, backdropTranslateX, backdropTranslateY},
       density,
       widthPx,
       heightPx,
       lifecycleVisible != 0);
+}
+
+void nativeRegisterBackdropView(
+    jni::alias_ref<jni::JObject>,
+    jdouble driverId,
+    jni::alias_ref<smoothclip::JSmoothClipBackdropView> view,
+    jdouble density) {
+  if (driverId <= 0 || !std::isfinite(driverId) || !std::isfinite(density) ||
+      density <= 0) {
+    return;
+  }
+  smoothclip::registerBackdropViewAndroid(
+      static_cast<uint64_t>(driverId), view, density);
+}
+
+void nativeUnregisterBackdropView(
+    jni::alias_ref<jni::JObject>,
+    jdouble driverId,
+    jni::alias_ref<smoothclip::JSmoothClipBackdropView> view) {
+  if (driverId <= 0 || !std::isfinite(driverId)) return;
+  smoothclip::unregisterBackdropViewAndroid(
+      static_cast<uint64_t>(driverId), view);
 }
 
 void nativeSetViewHostGeometry(
@@ -952,6 +982,10 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) {
             makeNativeMethod(
                 "nativeSetViewHostGeometry", nativeSetViewHostGeometry),
             makeNativeMethod("nativeUnregisterView", nativeUnregisterView),
+            makeNativeMethod(
+                "nativeRegisterBackdropView", nativeRegisterBackdropView),
+            makeNativeMethod(
+                "nativeUnregisterBackdropView", nativeUnregisterBackdropView),
             makeNativeMethod("nativeDestroyDriver", nativeDestroyDriver),
             makeNativeMethod(
                 "nativeSetViewLifecycleVisibility",

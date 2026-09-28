@@ -34,12 +34,29 @@ describe('presentation codec', () => {
         blurRadius: 64,
         spreadDistance: -2,
       },
+      backdrop: { translateX: -37.5, translateY: 12 },
     });
 
     expect(presentation).not.toBeNull();
     const packet = presentationPacket(presentation!);
     expect(packet).toHaveLength(PRESENTATION_STRIDE);
+    expect(packet.slice(-2)).toEqual([-37.5, 12]);
     expect(presentationFromPacket(packet)).toEqual(presentation);
+  });
+
+  it('defaults an omitted backdrop to no translation', () => {
+    const presentation = canonicalizeClipPresentation({
+      clip: { x: 0, y: 0, width: 40, height: 30, radius: 8 },
+      contentTranslateX: 0,
+      contentTranslateY: 0,
+    });
+    expect(presentation?.backdrop).toEqual({ translateX: 0, translateY: 0 });
+    const packet = presentationPacket(presentation!);
+    expect(packet.slice(-2)).toEqual([0, 0]);
+    expect(presentationFromPacket(packet)?.backdrop).toEqual({
+      translateX: 0,
+      translateY: 0,
+    });
   });
 
   it('preserves an absent shadow and rejects incomplete or non-finite packets', () => {

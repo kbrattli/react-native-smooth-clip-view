@@ -46,6 +46,12 @@ struct Presentation {
   Shadow shadow{};
   double rotation = 0; // Unwrapped radians, clockwise in host coordinates.
   double opacity = 1;
+  // Translation of every SmoothClipBackdropView bound to the driver, in
+  // host points. A channel of the same run as the aperture, so content that
+  // must stay locked to the window (a canvas centred in it) is sampled by
+  // the same native clock as the clip and never lands a frame late.
+  double backdropTranslateX = 0;
+  double backdropTranslateY = 0;
 };
 
 struct TimingAnimation {

@@ -569,6 +569,32 @@ class SmoothClipViewRobolectricTest {
         assertTrue(queued.isEmpty())
     }
 
+    @Test
+    fun backdropViewTranslatesItsContentContainerNotItself() {
+        val application = RuntimeEnvironment.getApplication()
+        val reactContext = mock(ReactApplicationContext::class.java)
+        val themedContext = ThemedReactContext(reactContext, application, null, -1)
+        val backdrop = SmoothClipBackdropView(themedContext)
+        val manager = SmoothClipBackdropViewManager()
+        val child = View(themedContext)
+        manager.addView(backdrop, child, 0)
+        backdrop.layout(0, 0, 300, 200)
+        // Children mount into the translated container, which fills the view.
+        assertEquals(1, manager.getChildCount(backdrop))
+        assertTrue(manager.getChildAt(backdrop, 0) === child)
+        assertEquals(300, backdrop.contentContainer.width)
+        assertEquals(200, backdrop.contentContainer.height)
+        // The registry's per-frame write lands on the container, leaving the
+        // view's own transform to React Native.
+        backdrop.setBackdropTranslationPx(-37.5f, 12f)
+        assertEquals(-37.5f, backdrop.contentContainer.translationX)
+        assertEquals(12f, backdrop.contentContainer.translationY)
+        assertEquals(0f, backdrop.translationX)
+        assertEquals(0f, backdrop.translationY)
+        manager.removeViewAt(backdrop, 0)
+        assertEquals(0, manager.getChildCount(backdrop))
+    }
+
     private fun privatePath(name: String): Path =
         SmoothClipView::class.java.getDeclaredField(name).let { field ->
             field.isAccessible = true

@@ -5,7 +5,7 @@ import type { CanonicalSmoothClipPresentation } from './geometry';
  * Versionless native packet layout. Keep this as the single JS codec used by
  * drivers, groups, snapshots, and cancellation.
  */
-export const PRESENTATION_STRIDE = 23;
+export const PRESENTATION_STRIDE = 25;
 
 export function appendPresentationPacket(
   values: number[],
@@ -43,7 +43,9 @@ export function appendPresentationPacket(
     boxShadow?.blurRadius ?? 0,
     boxShadow?.spreadDistance ?? 0,
     Number(presentation.rotation.slice(0, -3)),
-    presentation.opacity
+    presentation.opacity,
+    presentation.backdrop.translateX,
+    presentation.backdrop.translateY
   );
 }
 
@@ -125,6 +127,10 @@ export function presentationFromPacket(
     contentScale,
     rotation: `${values[offset + 21] as number}rad`,
     opacity: values[offset + 22] as number,
+    backdrop: {
+      translateX: values[offset + 23] as number,
+      translateY: values[offset + 24] as number,
+    },
     ...(shadowEnabled
       ? {
           boxShadow: {

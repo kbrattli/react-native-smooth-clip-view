@@ -1,5 +1,6 @@
 #import <XCTest/XCTest.h>
 
+#import "SmoothClipBackdropView.h"
 #import "SmoothClipView.h"
 #import "SmoothClipViewRegistry.h"
 
@@ -3192,6 +3193,100 @@ static UIWindow *TestWindow(void) {
   XCTAssertEqual(SmoothClipShadowTileBakeCountForTesting(), bakedBefore + 2);
   XCTAssertEqual(SmoothClipPendingShadowTileCountForTesting(), 0u);
 
+  smoothclip::unregisterView(driverId, host);
+  [host setValue:@0 forKey:@"driverId"];
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testBackdropFollowsEveryWriteAndRunOnTheClipEpoch {
+  constexpr uint64_t driverId = 99086;
+  UIWindow *window = TestWindow();
+  SmoothClipView *host =
+      DisplayableView(window, CGRectMake(0, 0, 400, 400));
+  [host setValue:@(driverId) forKey:@"driverId"];
+  smoothclip::Presentation initial = PresentationValue(
+      20, 250, 360, 100, 20, 20, 20, 20,
+      smoothclip::ClipCurve::Continuous, 0, 0, 1);
+  initial.backdropTranslateX = -10;
+  initial.backdropTranslateY = 30;
+  smoothclip::registerView(driverId, host, initial);
+
+  // A backdrop bound after the host adopts the driver's model.
+  SmoothClipBackdropView *backdrop =
+      [[SmoothClipBackdropView alloc] initWithFrame:CGRectMake(0, 0, 400, 400)];
+  [window addSubview:backdrop];
+  smoothclip::registerBackdropView(driverId, backdrop);
+  CALayer *content = ((UIView *)[backdrop valueForKey:@"content"]).layer;
+  XCTAssertEqualWithAccuracy(content.transform.m41, -10, 1e-6);
+  XCTAssertEqualWithAccuracy(content.transform.m42, 30, 1e-6);
+
+  // A setFrame moves it in the same write as the clip.
+  smoothclip::Presentation frame = initial;
+  frame.backdropTranslateX = 5;
+  frame.backdropTranslateY = -6;
+  smoothclip::setPresentation(driverId, frame, true);
+  XCTAssertEqualWithAccuracy(content.transform.m41, 5, 1e-6);
+  XCTAssertEqualWithAccuracy(content.transform.m42, -6, 1e-6);
+  XCTAssertNil([content animationForKey:@"smoothClip.backdrop"]);
+
+  // A run adds a translation group on the clip's stamped epoch, backwards
+  // filled, with the model already at the target.
+  smoothclip::Presentation target = PresentationValue(
+      0, 0, 400, 400, 20, 20, 20, 20,
+      smoothclip::ClipCurve::Continuous, 0, 0, 1);
+  target.backdropTranslateX = 0;
+  target.backdropTranslateY = 0;
+  const smoothclip::TimingAnimation timing{400, 1.0 / 3.0, 1, 2.0 / 3.0, 1, 2};
+  const CFTimeInterval stamped = CACurrentMediaTime() + 1.0 / 60.0;
+  int32_t groupId = smoothclip::animateTimingGroup(
+      7100, {GroupEntry(driverId, true, frame, target)}, timing, 0, stamped);
+  XCTAssertGreaterThan(groupId, 0);
+  CAAnimationGroup *group =
+      (CAAnimationGroup *)[content animationForKey:@"smoothClip.backdrop"];
+  XCTAssertNotNil(group);
+  XCTAssertEqualWithAccuracy(
+      [content convertTime:group.beginTime toLayer:nil], stamped, 1e-6);
+  XCTAssertEqualObjects(group.fillMode, kCAFillModeBackwards);
+  XCTAssertEqualWithAccuracy(group.duration, 0.4, 1e-9);
+  NSMutableSet<NSString *> *keyPaths = [NSMutableSet set];
+  for (CAPropertyAnimation *animation in group.animations) {
+    [keyPaths addObject:animation.keyPath];
+    if ([animation.keyPath isEqualToString:@"transform.translation.x"]) {
+      XCTAssertEqualWithAccuracy(
+          ((NSNumber *)((CABasicAnimation *)animation).fromValue).doubleValue,
+          5, 1e-6);
+    }
+  }
+  XCTAssertEqualObjects(
+      keyPaths,
+      ([NSSet setWithArray:@[
+        @"transform.translation.x", @"transform.translation.y"
+      ]]));
+  XCTAssertEqualWithAccuracy(content.transform.m41, 0, 1e-6);
+  XCTAssertEqualWithAccuracy(content.transform.m42, 0, 1e-6);
+
+  // Finishing the run leaves the target and no animation behind.
+  smoothclip::cancelAnimationGroup(
+      groupId, smoothclip::GroupCancelBehavior::Finish);
+  XCTAssertNil([content animationForKey:@"smoothClip.backdrop"]);
+  XCTAssertEqualWithAccuracy(content.transform.m41, 0, 1e-6);
+
+  // A freeze seals the backdrop where it is and reports the channel.
+  groupId = smoothclip::animateTimingGroup(
+      7101, {GroupEntry(driverId, true, target, frame)}, timing);
+  XCTAssertGreaterThan(groupId, 0);
+  const std::vector<smoothclip::DriverSnapshot> frozen =
+      smoothclip::cancelAnimationGroup(
+          groupId, smoothclip::GroupCancelBehavior::Freeze);
+  XCTAssertEqual(frozen.size(), 1u);
+  XCTAssertNil([content animationForKey:@"smoothClip.backdrop"]);
+  XCTAssertEqualWithAccuracy(
+      frozen[0].presentation.backdropTranslateX, content.transform.m41, 1e-6);
+  XCTAssertEqualWithAccuracy(
+      frozen[0].presentation.backdropTranslateY, content.transform.m42, 1e-6);
+
+  smoothclip::unregisterBackdropView(driverId, backdrop);
+  [backdrop removeFromSuperview];
   smoothclip::unregisterView(driverId, host);
   [host setValue:@0 forKey:@"driverId"];
   smoothclip::destroyDriver(driverId);

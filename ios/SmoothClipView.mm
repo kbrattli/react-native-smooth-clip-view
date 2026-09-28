@@ -136,6 +136,8 @@ static bool SmoothClipBuildPresentation(
     double shadowSpreadDistance,
     double rotation,
     double opacity,
+    double backdropTranslateX,
+    double backdropTranslateY,
     smoothclip::Presentation *result) {
   if (result == nullptr || !isfinite(x) || !isfinite(y) ||
       !isfinite(width) || !isfinite(height) ||
@@ -148,6 +150,7 @@ static bool SmoothClipBuildPresentation(
       !isfinite(shadowOffsetX) || !isfinite(shadowOffsetY) ||
       !isfinite(shadowBlurRadius) || !isfinite(shadowSpreadDistance) ||
       !isfinite(rotation) || !isfinite(opacity) ||
+      !isfinite(backdropTranslateX) || !isfinite(backdropTranslateY) ||
       contentScale <= 0 || shadowRed < 0 || shadowRed > 1 ||
       shadowGreen < 0 || shadowGreen > 1 ||
       shadowBlue < 0 || shadowBlue > 1 ||
@@ -179,7 +182,8 @@ static bool SmoothClipBuildPresentation(
       shadowSpreadDistance};
   *result = {
       geometry, contentTranslateX, contentTranslateY, contentScale, shadow,
-      rotation, smoothclip::clamp01(opacity)};
+      rotation, smoothclip::clamp01(opacity), backdropTranslateX,
+      backdropTranslateY};
   return true;
 }
 
@@ -2565,6 +2569,8 @@ static CGRect SmoothClipBakedShadowLayerRect(
           newProps.initialClipBoxShadowSpreadDistance,
           newProps.initialRotation,
           newProps.initialOpacity,
+          newProps.initialBackdropTranslateX,
+          newProps.initialBackdropTranslateY,
           &initial)) {
     // The initial presentation is atomic. Never apply a valid subset when one
     // field rejects.
@@ -2690,6 +2696,10 @@ static CGRect SmoothClipBakedShadowLayerRect(
           shadowSpreadDistance,
           rotation,
           opacity,
+          // The command protocol carries no backdrop channel; a command-driven
+          // host keeps its backdrops where they are.
+          0,
+          0,
           &presentation)) {
     return;
   }

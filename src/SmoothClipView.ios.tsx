@@ -168,6 +168,8 @@ export function renderSmoothClipView(
     initialClipBoxShadowBlurRadius: shadow?.blurRadius ?? 0,
     initialClipBoxShadowSpreadDistance: shadow?.spreadDistance ?? 0,
     shadowRendering: shadowRendering === 'baked' ? 1 : 0,
+    initialBackdropTranslateX: canonical.backdrop.translateX,
+    initialBackdropTranslateY: canonical.backdrop.translateY,
   };
 
   return (

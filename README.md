@@ -240,6 +240,17 @@ APIs share validation, run ownership, and completion behavior.
   changes radius, blur or colour swaps tiles in steps along the way. The baked
   shadow is drawn under the aperture on both platforms (the Android blur path
   cuts it out), so content over it should be opaque.
+- `backdrop: { translateX, translateY }` on a presentation translates every
+  `SmoothClipBackdropView` bound to the same controller (`controller={clip}`,
+  anywhere in the tree, any number of them). The channel is part of the
+  presentation, so a `setFrame` writes it in the same native call as the clip
+  and a run animates it on the clip's own epoch: content that must stay
+  locked to the aperture (a screen-sized canvas centred in the window) is
+  sampled by the same clock as the clip, with no Reanimated mapper in
+  between. The translation goes on an inner content layer; the view's own
+  `transform` style stays React Native's. A backdrop that binds while a run
+  is in flight adopts the driver's current value and follows from the next
+  run.
 - A fully off-host aperture is not touchable, even when only its shadow overlaps.
 - Descendant accessibility is hidden during autonomous native motion and restored
   from aperture/host intersection at the endpoint.
@@ -311,7 +322,8 @@ See the [changelog](./CHANGELOG.md) for release details.
   worklet frame that computed them, while a native run is sampled by Core
   Animation for the same vsync. A main-thread overrun widens that to a frame
   either way. Anything that must stay locked to the aperture belongs on the
-  run itself rather than on a mapper.
+  run itself: put it in a `SmoothClipBackdropView` and drive it through the
+  presentation's `backdrop` channel.
 - The shadow-disabled rendering path keeps no shadow drawing resources.
 - The fixed host is the maximum rendering viewport; consumers should size it to
   the region in which content and shadow may appear.

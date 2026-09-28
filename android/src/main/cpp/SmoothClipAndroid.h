@@ -26,6 +26,28 @@ struct JSmoothClipView : facebook::jni::JavaClass<JSmoothClipView> {
   void setAutonomousMotion(bool active) const;
 };
 
+// fbjni wrapper around com.smoothclipview.SmoothClipBackdropView: a view the
+// driver's backdrop channel translates on every delivery, in the same
+// Choreographer pass as the clip.
+struct JSmoothClipBackdropView
+    : facebook::jni::JavaClass<JSmoothClipBackdropView> {
+  static constexpr auto kJavaDescriptor =
+      "Lcom/smoothclipview/SmoothClipBackdropView;";
+
+  void applyBackdropPx(double translateXPx, double translateYPx) const;
+};
+
+// Binds a backdrop view to a driver on the UI thread. A view already bound
+// only updates its density. The view is delivered the driver's current
+// backdrop translation at once when the driver has a presentation.
+void registerBackdropViewAndroid(
+    uint64_t driverId,
+    facebook::jni::alias_ref<JSmoothClipBackdropView> view,
+    double density);
+void unregisterBackdropViewAndroid(
+    uint64_t driverId,
+    facebook::jni::alias_ref<JSmoothClipBackdropView> view);
+
 // Called from Kotlin (SmoothClipViewManager) on the UI thread when a Fabric
 // view mounts/unmounts. The registry retains a global ref for the view.
 void registerViewAndroid(

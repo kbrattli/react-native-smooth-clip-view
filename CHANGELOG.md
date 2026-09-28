@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Backdrop channel.** A presentation gains `backdrop: { translateX,
+  translateY }`, and the new `SmoothClipBackdropView` (`controller={clip}`)
+  is translated by it: every `setFrame` writes the channel in the same native
+  call as the clip, and every run animates it on the clip's own epoch (a
+  translation group on the shared Core Animation `beginTime` on iOS, the same
+  Choreographer advance on Android). Content that must stay locked to the
+  aperture no longer needs a Reanimated mapper, which can land a frame after
+  the clip. The native packet grows by two values (stride 23 → 25) and the
+  host takes `initialBackdropTranslateX/Y`, so a native rebuild is required;
+  a JavaScript-only update cannot upgrade an older native build.
 - iOS anchors a native run to the frame stamp JS passes (Reanimated's
   `__frameTimestamp`, the display link's target vsync) as the shared Core
   Animation `beginTime`, the way the Android frame loop already did. A run and
