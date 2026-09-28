@@ -3018,6 +3018,28 @@ static UIWindow *TestWindow(void) {
   CGColorSpaceRelease(space);
 }
 
+// Alpha of a baked tile on its middle row, `distance` pt outside the shape
+// (negative: inside), for a `side` pt tile with a `margin` pt border.
+static CGFloat TileAlphaOutsideShape(
+    CGImageRef image, CGFloat side, CGFloat margin, CGFloat distance) {
+  const size_t width = CGImageGetWidth(image);
+  const size_t height = CGImageGetHeight(image);
+  const CGFloat scale = width / side;
+  CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+  CGContextRef context = CGBitmapContextCreate(
+      NULL, width, height, 8, 0, space,
+      kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+  CGColorSpaceRelease(space);
+  CGContextDrawImage(context, CGRectMake(0, 0, width, height), image);
+  const uint8_t *data = (const uint8_t *)CGBitmapContextGetData(context);
+  const size_t bytesPerRow = CGBitmapContextGetBytesPerRow(context);
+  const size_t x = (size_t)MIN(
+      (CGFloat)(width - 1), MAX(0, round((margin - distance) * scale)));
+  const CGFloat alpha = data[(height / 2) * bytesPerRow + x * 4 + 3] / 255.0;
+  CGContextRelease(context);
+  return alpha;
+}
+
 - (void)testBakedShadowStretchesOneTileAndSwapsItInSteps {
   constexpr uint64_t driverId = 99084;
   UIWindow *window = TestWindow();
@@ -3037,6 +3059,17 @@ static UIWindow *TestWindow(void) {
   XCTAssertTrue(shadowLayer.shadowPath == NULL);
   XCTAssertEqualWithAccuracy(shadowLayer.shadowOpacity, 0, 1e-9);
   XCTAssertEqualWithAccuracy(shadowLayer.opacity, 0.25, 1e-6);
+  // The tile holds the blurred shape itself: opaque at the centre, half
+  // covered at the shape edge, and a Gaussian tail (sigma 8 pt for blur 16,
+  // the profile Core Animation gives `shadowRadius` 8) gone inside the 24 pt
+  // margin. Rendering a shadowPath-only layer through `renderInContext:`
+  // left every pixel at 0, and a baked host drew no shadow at all.
+  CGImageRef image = (__bridge CGImageRef)shadowLayer.contents;
+  XCTAssertGreaterThan(TileAlphaOutsideShape(image, 138, 24, -45), 0.97);
+  XCTAssertEqualWithAccuracy(TileAlphaOutsideShape(image, 138, 24, 0), 0.5, 0.1);
+  XCTAssertEqualWithAccuracy(TileAlphaOutsideShape(image, 138, 24, 8), 0.16, 0.05);
+  XCTAssertLessThan(TileAlphaOutsideShape(image, 138, 24, 16), 0.03);
+  XCTAssertLessThan(TileAlphaOutsideShape(image, 138, 24, 24), 0.005);
   // Shape 360 x 100 offset (0, 2), plus a 24 pt margin (1.5 x blur 16) per side.
   XCTAssertEqualWithAccuracy(shadowLayer.bounds.size.width, 360 + 48, 1e-6);
   XCTAssertEqualWithAccuracy(shadowLayer.bounds.size.height, 100 + 48, 1e-6);

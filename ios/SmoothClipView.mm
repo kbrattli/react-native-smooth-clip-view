@@ -445,9 +445,16 @@ static CGFloat SmoothClipBakedShadowMargin(const smoothclip::Shadow &shadow) {
 }
 
 // Baked once per (radius step, curve, blur, colour, scale) and cached for the
-// process. Rendered through Core Animation's own shadow path so the tile is
-// the pure blurred shape the compositor draws for a `shadowPath` layer, with
-// nothing filled in on top of it; colour alpha is applied as layer opacity.
+// process. The tile is the pure blurred shape the compositor draws for a
+// `shadowPath` layer, with nothing filled in on top of it; colour alpha is
+// applied as layer opacity. It is drawn with a Core Graphics shadow, not by
+// rendering a layer: `renderInContext:` draws a layer's shadow only where the
+// layer has content of its own, so a shadowPath-only layer renders nothing.
+// A Core Graphics shadow of `b` has sigma b / 2, the same sigma Core
+// Animation gives `shadowRadius` b / 2 (the blur path's setting), so the two
+// tails match sample for sample. The context comes from a UIKit image
+// renderer, whose base transform scales the blur with the tile's scale; a
+// hand-scaled CGBitmapContext leaves the shadow in pixel space.
 static NSCache<NSString *, SmoothClipShadowTile *> *SmoothClipShadowTileCache(void) {
   static NSCache<NSString *, SmoothClipShadowTile *> *cache;
   static dispatch_once_t once;
@@ -523,41 +530,44 @@ static SmoothClipShadowTile *SmoothClipBakeShadowTile(
   const CGFloat margin = SmoothClipBakedShadowMargin(shadow);
 
   const CGFloat side = 2 * (2 * margin + tileRadius) + kSmoothClipShadowTileBand;
-  const size_t pixels = (size_t)MAX(1, ceil(side * scale));
-  CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-  CGContextRef context = CGBitmapContextCreate(
-      NULL, pixels, pixels, 8, 0, space,
-      kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
-  CGColorSpaceRelease(space);
-  if (context == NULL) return nil;
-  CGContextScaleCTM(context, scale, scale);
-  CALayer *layer = [CALayer layer];
-  layer.frame = CGRectMake(0, 0, side, side);
-  const CGRect shape = CGRectInset(layer.bounds, margin, margin);
+  const CGRect shape = CGRectInset(CGRectMake(0, 0, side, side), margin, margin);
   const SmoothClipCornerRadii radii = {
       tileRadius, tileRadius, tileRadius, tileRadius};
   CGPathRef path = SmoothClipCreateRoundedRectPath(shape, radii, curve);
-  layer.shadowPath = path;
+  CGColorRef color = [UIColor colorWithRed:smoothclip::clamp01(shadow.red)
+                                     green:smoothclip::clamp01(shadow.green)
+                                      blue:smoothclip::clamp01(shadow.blue)
+                                     alpha:1].CGColor;
+  const CGFloat blur = MAX(0, shadow.blurRadius);
+  UIGraphicsImageRendererFormat *format =
+      [UIGraphicsImageRendererFormat defaultFormat];
+  format.scale = scale;
+  format.opaque = NO;
+  format.preferredRange = UIGraphicsImageRendererFormatRangeStandard;
+  UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc]
+      initWithSize:CGSizeMake(side, side) format:format];
+  UIImage *rendered = [renderer imageWithActions:^(
+      UIGraphicsImageRendererContext *rendererContext) {
+    CGContextRef context = rendererContext.CGContext;
+    // Only the shadow lands on the tile: the shape itself is filled far
+    // outside the bitmap and its shadow offset back by the same distance,
+    // so the interior keeps the blurred shape's own profile (0.5 at the
+    // edge) instead of a hard fill.
+    const CGFloat away = 4 * side;
+    CGContextSetShadowWithColor(context, CGSizeMake(0, -away), blur, color);
+    CGContextTranslateCTM(context, 0, away);
+    CGContextAddPath(context, path);
+    CGContextSetFillColorWithColor(context, color);
+    CGContextFillPath(context);
+  }];
   CGPathRelease(path);
-  layer.shadowColor = [UIColor colorWithRed:smoothclip::clamp01(shadow.red)
-                                      green:smoothclip::clamp01(shadow.green)
-                                       blue:smoothclip::clamp01(shadow.blue)
-                                      alpha:1].CGColor;
-  layer.shadowOpacity = 1;
-  layer.shadowOffset = CGSizeZero;
-  layer.shadowRadius = MAX(0, shadow.blurRadius) / 2.0;
-  // The bitmap's y axis is flipped relative to the layer; the tile is
-  // symmetric (uniform radii, no offset), so that is harmless.
-  [layer renderInContext:context];
-  CGImageRef image = CGBitmapContextCreateImage(context);
-  CGContextRelease(context);
+  CGImageRef image = rendered.CGImage;
   if (image == NULL) return nil;
   tile = [[SmoothClipShadowTile alloc] initWithImage:image
                                               radius:tileRadius
                                               margin:margin
                                                 side:side
                                                scale:scale];
-  CGImageRelease(image);
   [SmoothClipShadowTileCache() setObject:tile forKey:key];
   return tile;
 }

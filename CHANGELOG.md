@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.1](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.5.1) — 2026-09-28
+
+- **Fix: iOS baked shadows were invisible.** `shadowRendering="baked"` baked
+  its tile by rendering a shadowPath-only layer through `renderInContext:`,
+  which draws a layer's shadow only where the layer has content of its own,
+  so every tile was fully transparent and a baked host drew no shadow at all.
+  The tile is now drawn as a Core Graphics shadow inside a UIKit image
+  renderer, whose base transform also scales the blur with the tile's scale
+  (a hand-scaled bitmap context left the shadow in pixel space). A Core
+  Graphics shadow of `blur` has the same sigma as Core Animation's
+  `shadowRadius = blur / 2`, so the tile matches the blur path's shadow
+  sample for sample; the iOS and Android suites now pin the tile's alpha
+  profile. Android tiles were unaffected.
+
 ## [0.5.0](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.5.0) — 2026-09-28
 
 - **Backdrop channel.** A presentation gains `backdrop: { translateX,

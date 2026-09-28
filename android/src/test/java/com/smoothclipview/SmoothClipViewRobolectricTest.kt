@@ -531,6 +531,36 @@ class SmoothClipViewRobolectricTest {
     }
 
     @Test
+    @Config(sdk = [32])
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun bakedShadowTileHoldsTheBlurredShape() {
+        view.setBakedShadows(true)
+        // A colour no other test bakes, so this cache line starts cold.
+        view.setClipPresentationPx(
+            0f, 0f, 200f, 200f,
+            20f, 20f, 20f, 20f,
+            CLIP_CURVE_CONTINUOUS,
+            0f, 0f, 1f,
+            true, 0f, 0f, 0.3f, 0.25f, 0f, 2f, 16f, 0f,
+        )
+        view.presentationContainer.draw(Canvas())
+        val tile = privateObject("bakedShadowTile") as BakedShadowTile
+        val mid = tile.side / 2
+        // Alpha on the middle row, `distance` px outside the shape.
+        fun alphaOutside(distance: Int): Float =
+            Color.alpha(tile.bitmap.getPixel(tile.margin - distance, mid)) / 255f
+        // The tile holds the blurred shape itself: opaque at the centre, half
+        // covered at the shape edge, and a Gaussian tail (sigma 8 px for blur
+        // 16) gone inside the 24 px margin. The same profile is pinned on iOS.
+        assertEquals(24, tile.margin)
+        assertEquals(1f, Color.alpha(tile.bitmap.getPixel(mid, mid)) / 255f, 0.02f)
+        assertEquals(0.5f, alphaOutside(0), 0.1f)
+        assertEquals(0.16f, alphaOutside(8), 0.06f)
+        assertTrue(alphaOutside(16) < 0.04f)
+        assertTrue(alphaOutside(24) < 0.01f)
+    }
+
+    @Test
     fun bakedShadowsShowTheNearestTileWhileTheExactOneBakesOffTheMainThread() {
         view.setBakedShadows(true)
         // Requested bakes queue here instead of the background thread, so the
