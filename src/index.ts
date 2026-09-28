@@ -1,5 +1,8 @@
 export { SmoothClipView } from './SmoothClipView';
-export type { SmoothClipViewProps } from './SmoothClipView';
+export type {
+  SmoothClipShadowRendering,
+  SmoothClipViewProps,
+} from './SmoothClipView';
 export { useSmoothClipController } from './controllers';
 export { useSmoothClipGroup } from './groups';
 export { getSmoothClipCapabilities } from './capabilities';

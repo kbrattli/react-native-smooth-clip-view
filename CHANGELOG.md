@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+- iOS anchors a native run to the frame stamp JS passes (Reanimated's
+  `__frameTimestamp`, the display link's target vsync) as the shared Core
+  Animation `beginTime`, the way the Android frame loop already did. A run and
+  a `withTiming` begun in the same UI frame now trace one epoch; before, the
+  run began at its install time and led the Reanimated model by the rest of
+  that frame (about 14 ms at 60 Hz). Animation groups carry backwards fill so a
+  stamp up to one frame ahead of the commit shows the run's first frame, not
+  the target. JS now stamps runs on every platform.
+- `shadowRendering="baked"` on `SmoothClipView` renders the box shadow from one
+  pre-blurred tile per 4 pt corner-radius step that the compositor stretches
+  (`contentsCenter` on iOS, nine bitmap pieces on Android), so an animated or
+  dragged aperture costs no blur per frame. iOS bakes the tile through Core
+  Animation's own shadow path so it matches a `shadowPath` layer; Android
+  bakes it with the same `BlurMaskFilter` as the blur path. Runs animate the
+  tile layer's frame and opacity and swap tiles in steps where the radius,
+  blur or colour changes. Uniform radii only; unequal radii keep the blur
+  path. Default stays `"blur"`.
+- Android builds a uniform circular corner with `addRoundRect` in the shared
+  path builder, so the shadow path (not only the clip) stays an rrect the
+  renderer can clip and blur analytically. Paths are `rewind()` instead of
+  `reset()` between frames, keeping their storage.
+
 ## [0.4.6](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.4.6) — 2026-09-20
 
 - Draw `continuous` corners on Android as a Figma smoothed corner (smoothing

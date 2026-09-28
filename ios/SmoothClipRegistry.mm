@@ -116,7 +116,13 @@ struct GroupState {
   std::unordered_set<uint64_t> remainingDriverIds;
   bool finished = true;
   bool mutating = false;
+  // Media time the caller's UI frame was stamped with; 0 when none was given.
+  CFTimeInterval beginTimeHint = 0;
 };
+
+// A frame stamp sits at most one frame ahead of the commit that carries it.
+// Anything further ahead is not a frame stamp and must not hold the run.
+constexpr CFTimeInterval kMaxBeginTimeLeadS = 0.25;
 
 std::unordered_map<uint64_t, DriverState> &registry() {
   static std::unordered_map<uint64_t, DriverState> value;
@@ -773,7 +779,15 @@ void tryStartGroup(int32_t groupId) {
     }
   }
 
-  const CFTimeInterval sharedBeginTime = CACurrentMediaTime();
+  // Anchor the run to the UI frame that started it when JS stamped one
+  // (Reanimated's target vsync): a `withTiming` begun in that same frame and
+  // this Core Animation run then trace one epoch, instead of the run leading
+  // by the rest of the frame. A stale stamp (a run held pending until its host
+  // could display) starts partway through, as that JS clock did.
+  const CFTimeInterval now = CACurrentMediaTime();
+  const CFTimeInterval hint = groupIterator->second.beginTimeHint;
+  const CFTimeInterval sharedBeginTime =
+      hint > 0 && hint <= now + kMaxBeginTimeLeadS ? hint : now;
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   for (const uint64_t driverId : driverIds) {
@@ -1325,7 +1339,8 @@ int32_t createGroupAnimation(
     SpringAnimation spring,
     double durationMs,
     int32_t reduceMotion,
-    int32_t completionTag) {
+    int32_t completionTag,
+    double startedAtHintS) {
   std::vector<Presentation> resolvedStarts;
   bool reduced = false;
   if (!NSThread.isMainThread || controllerId == 0 ||
@@ -1377,6 +1392,9 @@ int32_t createGroupAnimation(
       driverIds,
       std::unordered_set<uint64_t>(driverIds.begin(), driverIds.end()),
   };
+  if (std::isfinite(startedAtHintS) && startedAtHintS > 0) {
+    group.beginTimeHint = startedAtHintS;
+  }
   groupRegistry().emplace(groupId, std::move(group));
 
   for (std::size_t entryIndex = 0; entryIndex < entries.size(); entryIndex += 1) {
@@ -1420,7 +1438,6 @@ int32_t animateTimingGroup(
     TimingAnimation animation,
     int32_t completionTag,
     double startedAtHintS) {
-  (void)startedAtHintS;
   return createGroupAnimation(
       controllerId,
       std::move(entries),
@@ -1429,7 +1446,8 @@ int32_t animateTimingGroup(
       {},
       animation.durationMs,
       animation.reduceMotion,
-      completionTag);
+      completionTag,
+      startedAtHintS);
 }
 
 int32_t animateSpringGroup(
@@ -1438,7 +1456,6 @@ int32_t animateSpringGroup(
     SpringAnimation animation,
     int32_t completionTag,
     double startedAtHintS) {
-  (void)startedAtHintS;
   return createGroupAnimation(
       controllerId,
       std::move(entries),
@@ -1447,7 +1464,8 @@ int32_t animateSpringGroup(
       animation,
       0,
       animation.reduceMotion,
-      completionTag);
+      completionTag,
+      startedAtHintS);
 }
 
 std::vector<DriverSnapshot> cancelAnimationGroup(

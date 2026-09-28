@@ -224,6 +224,18 @@ APIs share validation, run ownership, and completion behavior.
   curve change are static-only: set them with `setFrame`; `animateTo` returns
   `null`.
 - One outset `boxShadow` is supported. It escapes the aperture but not the host.
+- `shadowRendering="baked"` on the host draws that shadow from one pre-blurred
+  tile per corner-radius step (4 pt), stretched by the compositor, instead of
+  blurring a path on every frame the aperture moves: a native run or a drag of
+  a full-screen window then costs no per-frame blur on either platform. A tile
+  is baked once per (radius step, blur, colour) on first use, about a
+  millisecond, and cached for the process. It needs uniform corner radii
+  (unequal radii keep the blur path for that frame or run); the tile corner
+  rounds up to the next step, so a shadow corner may be up to 4 pt rounder
+  than its clip, which no blur the tile was made for resolves; a run that
+  changes radius, blur or colour swaps tiles in steps along the way. The baked
+  shadow is drawn under the aperture on both platforms (the Android blur path
+  cuts it out), so content over it should be opaque.
 - A fully off-host aperture is not touchable, even when only its shadow overlaps.
 - Descendant accessibility is hidden during autonomous native motion and restored
   from aperture/host intersection at the endpoint.
@@ -281,6 +293,9 @@ See the [changelog](./CHANGELOG.md) for release details.
 
 - One worklet-to-native call per `ui.setFrame`, or per group batch.
 - Native timing and springs run without JS work between start and completion.
+- A run started inside a UI frame is anchored to that frame's Reanimated stamp
+  (`__frameTimestamp`) on both platforms, so it shares one epoch with a
+  `withTiming` begun in the same frame.
 - The shadow-disabled rendering path keeps no shadow drawing resources.
 - The fixed host is the maximum rendering viewport; consumers should size it to
   the region in which content and shadow may appear.

@@ -155,6 +155,21 @@ describe('useSmoothClipGroup', () => {
     expect(native.snapshotGroup).not.toHaveBeenCalled();
   });
 
+  it('stamps a run with the frame timestamp on every platform', () => {
+    const group = useSmoothClipGroup();
+    const runtime = globalThis as { __frameTimestamp?: number };
+    runtime.__frameTimestamp = 123456.5;
+    try {
+      expect(
+        group.ui.animateTo([{ clip: first, target }], timing)
+      ).not.toBeNull();
+    } finally {
+      delete runtime.__frameTimestamp;
+    }
+    const call = native.animateTimingGroup.mock.calls.at(-1) as unknown[];
+    expect(call.at(-1)).toBe(123456.5);
+  });
+
   it('delivers a UI-runtime completion tag exactly once', () => {
     const complete = jest.fn();
     const group = useSmoothClipGroup({ onAnimationComplete: complete });

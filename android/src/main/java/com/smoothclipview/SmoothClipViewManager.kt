@@ -181,6 +181,11 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
     @ReactProp(name = "initialOpacity", defaultDouble = 1.0)
     override fun setInitialOpacity(view: SmoothClipView, value: Double) { pending(view).opacity = value }
 
+    @ReactProp(name = "shadowRendering", defaultInt = 0)
+    override fun setShadowRendering(view: SmoothClipView, value: Int) {
+        view.setBakedShadows(value == 1)
+    }
+
     override fun setClipPresentation(
         view: SmoothClipView,
         x: Double,

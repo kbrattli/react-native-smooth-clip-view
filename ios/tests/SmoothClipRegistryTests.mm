@@ -3017,4 +3017,175 @@ static UIWindow *TestWindow(void) {
   CGColorSpaceRelease(space);
 }
 
+- (void)testBakedShadowStretchesOneTileAndSwapsItInSteps {
+  constexpr uint64_t driverId = 99084;
+  UIWindow *window = TestWindow();
+  SmoothClipView *host =
+      DisplayableView(window, CGRectMake(0, 0, 400, 400));
+  [host setValue:@(driverId) forKey:@"driverId"];
+  [host setValue:@YES forKey:@"bakedShadows"];
+  const smoothclip::Shadow shadow = BoxShadow(0.25, 0, 2, 16, 0, 0, 0, 0);
+  const smoothclip::Presentation card = PresentationValue(
+      20, 250, 360, 100, 20, 20, 20, 20,
+      smoothclip::ClipCurve::Continuous, 0, 0, 1, shadow);
+  smoothclip::registerView(driverId, host, card);
+
+  CALayer *shadowLayer = [host valueForKey:@"shadowLayer"];
+  XCTAssertNotNil(shadowLayer);
+  XCTAssertNotNil(shadowLayer.contents);
+  XCTAssertTrue(shadowLayer.shadowPath == NULL);
+  XCTAssertEqualWithAccuracy(shadowLayer.shadowOpacity, 0, 1e-9);
+  XCTAssertEqualWithAccuracy(shadowLayer.opacity, 0.25, 1e-6);
+  // Shape 360 x 100 offset (0, 2), plus a 24 pt margin (1.5 x blur 16) per side.
+  XCTAssertEqualWithAccuracy(shadowLayer.bounds.size.width, 360 + 48, 1e-6);
+  XCTAssertEqualWithAccuracy(shadowLayer.bounds.size.height, 100 + 48, 1e-6);
+  XCTAssertEqualWithAccuracy(shadowLayer.position.x, 20 + 180, 1e-6);
+  XCTAssertEqualWithAccuracy(shadowLayer.position.y, 250 + 2 + 50, 1e-6);
+  // Corner slices of margin + radius + margin = 68 pt in a 138 pt tile.
+  XCTAssertEqualWithAccuracy(
+      shadowLayer.contentsCenter.origin.x, 68.0 / 138.0, 1e-6);
+  XCTAssertEqualWithAccuracy(
+      shadowLayer.contentsCenter.size.width, 2.0 / 138.0, 1e-6);
+  id tile = shadowLayer.contents;
+
+  // A run that keeps the radius animates the tile layer's frame only.
+  const smoothclip::Presentation full = PresentationValue(
+      0, 0, 400, 400, 20, 20, 20, 20,
+      smoothclip::ClipCurve::Continuous, 0, 0, 1, shadow);
+  const smoothclip::TimingAnimation timing{400, 1.0 / 3.0, 1, 2.0 / 3.0, 1, 2};
+  int32_t groupId = smoothclip::animateTimingGroup(
+      7094, {GroupEntry(driverId, true, card, full)}, timing);
+  XCTAssertGreaterThan(groupId, 0);
+  CAAnimationGroup *shadowGroup = (CAAnimationGroup *)[shadowLayer
+      animationForKey:@"smoothClip.shadow"];
+  XCTAssertNotNil(shadowGroup);
+  NSMutableSet<NSString *> *keyPaths = [NSMutableSet set];
+  for (CAPropertyAnimation *animation in shadowGroup.animations) {
+    [keyPaths addObject:animation.keyPath];
+  }
+  XCTAssertEqualObjects(
+      keyPaths, ([NSSet setWithArray:@[ @"bounds", @"position" ]]));
+  XCTAssertTrue(shadowLayer.contents == tile);
+  XCTAssertTrue(shadowLayer.shadowPath == NULL);
+  smoothclip::cancelAnimationGroup(
+      groupId, smoothclip::GroupCancelBehavior::Finish);
+
+  // A run that changes the radius swaps tiles in 4 pt steps along the way:
+  // 20 -> 36 shows tiles 24 (from the first frame), 28, 32 and 36.
+  const smoothclip::Presentation rounder = PresentationValue(
+      0, 0, 400, 400, 36, 36, 36, 36,
+      smoothclip::ClipCurve::Continuous, 0, 0, 1, shadow);
+  groupId = smoothclip::animateTimingGroup(
+      7095, {GroupEntry(driverId, true, full, rounder)}, timing);
+  XCTAssertGreaterThan(groupId, 0);
+  shadowGroup = (CAAnimationGroup *)[shadowLayer
+      animationForKey:@"smoothClip.shadow"];
+  XCTAssertNotNil(shadowGroup);
+  CAKeyframeAnimation *contents = nil;
+  for (CAPropertyAnimation *animation in shadowGroup.animations) {
+    if ([animation.keyPath isEqualToString:@"contents"]) {
+      contents = (CAKeyframeAnimation *)animation;
+    }
+  }
+  XCTAssertNotNil(contents);
+  XCTAssertEqual(contents.values.count, 4u);
+  XCTAssertEqualObjects(contents.calculationMode, kCAAnimationDiscrete);
+  XCTAssertEqualWithAccuracy(contents.keyTimes[0].doubleValue, 0, 1e-9);
+  XCTAssertGreaterThan(contents.keyTimes[1].doubleValue, 0);
+  XCTAssertLessThan(contents.keyTimes[2].doubleValue, contents.keyTimes[3].doubleValue);
+  XCTAssertLessThan(contents.keyTimes[3].doubleValue, 1);
+  // The model already holds the target tile.
+  XCTAssertTrue(contents.values.lastObject == shadowLayer.contents);
+  XCTAssertTrue(shadowLayer.shadowPath == NULL);
+  smoothclip::cancelAnimationGroup(
+      groupId, smoothclip::GroupCancelBehavior::Finish);
+
+  // Back to the blur path: the tile goes, the shadowPath returns.
+  [host setValue:@NO forKey:@"bakedShadows"];
+  [host smoothClipApplyPresentation:full];
+  XCTAssertNil(shadowLayer.contents);
+  XCTAssertTrue(shadowLayer.shadowPath != NULL);
+  XCTAssertEqualWithAccuracy(shadowLayer.opacity, 1, 1e-9);
+  XCTAssertEqualWithAccuracy(shadowLayer.shadowOpacity, 1, 1e-9);
+
+  smoothclip::unregisterView(driverId, host);
+  [host setValue:@0 forKey:@"driverId"];
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testStampedEpochBecomesTheSharedBeginTime {
+  constexpr uint64_t driverId = 99081;
+  UIWindow *window = TestWindow();
+  SmoothClipView *host =
+      DisplayableView(window, CGRectMake(0, 0, 200, 200));
+  [host setValue:@(driverId) forKey:@"driverId"];
+  const smoothclip::Presentation initial = PresentationValue(
+      0, 0, 50, 50, 12, 12, 12, 12,
+      smoothclip::ClipCurve::Continuous, 0, 0, 1);
+  const smoothclip::Presentation target = PresentationValue(
+      20, 30, 140, 100, 20, 20, 20, 20,
+      smoothclip::ClipCurve::Continuous, 8, -6, 0.7);
+  smoothclip::registerView(driverId, host, initial);
+  CALayer *layer = ((UIView *)[host valueForKey:@"clipContainer"]).layer;
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+
+  // A frame stamp from the UI frame that started the run, one frame ahead of
+  // this commit the way Reanimated's target-vsync stamp is.
+  const CFTimeInterval stamped = CACurrentMediaTime() + 1.0 / 60.0;
+  int32_t groupId = smoothclip::animateTimingGroup(
+      7091, {GroupEntry(driverId, true, initial, target)}, timing, 0,
+      stamped);
+  XCTAssertGreaterThan(groupId, 0);
+  CAAnimationGroup *geometry = (CAAnimationGroup *)[layer
+      animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(geometry);
+  XCTAssertEqualWithAccuracy(
+      [layer convertTime:geometry.beginTime toLayer:nil], stamped, 1e-6);
+  // Until that epoch the run presents its first frame, not the target model.
+  XCTAssertEqualObjects(geometry.fillMode, kCAFillModeBackwards);
+  CAAnimationGroup *content = (CAAnimationGroup *)[((UIView *)[host
+      valueForKey:@"contentContainer"]).layer
+      animationForKey:@"smoothClip.content"];
+  XCTAssertNotNil(content);
+  XCTAssertEqualWithAccuracy(
+      [((UIView *)[host valueForKey:@"contentContainer"]).layer
+          convertTime:content.beginTime
+              toLayer:nil],
+      stamped, 1e-6);
+  smoothclip::cancelAnimationGroup(
+      groupId, smoothclip::GroupCancelBehavior::Freeze);
+
+  // A value far ahead of the commit is not a frame stamp: start now.
+  const CFTimeInterval before = CACurrentMediaTime();
+  groupId = smoothclip::animateTimingGroup(
+      7092, {GroupEntry(driverId, true, initial, target)}, timing, 0,
+      before + 5);
+  XCTAssertGreaterThan(groupId, 0);
+  geometry = (CAAnimationGroup *)[layer animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(geometry);
+  const CFTimeInterval begin =
+      [layer convertTime:geometry.beginTime toLayer:nil];
+  XCTAssertGreaterThanOrEqual(begin, before);
+  XCTAssertLessThan(begin, before + 1);
+  smoothclip::cancelAnimationGroup(
+      groupId, smoothclip::GroupCancelBehavior::Freeze);
+
+  // No stamp keeps the install-time epoch.
+  const CFTimeInterval unstampedBefore = CACurrentMediaTime();
+  groupId = smoothclip::animateTimingGroup(
+      7093, {GroupEntry(driverId, true, initial, target)}, timing);
+  XCTAssertGreaterThan(groupId, 0);
+  geometry = (CAAnimationGroup *)[layer animationForKey:@"smoothClip.geometry"];
+  const CFTimeInterval unstamped =
+      [layer convertTime:geometry.beginTime toLayer:nil];
+  XCTAssertGreaterThanOrEqual(unstamped, unstampedBefore);
+  XCTAssertLessThan(unstamped, unstampedBefore + 1);
+  smoothclip::cancelAnimationGroup(
+      groupId, smoothclip::GroupCancelBehavior::Freeze);
+
+  smoothclip::unregisterView(driverId, host);
+  [host setValue:@0 forKey:@"driverId"];
+  smoothclip::destroyDriver(driverId);
+}
+
 @end

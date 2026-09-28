@@ -5,6 +5,7 @@
 #include "SmoothClipRegistrySnapshot.h"
 
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace facebook::react {
@@ -387,6 +388,16 @@ bool SmoothClipTurboModule::setClipPresentationBatch(
   return smoothclip::setPresentationBatch(parsed);
 }
 
+// JS stamps a run with Reanimated's frame timestamp in milliseconds on the
+// CACurrentMediaTime base; the registry takes seconds. Anything else means
+// "start now".
+static double startedAtHintSeconds(double startTimestampMs) {
+  if (!std::isfinite(startTimestampMs) || startTimestampMs <= 0) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return startTimestampMs / 1000.0;
+}
+
 int32_t SmoothClipTurboModule::animateTimingGroup(
     jsi::Runtime &runtime,
     double controllerId,
@@ -399,7 +410,6 @@ int32_t SmoothClipTurboModule::animateTimingGroup(
     int32_t reduceMotion,
     int32_t completionTag,
     double startTimestamp) {
-  (void)startTimestamp;
   std::vector<smoothclip::GroupMotionEntry> parsed;
   if (!validDriverId(controllerId) ||
       !fixedGroupEntriesAt(runtime, entries, parsed) ||
@@ -417,7 +427,8 @@ int32_t SmoothClipTurboModule::animateTimingGroup(
        controlPoint2X,
        controlPoint2Y,
        reduceMotion},
-      completionTag);
+      completionTag,
+      startedAtHintSeconds(startTimestamp));
 }
 
 int32_t SmoothClipTurboModule::animateSpringGroup(
@@ -432,7 +443,6 @@ int32_t SmoothClipTurboModule::animateSpringGroup(
     int32_t reduceMotion,
     int32_t completionTag,
     double startTimestamp) {
-  (void)startTimestamp;
   std::vector<smoothclip::GroupMotionEntry> parsed;
   if (!validDriverId(controllerId) ||
       !fixedGroupEntriesAt(runtime, entries, parsed) ||
@@ -452,7 +462,8 @@ int32_t SmoothClipTurboModule::animateSpringGroup(
        false,
        reduceMotion,
        energyThreshold},
-      completionTag);
+      completionTag,
+      startedAtHintSeconds(startTimestamp));
 }
 
 jsi::Array SmoothClipTurboModule::cancelAnimationGroup(

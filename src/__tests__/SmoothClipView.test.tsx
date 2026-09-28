@@ -72,6 +72,16 @@ describe('SmoothClipView driver boundary', () => {
     });
   });
 
+  it('maps the shadow rendering mode to the native flag, blur by default', () => {
+    const blur = renderSmoothClipView({ controller: makeController() }, null);
+    expect((blur.props as Record<string, unknown>).shadowRendering).toBe(0);
+    const baked = renderSmoothClipView(
+      { controller: makeController(), shadowRendering: 'baked' },
+      null
+    );
+    expect((baked.props as Record<string, unknown>).shadowRendering).toBe(1);
+  });
+
   it('passes one controller identity to its host', () => {
     const controller = makeController(73);
     const first = renderSmoothClipView({ controller }, null);

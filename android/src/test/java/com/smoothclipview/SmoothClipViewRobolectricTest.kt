@@ -468,6 +468,58 @@ class SmoothClipViewRobolectricTest {
         )
     }
 
+    @Test
+    fun bakedShadowsStretchOneTileInsteadOfBlurringAPath() {
+        view.setBakedShadows(true)
+        view.setClipPresentationPx(
+            0f, 0f, 100f, 100f,
+            18f, 18f, 18f, 18f,
+            CLIP_CURVE_CONTINUOUS,
+            0f, 0f, 1f,
+            true, 0f, 0f, 0f, 0.25f, 0f, 2f, 64f, 0f,
+        )
+        // No shadow path is built for a uniform baked shadow.
+        assertTrue(privateObject("boxShadowPath") == null || privatePath("boxShadowPath").isEmpty)
+        view.presentationContainer.draw(Canvas())
+        val tile = privateObject("bakedShadowTile") as BakedShadowTile
+        // Radius rounds up to the 4 dp step; margins are 1.5 × the blur.
+        val step = BAKED_SHADOW_RADIUS_STEP_DP * view.resources.displayMetrics.density
+        assertEquals(kotlin.math.ceil(18f / step) * step, tile.radius)
+        assertEquals(96, tile.margin)
+        assertEquals(2 * tile.corner + tile.band, tile.side)
+        assertEquals(tile.side, tile.bitmap.width)
+        // The same tile serves the next frame of the same radius step.
+        view.setClipPresentationPx(
+            10f, 20f, 300f, 200f,
+            18f, 18f, 18f, 18f,
+            CLIP_CURVE_CONTINUOUS,
+            0f, 0f, 1f,
+            true, 0f, 0f, 0f, 0.25f, 0f, 2f, 64f, 0f,
+        )
+        view.presentationContainer.draw(Canvas())
+        assertTrue(tile === privateObject("bakedShadowTile"))
+        // Unequal radii fall back to the blur path.
+        view.setClipPresentationPx(
+            0f, 0f, 100f, 100f,
+            18f, 8f, 18f, 8f,
+            CLIP_CURVE_CONTINUOUS,
+            0f, 0f, 1f,
+            true, 0f, 0f, 0f, 0.25f, 0f, 2f, 64f, 0f,
+        )
+        assertEquals(RectF(0f, 2f, 100f, 102f), boxShadowBounds())
+        // Back to blur mode: the tile is dropped and the path rebuilt.
+        view.setClipPresentationPx(
+            0f, 0f, 100f, 100f,
+            18f, 18f, 18f, 18f,
+            CLIP_CURVE_CONTINUOUS,
+            0f, 0f, 1f,
+            true, 0f, 0f, 0f, 0.25f, 0f, 2f, 64f, 0f,
+        )
+        view.setBakedShadows(false)
+        assertNull(privateObject("bakedShadowTile"))
+        assertEquals(RectF(0f, 2f, 100f, 102f), boxShadowBounds())
+    }
+
     private fun privatePath(name: String): Path =
         SmoothClipView::class.java.getDeclaredField(name).let { field ->
             field.isAccessible = true

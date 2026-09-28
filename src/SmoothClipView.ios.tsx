@@ -15,8 +15,22 @@ import NativeSmoothClipView, {
   type NativeProps,
 } from './SmoothClipViewNativeComponent';
 
+/**
+ * How the host draws the presentation's `boxShadow`.
+ *
+ * - `'blur'` (default): a blurred path, rebuilt or animated on every frame the
+ *   aperture moves.
+ * - `'baked'`: one pre-blurred tile per corner-radius step, stretched by the
+ *   compositor, so an animated frame costs no blur. Needs uniform corner
+ *   radii (unequal radii fall back to the blur path); the tile corner rounds
+ *   up to the next 4 pt step, and a run that changes radius, blur or colour
+ *   swaps tiles in steps. Drawn under the aperture on both platforms.
+ */
+export type SmoothClipShadowRendering = 'blur' | 'baked';
+
 export type SmoothClipViewProps = ViewProps & {
   controller: SmoothClipController;
+  shadowRendering?: SmoothClipShadowRendering;
   children?: ReactNode;
 };
 
@@ -112,7 +126,13 @@ export function sanitizeSmoothClipStyle(
 }
 
 export function renderSmoothClipView(
-  { controller, children, style, ...viewProps }: SmoothClipViewProps,
+  {
+    controller,
+    children,
+    style,
+    shadowRendering,
+    ...viewProps
+  }: SmoothClipViewProps,
   forwardedRef: ForwardedRef<ComponentRef<typeof NativeSmoothClipView>>
 ): ReactElement {
   const { ref, initialFrame: canonical } = getControllerRef(controller);
@@ -147,6 +167,7 @@ export function renderSmoothClipView(
     initialClipBoxShadowOffsetY: shadow?.offsetY ?? 0,
     initialClipBoxShadowBlurRadius: shadow?.blurRadius ?? 0,
     initialClipBoxShadowSpreadDistance: shadow?.spreadDistance ?? 0,
+    shadowRendering: shadowRendering === 'baked' ? 1 : 0,
   };
 
   return (
