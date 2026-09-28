@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.5.0](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.5.0) — 2026-09-28
 
 - **Backdrop channel.** A presentation gains `backdrop: { translateX,
   translateY }`, and the new `SmoothClipBackdropView` (`controller={clip}`)
