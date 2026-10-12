@@ -23,6 +23,7 @@ import android.view.View
 import android.view.ViewOutlineProvider
 import com.facebook.proguard.annotations.DoNotStrip
 import com.facebook.react.uimanager.PixelUtil
+import com.facebook.react.uimanager.PointerEvents.Companion.canChildrenBeTouchTarget
 import com.facebook.react.uimanager.ThemedReactContext
 import com.facebook.react.views.view.ReactViewGroup
 import java.lang.ref.WeakReference
@@ -790,15 +791,18 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
             touchPoint[0] = event.x
             touchPoint[1] = event.y
             inversePresentationMatrix.mapPoints(touchPoint)
-            forwardingOverflowTouchStream = touchPoint[0] < 0 || touchPoint[1] < 0 ||
-                touchPoint[0] >= width || touchPoint[1] >= height
+            forwardingOverflowTouchStream = canChildrenBeTouchTarget(pointerEvents) &&
+                (touchPoint[0] < 0 || touchPoint[1] < 0 ||
+                    touchPoint[0] >= width || touchPoint[1] >= height)
         }
 
         if (!acceptingTouchStream) return false
         // ViewGroup's native dispatch rejects children outside their layout bounds,
         // even when clipChildren=false. Bypass only the internal presentation wrapper
         // for an overflow stream; the clip container still dispatches to transformed
-        // content normally. Retain this route through the real UP/CANCEL.
+        // content normally. Retain this route through the real UP/CANCEL. The bypass
+        // also skips this view's own interception, so `pointerEvents` that keep the
+        // children from touches (none, box-only) take the normal route instead.
         val result = if (forwardingOverflowTouchStream) {
             presentationContainer.matrix.invert(inversePresentationMatrix)
             val localEvent = MotionEvent.obtain(event)

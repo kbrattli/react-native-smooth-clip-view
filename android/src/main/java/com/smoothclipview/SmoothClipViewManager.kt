@@ -12,8 +12,9 @@ import com.facebook.react.viewmanagers.SmoothClipViewManagerInterface
 @ReactModule(name = SmoothClipViewManager.NAME)
 class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
     SmoothClipViewManagerInterface<SmoothClipView> {
-    private val delegate =
+    private val delegate = PointerEventsDelegate(
         SmoothClipViewManagerDelegate<SmoothClipView, SmoothClipViewManager>(this)
+    )
 
     private data class PendingInitialClip(
         var x: Double = 0.0,

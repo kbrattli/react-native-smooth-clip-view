@@ -12,8 +12,9 @@ import com.facebook.react.viewmanagers.SmoothClipBackdropViewManagerInterface
 @ReactModule(name = SmoothClipBackdropViewManager.NAME)
 class SmoothClipBackdropViewManager : ViewGroupManager<SmoothClipBackdropView>(),
     SmoothClipBackdropViewManagerInterface<SmoothClipBackdropView> {
-    private val delegate =
+    private val delegate = PointerEventsDelegate(
         SmoothClipBackdropViewManagerDelegate<SmoothClipBackdropView, SmoothClipBackdropViewManager>(this)
+    )
 
     // Fabric delivers the prop before the transaction ends; bind once per
     // transaction, after every prop of it has landed.

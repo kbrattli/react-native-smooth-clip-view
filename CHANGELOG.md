@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## [0.5.2](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.5.2) — 2026-10-12
 
+- **Fix: Android ignored `pointerEvents` on `SmoothClipView` and
+  `SmoothClipBackdropView`**, so both took every touch inside their bounds.
+  iOS already honoured it.
 - `useSmoothClipController` validates and canonicalizes its initial
   presentation on the first render only, the render that seeds the host. A
   caller that rebuilds the object every render (a presentation derived from a

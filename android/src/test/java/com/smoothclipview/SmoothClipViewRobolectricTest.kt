@@ -8,8 +8,14 @@ import android.graphics.Path
 import android.graphics.RectF
 import android.view.MotionEvent
 import android.view.View
+import android.widget.FrameLayout
+import com.facebook.react.bridge.JavaOnlyMap
 import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.uimanager.PointerEvents
+import com.facebook.react.uimanager.ReactStylesDiffMap
 import com.facebook.react.uimanager.ThemedReactContext
+import com.facebook.react.uimanager.TouchTargetHelper
+import com.facebook.react.uimanager.ViewProps
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -634,6 +640,56 @@ class SmoothClipViewRobolectricTest {
         manager.removeViewAt(backdrop, 0)
         assertEquals(0, manager.getChildCount(backdrop))
     }
+
+    @Test
+    fun backdropWithPointerEventsNoneLeavesTheTouchToTheViewBelow() {
+        // A screen-sized backdrop over a touchable view: credits over a map.
+        val context = view.context as ThemedReactContext
+        val belowActions = mutableListOf<Int>()
+        val below = View(context).apply {
+            id = 2
+            setOnTouchListener { _, event ->
+                belowActions += event.actionMasked
+                true
+            }
+        }
+        val backdrop = SmoothClipBackdropView(context).apply { id = 3 }
+        val root = FrameLayout(context)
+        root.addView(below)
+        root.addView(backdrop)
+        root.layout(0, 0, 100, 100)
+        below.layout(0, 0, 100, 100)
+        backdrop.layout(0, 0, 100, 100)
+
+        SmoothClipBackdropViewManager().updateProperties(backdrop, pointerEventsProps("none"))
+        assertEquals(PointerEvents.NONE, backdrop.pointerEvents)
+        assertTrue(root.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 50f, 50f)))
+        assertEquals(listOf(MotionEvent.ACTION_DOWN), belowActions)
+        assertEquals(2, TouchTargetHelper.findTargetTagForTouch(50f, 50f, root))
+    }
+
+    @Test
+    @Config(sdk = [28, 35])
+    fun clipViewWithPointerEventsNoneTakesNoTouchOnEitherRoute() {
+        val manager = SmoothClipViewManager()
+        manager.updateProperties(view, pointerEventsProps("none"))
+        assertEquals(PointerEvents.NONE, view.pointerEvents)
+        assertFalse(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 50f, 50f)))
+        // An off-host aperture routes past the view's own interception.
+        view.setClipPresentationPx(-30f, 0f, -10f, 100f, 0f, 0f, 0f, 0f,
+            CLIP_CURVE_CIRCULAR, -30f, 0f, 1f, rotation = Math.PI / 2)
+        assertFalse(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 10f, 50f)))
+        assertTrue(actions.isEmpty())
+
+        // Removing the prop restores auto.
+        manager.updateProperties(view, pointerEventsProps(null))
+        assertEquals(PointerEvents.AUTO, view.pointerEvents)
+        assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 10f, 50f)))
+        assertEquals(listOf(MotionEvent.ACTION_DOWN), actions)
+    }
+
+    private fun pointerEventsProps(value: String?) =
+        ReactStylesDiffMap(JavaOnlyMap.of(ViewProps.POINTER_EVENTS, value))
 
     private fun privatePath(name: String): Path =
         SmoothClipView::class.java.getDeclaredField(name).let { field ->
