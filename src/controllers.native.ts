@@ -19,6 +19,7 @@ import NativeSmoothClipModule from './smoothClipNative';
 
 const setClipPresentationHostFunction =
   NativeSmoothClipModule.setClipPresentation;
+const snapshotGroupHostFunction = NativeSmoothClipModule.snapshotGroup;
 
 export function useSmoothClipController(
   initialValue: SmoothClipInitialFrame,
@@ -55,6 +56,11 @@ export function useSmoothClipController(
     const controller: SmoothClipController = {
       ref,
       ui: {
+        isReady() {
+          'worklet';
+          // Only the flag: an unavailable driver's frame is non-finite.
+          return snapshotGroupHostFunction([controllerId])[0] === 1;
+        },
         beginInteraction() {
           'worklet';
           return group.ui.beginInteraction([ref])[0]?.frame ?? initialFrame;

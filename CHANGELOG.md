@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `clip.ui.isReady()` reads whether the mounted host can produce a visible
+  frame, from the UI runtime and with no side effects. A UI frame can wait on it
+  to start a transition only after the host's native mount; `onLayout` and
+  `measure` report the shadow tree, which can be ahead of the mount. JS only: it
+  surfaces the `ready` flag `snapshotGroup` already returns on both platforms.
+
 ## [0.5.2](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.5.2) — 2026-10-12
 
 - **Fix: Android ignored `pointerEvents` on `SmoothClipView` and

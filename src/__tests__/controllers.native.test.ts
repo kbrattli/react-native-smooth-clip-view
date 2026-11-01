@@ -139,6 +139,33 @@ describe('useSmoothClipController', () => {
     expect(native.animateTimingGroup).not.toHaveBeenCalled();
   });
 
+  it('reads host readiness from the native snapshot flag alone', () => {
+    const clip = useSmoothClipController(initial);
+    const id = (clip.ref as unknown as { id: number }).id;
+    native.snapshotGroup.mockClear();
+
+    native.snapshotGroup.mockReturnValueOnce(snapshotPacket(target));
+    expect(clip.ui.isReady()).toBe(true);
+    expect(native.snapshotGroup).toHaveBeenCalledWith([id]);
+
+    // Mounted nowhere yet: the host is known but cannot display.
+    native.snapshotGroup.mockReturnValueOnce([
+      0,
+      ...snapshotPacket(target).slice(1),
+    ]);
+    expect(clip.ui.isReady()).toBe(false);
+
+    // An unavailable driver reports a non-finite frame, which is not an error
+    // here; off the main thread native returns nothing at all.
+    native.snapshotGroup.mockReturnValueOnce(
+      new Array(PRESENTATION_STRIDE + 1).fill(Number.NaN).fill(0, 0, 1)
+    );
+    expect(clip.ui.isReady()).toBe(false);
+    native.snapshotGroup.mockReturnValueOnce([]);
+    expect(clip.ui.isReady()).toBe(false);
+    native.snapshotGroup.mockClear();
+  });
+
   it('returns the current presentation when cancelling a stale UI run', () => {
     const controller = useSmoothClipController(initial);
     native.animateTimingGroup.mockReturnValueOnce(51);

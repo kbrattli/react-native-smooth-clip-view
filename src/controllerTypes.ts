@@ -65,6 +65,14 @@ export type SmoothClipControllerOptions = Readonly<{
 }>;
 
 export type SmoothClipControllerUI = Readonly<{
+  /**
+   * True once the mounted host can produce a visible frame: it has a non-zero
+   * layout and is attached to a visible window. A pure read of native views,
+   * so it never holds before the host's mount, unlike `onLayout` or `measure`,
+   * which report the shadow tree. A UI frame that sees it true runs after that
+   * whole mount, so everything mounted with the host exists too.
+   */
+  isReady(): boolean;
   beginInteraction(): CanonicalSmoothClipPresentation;
   setFrame(frame: SmoothClipPresentation): void;
   animateTo(
