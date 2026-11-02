@@ -111,10 +111,11 @@ SharedValue.
 its visible raw presentation. Apply the final gesture sample with `setFrame()`
 before calling it when the release must start from that exact frame.
 
-`isReady()` reads whether the mounted host can produce a visible frame: it has a
-non-zero layout and is attached to a visible window. Poll it from UI frames to
-start a transition only once the host exists. Unlike `onLayout` and `measure`,
-which report the shadow tree, it cannot hold before the native mount.
+`isReady()` reads whether the mounted host is on screen: it has a non-zero layout
+and is attached to a visible window, and on iOS its layer has been committed.
+Poll it from UI frames to start a transition only once the host shows. Unlike
+`onLayout` and `measure`, which report the shadow tree, it cannot hold before the
+native mount.
 
 ## React API
 

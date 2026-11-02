@@ -602,10 +602,18 @@ Presentation canonicalVisiblePresentation(const DriverState &state) {
   return state.latest;
 }
 
+// What a snapshot reports as ready: a host on screen, not only one that can get
+// there. A freshly mounted host can display at once, but its layer only reaches
+// the render server with the next Core Animation commit, and a presentation
+// layer exists from then on. Runs start on anyDisplayableView instead: nothing
+// would wake a pending run when that commit lands.
 bool driverReady(const DriverState &state) {
   if (state.destroyed) return false;
   for (const ViewKey key : state.views) {
-    if ([viewForKey(key) smoothClipCanDisplay]) return true;
+    SmoothClipView *view = viewForKey(key);
+    if ([view smoothClipCanDisplay] && view.layer.presentationLayer != nil) {
+      return true;
+    }
   }
   return false;
 }
@@ -893,7 +901,8 @@ void tryStartGroup(int32_t groupId) {
         !stateIterator->second.animation.has_value() ||
         stateIterator->second.animation->groupId != groupId ||
         stateIterator->second.animation->started ||
-        !driverReady(stateIterator->second)) {
+        stateIterator->second.destroyed ||
+        !anyDisplayableView(stateIterator->second)) {
       return;
     }
   }

@@ -1887,6 +1887,28 @@ static UIWindow *TestWindow(void) {
   smoothclip::destroyDriver(driverId);
 }
 
+// A host that can display is not on screen until its commit: a run started on
+// the flag before then would join that commit partway through its curve.
+- (void)testSnapshotIsReadyOnlyOnceTheHostIsCommitted {
+  constexpr uint64_t driverId = 9907402;
+  UIWindow *window = TestWindow();
+  window.rootViewController = [UIViewController new];
+  [window makeKeyAndVisible];
+  [CATransaction flush];
+  SmoothClipView *view = DisplayableView(window, CGRectMake(0, 0, 120, 120));
+  const smoothclip::Presentation frame = Presentation(0, 0, 40, 40, 20);
+  smoothclip::setPresentation(driverId, frame, true);
+  smoothclip::registerView(driverId, view, frame);
+
+  XCTAssertFalse(smoothclip::snapshotGroup({driverId})[0].ready);
+  [CATransaction flush];
+  XCTAssertTrue(smoothclip::snapshotGroup({driverId})[0].ready);
+
+  smoothclip::unregisterView(driverId, view);
+  XCTAssertFalse(smoothclip::snapshotGroup({driverId})[0].ready);
+  smoothclip::destroyDriver(driverId);
+}
+
 - (void)testBeginInteractionCancelsTheActiveTransitionAndReturnsCanonicalGeometry {
   constexpr uint64_t driverId = 9003;
   SmoothClipView *view = [[SmoothClipView alloc]
