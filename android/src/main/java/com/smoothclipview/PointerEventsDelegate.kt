@@ -10,6 +10,7 @@ import com.facebook.react.views.view.ReactViewGroup
 internal class PointerEventsDelegate<T : ReactViewGroup>(
     private val codegen: ViewManagerDelegate<T>,
 ) : ViewManagerDelegate<T> {
+    @Suppress("ACCIDENTAL_OVERRIDE")
     override fun setProperty(view: T, propName: String, value: Any?) {
         if (propName == ViewProps.POINTER_EVENTS) {
             view.pointerEvents = PointerEvents.parsePointerEvents(value as String?)
@@ -18,6 +19,7 @@ internal class PointerEventsDelegate<T : ReactViewGroup>(
         }
     }
 
+    @Suppress("ACCIDENTAL_OVERRIDE")
     override fun receiveCommand(view: T, commandName: String, args: ReadableArray) =
         codegen.receiveCommand(view, commandName, args)
 }

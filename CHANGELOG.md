@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.4](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.5.4) — 2026-11-04
+
+- Android: `PointerEventsDelegate` suppresses Kotlin's `ACCIDENTAL_OVERRIDE` on its
+  `setProperty` and `receiveCommand` overrides. React Native's `ViewManagerDelegate`
+  gives its Java compat methods those same JVM names, which a compiler can report as
+  an accidental override of them. No behaviour change.
+
 ## [0.5.3](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.5.3) — 2026-11-02
 
 - `clip.ui.isReady()` reads whether the mounted host is on screen, from the UI
