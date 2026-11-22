@@ -22,6 +22,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewOutlineProvider
 import com.facebook.proguard.annotations.DoNotStrip
+import com.facebook.react.uimanager.BackgroundStyleApplicator
 import com.facebook.react.uimanager.PixelUtil
 import com.facebook.react.uimanager.PointerEvents.Companion.canChildrenBeTouchTarget
 import com.facebook.react.uimanager.ThemedReactContext
@@ -509,7 +510,9 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
 
     override fun dispatchDraw(canvas: Canvas) {
         val hostSaveCount = canvas.save()
-        canvas.clipRect(0f, 0f, width.toFloat(), height.toFloat())
+        // The host bounds, rounded by a `borderRadius` style: iOS clips every
+        // SmoothClipView to its bounds and their radius.
+        BackgroundStyleApplicator.clipToPaddingBox(this, canvas)
         try {
             super.dispatchDraw(canvas)
         } finally {

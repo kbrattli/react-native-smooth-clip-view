@@ -6,7 +6,8 @@ Layout-free animated rounded clipping for React Native Fabric.
 inside that viewport using raw host-local coordinates. Content is clipped by the
 aperture, an optional outset shadow may extend outside the aperture, and the host
 finally crops both. A full-screen host therefore accepts screen coordinates
-directly, including negative and off-screen frames.
+directly, including negative and off-screen frames. A `borderRadius` style
+rounds that crop; `overflow` does not change it.
 
 Use this library when a transition needs streamed gesture updates followed by
 native-owned timing or spring motion without animating Yoga layout. A regular
@@ -268,7 +269,9 @@ import {
 - **`SmoothClipFlightTarget`** (`ViewProps` plus `tag` and `ready`). Its
   children are hidden natively, without touching their React styles, from the
   frame a flight with its tag lifts, or the frame the target mounts while one
-  is airborne, whichever is later.
+  is airborne, whichever is later. Style it like a `View` (e.g. `borderRadius`
+  with `overflow: 'hidden'`). React Native ignores `borderCurve` on Android,
+  so a flight with continuous corners lands on circular ones there.
   - **`ready?: boolean`** (default `true`). While `false`, a flight that has
     arrived keeps its own content on screen at the destination instead of
     revealing the target, for example until a full-resolution image has loaded.

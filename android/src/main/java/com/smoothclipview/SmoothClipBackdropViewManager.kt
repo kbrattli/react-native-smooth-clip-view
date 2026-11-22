@@ -12,7 +12,7 @@ import com.facebook.react.viewmanagers.SmoothClipBackdropViewManagerInterface
 @ReactModule(name = SmoothClipBackdropViewManager.NAME)
 class SmoothClipBackdropViewManager : ViewGroupManager<SmoothClipBackdropView>(),
     SmoothClipBackdropViewManagerInterface<SmoothClipBackdropView> {
-    private val delegate = PointerEventsDelegate(
+    private val delegate = ViewPropsDelegate(
         SmoothClipBackdropViewManagerDelegate<SmoothClipBackdropView, SmoothClipBackdropViewManager>(this)
     )
 

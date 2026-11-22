@@ -960,7 +960,8 @@ class SmoothClipFlightRobolectricTest {
         // as a View takes them): the codegen delegate used to drop both, so
         // the landed content drew square corners on Android.
         val target = mountTarget("hero")
-        SmoothClipFlightTargetManager().updateProperties(
+        val manager = SmoothClipFlightTargetManager()
+        manager.updateProperties(
             target,
             ReactStylesDiffMap(
                 JavaOnlyMap.of(
@@ -987,5 +988,29 @@ class SmoothClipFlightRobolectricTest {
         assertFalse(target.flightReady)
         // Its content draws inside the clip: the target, not the container, clips.
         assertEquals("visible", target.contentContainer.overflow)
+
+        // A percent radius (the codegen delegate threw on it), and removed
+        // props reset, as on a View.
+        manager.updateProperties(
+            target,
+            ReactStylesDiffMap(
+                JavaOnlyMap.of(
+                    "borderRadius", "50%",
+                    "borderTopLeftRadius", null,
+                    "overflow", null,
+                ),
+            ),
+        )
+        assertEquals(
+            LengthPercentage(50f, LengthPercentageType.PERCENT),
+            BackgroundStyleApplicator.getBorderRadius(target, BorderRadiusProp.BORDER_RADIUS),
+        )
+        assertNull(
+            BackgroundStyleApplicator.getBorderRadius(
+                target,
+                BorderRadiusProp.BORDER_TOP_LEFT_RADIUS,
+            ),
+        )
+        assertEquals("visible", target.overflow)
     }
 }

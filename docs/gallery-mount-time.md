@@ -639,7 +639,7 @@ unrelated).
   - On Android, `SmoothClipFlightTarget` ignored its `borderRadius` and
     `overflow` (a library bug: its codegen view manager dropped them), so the
     flights' photos lost their corners in the frame they landed. Fixed in
-    the library (`ViewStyleDelegate.kt`).
+    the library in 0.6.1 (now `ViewPropsDelegate.kt`).
   - react-native-teleport sizes a teleported photo from its host's previous
     frame, so while the host grows the photo is smaller than its rounded
     clip, pinned to its top-left corner: mid-run only that corner was rounded

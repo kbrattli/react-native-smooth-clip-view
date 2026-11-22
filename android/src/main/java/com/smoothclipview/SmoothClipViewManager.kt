@@ -12,8 +12,11 @@ import com.facebook.react.viewmanagers.SmoothClipViewManagerInterface
 @ReactModule(name = SmoothClipViewManager.NAME)
 class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
     SmoothClipViewManagerInterface<SmoothClipView> {
-    private val delegate = PointerEventsDelegate(
-        SmoothClipViewManagerDelegate<SmoothClipView, SmoothClipViewManager>(this)
+    // The host owns its clip (bounds, rounded by a style radius), so it takes
+    // no `overflow`.
+    private val delegate = ViewPropsDelegate(
+        SmoothClipViewManagerDelegate<SmoothClipView, SmoothClipViewManager>(this),
+        overflow = false,
     )
 
     private data class PendingInitialClip(

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **Android: `SmoothClipView` and `SmoothClipBackdropView` take the border
+  props, and a percent `borderRadius` no longer crashes.** Their codegen
+  delegates cast the radius to a number (`'50%'` threw) and dropped the rest;
+  iOS applied them. A style radius now rounds the `SmoothClipView` host's crop
+  as on iOS, and the backdrop takes `overflow` too. The host's own `overflow`
+  stays ignored on both platforms.
+- **Android: one delegate for the `View` props codegen drops.**
+  `ViewPropsDelegate` replaces `PointerEventsDelegate` and
+  `ViewStyleDelegate` and reaches `ReactViewManager`'s setters through its
+  delegate instead of the deprecated `ViewManagerPropertyUpdater.updateProps`.
+
 ## [0.6.1](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.6.1) — 2026-11-22
 
 - **Android: `SmoothClipFlightTarget` takes `borderRadius`, `overflow` and the

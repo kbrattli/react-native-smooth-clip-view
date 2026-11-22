@@ -12,6 +12,7 @@ import android.widget.FrameLayout
 import com.facebook.react.bridge.JavaOnlyMap
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.internal.featureflags.ReactNativeFeatureFlagsForTests
+import com.facebook.react.uimanager.DisplayMetricsHolder
 import com.facebook.react.uimanager.PointerEvents
 import com.facebook.react.uimanager.ReactStylesDiffMap
 import com.facebook.react.uimanager.ThemedReactContext
@@ -690,6 +691,27 @@ class SmoothClipViewRobolectricTest {
         assertEquals(PointerEvents.AUTO, view.pointerEvents)
         assertTrue(view.dispatchTouchEvent(event(MotionEvent.ACTION_DOWN, 10f, 50f)))
         assertEquals(listOf(MotionEvent.ACTION_DOWN), actions)
+    }
+
+    @Test
+    @Config(sdk = [32])
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun aStyleRadiusRoundsTheHostWhichKeepsItsOwnOverflow() {
+        // The codegen delegate threw on a percent radius. As on iOS the radius
+        // rounds the host's clip, and `overflow` never replaces that clip.
+        DisplayMetricsHolder.setScreenDisplayMetrics(view.resources.displayMetrics)
+        view.contentContainer.getChildAt(0).setBackgroundColor(Color.RED)
+        SmoothClipViewManager().updateProperties(
+            view,
+            ReactStylesDiffMap(JavaOnlyMap.of("borderRadius", "50%", "overflow", "hidden")),
+        )
+        assertEquals("visible", view.overflow)
+
+        val bitmap = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888)
+        view.draw(Canvas(bitmap))
+        assertEquals(Color.TRANSPARENT, bitmap.getPixel(3, 3))
+        assertEquals(Color.RED, bitmap.getPixel(50, 50))
+        assertEquals(Color.RED, bitmap.getPixel(50, 2))
     }
 
     private fun pointerEventsProps(value: String?) =
