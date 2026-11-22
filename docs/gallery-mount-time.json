@@ -47,6 +47,7 @@
   },
   "variants": [
     {
+      "platform": "ios",
       "key": "flight",
       "mountMs": {
         "median": 54.3,
@@ -82,6 +83,7 @@
       "blankFrames": 0
     },
     {
+      "platform": "ios",
       "key": "flight-tp",
       "mountMs": {
         "median": 50.6,
@@ -117,6 +119,7 @@
       "blankFrames": 0
     },
     {
+      "platform": "ios",
       "key": "set",
       "mountMs": {
         "median": 69.8,
@@ -152,6 +155,7 @@
       "blankFrames": 0
     },
     {
+      "platform": "ios",
       "key": "st",
       "mountMs": {
         "median": 118.5,
@@ -187,6 +191,7 @@
       "blankFrames": 0
     },
     {
+      "platform": "ios",
       "key": "st-tp",
       "mountMs": {
         "median": 148.2,
@@ -222,6 +227,7 @@
       "blankFrames": 0
     },
     {
+      "platform": "ios",
       "key": "choreo",
       "mountMs": {
         "median": 59.8,
@@ -255,10 +261,155 @@
       },
       "missedFrames": 0,
       "blankFrames": 0
+    },
+    {
+      "platform": "android",
+      "key": "flight",
+      "markerToFirstMotionMs": {
+        "median": 84.5,
+        "min": 55.1,
+        "max": 95.2,
+        "n": 10
+      },
+      "markerToFittedRunStartMs": {
+        "median": 45.2,
+        "min": 23.5,
+        "max": 75,
+        "n": 10
+      },
+      "markerToLandedMs": {
+        "median": 545.2,
+        "min": 518.2,
+        "max": 562.8,
+        "n": 10
+      },
+      "missedFrames": 136,
+      "blankFrames": 0
+    },
+    {
+      "platform": "android",
+      "key": "flight-tp",
+      "markerToFirstMotionMs": {
+        "median": 80.8,
+        "min": 47.9,
+        "max": 101.5,
+        "n": 10
+      },
+      "markerToFittedRunStartMs": {
+        "median": 44.2,
+        "min": 14.2,
+        "max": 59.1,
+        "n": 10
+      },
+      "markerToLandedMs": {
+        "median": 538.4,
+        "min": 504.4,
+        "max": 556.1,
+        "n": 10
+      },
+      "missedFrames": 140,
+      "blankFrames": 0
+    },
+    {
+      "platform": "android",
+      "key": "set",
+      "markerToFirstMotionMs": {
+        "median": 123.4,
+        "min": 111,
+        "max": 147.6,
+        "n": 10
+      },
+      "markerToFittedRunStartMs": {
+        "median": 62.1,
+        "min": 44.7,
+        "max": 86.5,
+        "n": 10
+      },
+      "markerToLandedMs": {
+        "median": 530.5,
+        "min": 513.2,
+        "max": 577.8,
+        "n": 10
+      },
+      "missedFrames": 124,
+      "blankFrames": 0
+    },
+    {
+      "platform": "android",
+      "key": "st",
+      "markerToFirstMotionMs": {
+        "median": 149.1,
+        "min": 135.9,
+        "max": 182.2,
+        "n": 10
+      },
+      "markerToFittedRunStartMs": {
+        "median": 94,
+        "min": 72,
+        "max": 128.4,
+        "n": 10
+      },
+      "markerToLandedMs": {
+        "median": 585.5,
+        "min": 544.3,
+        "max": 617.5,
+        "n": 10
+      },
+      "missedFrames": 126,
+      "blankFrames": 0
+    },
+    {
+      "platform": "android",
+      "key": "st-tp",
+      "markerToFirstMotionMs": {
+        "median": 183.8,
+        "min": 167.1,
+        "max": 222.8,
+        "n": 10
+      },
+      "markerToFittedRunStartMs": {
+        "median": 129.5,
+        "min": 118.3,
+        "max": 181.9,
+        "n": 10
+      },
+      "markerToLandedMs": {
+        "median": 601.7,
+        "min": 567.9,
+        "max": 653.5,
+        "n": 10
+      },
+      "missedFrames": 129,
+      "blankFrames": 0
+    },
+    {
+      "platform": "android",
+      "key": "choreo",
+      "markerToFirstMotionMs": {
+        "median": 149.6,
+        "min": 99.3,
+        "max": 212.3,
+        "n": 10
+      },
+      "markerToFittedRunStartMs": {
+        "median": 143.4,
+        "min": 115,
+        "max": 169.6,
+        "n": 10
+      },
+      "markerToLandedMs": {
+        "median": 557.4,
+        "min": 527.8,
+        "max": 598.8,
+        "n": 10
+      },
+      "missedFrames": 125,
+      "blankFrames": 0
     }
   ],
   "runs": [
     {
+      "platform": "ios",
       "variant": "flight",
       "index": 0,
       "warmUp": true,
@@ -276,6 +427,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight",
       "index": 1,
       "warmUp": true,
@@ -293,6 +445,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight",
       "index": 2,
       "warmUp": true,
@@ -310,6 +463,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight",
       "index": 0,
       "warmUp": false,
@@ -327,6 +481,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight",
       "index": 1,
       "warmUp": false,
@@ -344,6 +499,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight",
       "index": 2,
       "warmUp": false,
@@ -361,6 +517,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight",
       "index": 3,
       "warmUp": false,
@@ -378,6 +535,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight",
       "index": 4,
       "warmUp": false,
@@ -395,6 +553,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight",
       "index": 5,
       "warmUp": false,
@@ -412,6 +571,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight",
       "index": 6,
       "warmUp": false,
@@ -429,6 +589,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight",
       "index": 7,
       "warmUp": false,
@@ -446,6 +607,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight",
       "index": 8,
       "warmUp": false,
@@ -463,6 +625,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight",
       "index": 9,
       "warmUp": false,
@@ -480,6 +643,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight-tp",
       "index": 0,
       "warmUp": true,
@@ -497,6 +661,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight-tp",
       "index": 1,
       "warmUp": true,
@@ -514,6 +679,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight-tp",
       "index": 2,
       "warmUp": true,
@@ -531,6 +697,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight-tp",
       "index": 0,
       "warmUp": false,
@@ -548,6 +715,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight-tp",
       "index": 1,
       "warmUp": false,
@@ -565,6 +733,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight-tp",
       "index": 2,
       "warmUp": false,
@@ -582,6 +751,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight-tp",
       "index": 3,
       "warmUp": false,
@@ -599,6 +769,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight-tp",
       "index": 4,
       "warmUp": false,
@@ -616,6 +787,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight-tp",
       "index": 5,
       "warmUp": false,
@@ -633,6 +805,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight-tp",
       "index": 6,
       "warmUp": false,
@@ -650,6 +823,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight-tp",
       "index": 7,
       "warmUp": false,
@@ -667,6 +841,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight-tp",
       "index": 8,
       "warmUp": false,
@@ -684,6 +859,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "flight-tp",
       "index": 9,
       "warmUp": false,
@@ -701,6 +877,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "set",
       "index": 0,
       "warmUp": true,
@@ -718,6 +895,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "set",
       "index": 1,
       "warmUp": true,
@@ -735,6 +913,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "set",
       "index": 2,
       "warmUp": true,
@@ -752,6 +931,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "set",
       "index": 0,
       "warmUp": false,
@@ -769,6 +949,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "set",
       "index": 1,
       "warmUp": false,
@@ -786,6 +967,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "set",
       "index": 2,
       "warmUp": false,
@@ -803,6 +985,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "set",
       "index": 3,
       "warmUp": false,
@@ -820,6 +1003,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "set",
       "index": 4,
       "warmUp": false,
@@ -837,6 +1021,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "set",
       "index": 5,
       "warmUp": false,
@@ -854,6 +1039,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "set",
       "index": 6,
       "warmUp": false,
@@ -871,6 +1057,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "set",
       "index": 7,
       "warmUp": false,
@@ -888,6 +1075,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "set",
       "index": 8,
       "warmUp": false,
@@ -905,6 +1093,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "set",
       "index": 9,
       "warmUp": false,
@@ -922,6 +1111,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st",
       "index": 0,
       "warmUp": true,
@@ -939,6 +1129,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st",
       "index": 1,
       "warmUp": true,
@@ -956,6 +1147,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st",
       "index": 2,
       "warmUp": true,
@@ -973,6 +1165,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st",
       "index": 0,
       "warmUp": false,
@@ -990,6 +1183,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st",
       "index": 1,
       "warmUp": false,
@@ -1007,6 +1201,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st",
       "index": 2,
       "warmUp": false,
@@ -1024,6 +1219,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st",
       "index": 3,
       "warmUp": false,
@@ -1041,6 +1237,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st",
       "index": 4,
       "warmUp": false,
@@ -1058,6 +1255,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st",
       "index": 5,
       "warmUp": false,
@@ -1075,6 +1273,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st",
       "index": 6,
       "warmUp": false,
@@ -1092,6 +1291,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st",
       "index": 7,
       "warmUp": false,
@@ -1109,6 +1309,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st",
       "index": 8,
       "warmUp": false,
@@ -1126,6 +1327,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st",
       "index": 9,
       "warmUp": false,
@@ -1143,6 +1345,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st-tp",
       "index": 0,
       "warmUp": true,
@@ -1160,6 +1363,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st-tp",
       "index": 1,
       "warmUp": true,
@@ -1177,6 +1381,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st-tp",
       "index": 2,
       "warmUp": true,
@@ -1194,6 +1399,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st-tp",
       "index": 0,
       "warmUp": false,
@@ -1211,6 +1417,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st-tp",
       "index": 1,
       "warmUp": false,
@@ -1228,6 +1435,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st-tp",
       "index": 2,
       "warmUp": false,
@@ -1245,6 +1453,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st-tp",
       "index": 3,
       "warmUp": false,
@@ -1262,6 +1471,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st-tp",
       "index": 4,
       "warmUp": false,
@@ -1279,6 +1489,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st-tp",
       "index": 5,
       "warmUp": false,
@@ -1296,6 +1507,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st-tp",
       "index": 6,
       "warmUp": false,
@@ -1313,6 +1525,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st-tp",
       "index": 7,
       "warmUp": false,
@@ -1330,6 +1543,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st-tp",
       "index": 8,
       "warmUp": false,
@@ -1347,6 +1561,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "st-tp",
       "index": 9,
       "warmUp": false,
@@ -1364,6 +1579,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "choreo",
       "index": 0,
       "warmUp": true,
@@ -1381,6 +1597,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "choreo",
       "index": 1,
       "warmUp": true,
@@ -1398,6 +1615,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "choreo",
       "index": 2,
       "warmUp": true,
@@ -1415,6 +1633,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "choreo",
       "index": 0,
       "warmUp": false,
@@ -1432,6 +1651,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "choreo",
       "index": 1,
       "warmUp": false,
@@ -1449,6 +1669,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "choreo",
       "index": 2,
       "warmUp": false,
@@ -1466,6 +1687,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "choreo",
       "index": 3,
       "warmUp": false,
@@ -1483,6 +1705,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "choreo",
       "index": 4,
       "warmUp": false,
@@ -1500,6 +1723,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "choreo",
       "index": 5,
       "warmUp": false,
@@ -1517,6 +1741,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "choreo",
       "index": 6,
       "warmUp": false,
@@ -1534,6 +1759,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "choreo",
       "index": 7,
       "warmUp": false,
@@ -1551,6 +1777,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "choreo",
       "index": 8,
       "warmUp": false,
@@ -1568,6 +1795,7 @@
       }
     },
     {
+      "platform": "ios",
       "variant": "choreo",
       "index": 9,
       "warmUp": false,
@@ -1583,6 +1811,1190 @@
         "markerMs": 250100,
         "touchUpMs": 250081.5
       }
+    },
+    {
+      "platform": "android",
+      "variant": "flight",
+      "index": 0,
+      "warmUp": true,
+      "markerToFirstMotionMs": 66.2,
+      "markerToFittedRunStartMs": 52.8,
+      "markerToLandedMs": 547.8,
+      "framesShown": 16,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 10933.53
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight",
+      "index": 1,
+      "warmUp": true,
+      "markerToFirstMotionMs": 99.2,
+      "markerToFittedRunStartMs": 50,
+      "markerToLandedMs": 524.6,
+      "framesShown": 14,
+      "missedFrames": 11,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 15041.46
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight",
+      "index": 2,
+      "warmUp": true,
+      "markerToFirstMotionMs": 95.2,
+      "markerToFittedRunStartMs": 49.4,
+      "markerToLandedMs": 544.6,
+      "framesShown": 14,
+      "missedFrames": 14,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 19143.41
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight",
+      "index": 0,
+      "warmUp": false,
+      "markerToFirstMotionMs": 56.3,
+      "markerToFittedRunStartMs": 48.4,
+      "markerToLandedMs": 562.8,
+      "framesShown": 18,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 23180.39
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight",
+      "index": 1,
+      "warmUp": false,
+      "markerToFirstMotionMs": 55.1,
+      "markerToFittedRunStartMs": 50.7,
+      "markerToLandedMs": 518.2,
+      "framesShown": 16,
+      "missedFrames": 15,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 27407.52
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight",
+      "index": 2,
+      "warmUp": false,
+      "markerToFirstMotionMs": 56.2,
+      "markerToFittedRunStartMs": 53.8,
+      "markerToLandedMs": 528.3,
+      "framesShown": 16,
+      "missedFrames": 15,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 31491.86
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight",
+      "index": 3,
+      "warmUp": false,
+      "markerToFirstMotionMs": 94.7,
+      "markerToFittedRunStartMs": 23.5,
+      "markerToLandedMs": 549.3,
+      "framesShown": 16,
+      "missedFrames": 11,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 35615.69
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight",
+      "index": 4,
+      "warmUp": false,
+      "markerToFirstMotionMs": 89.3,
+      "markerToFittedRunStartMs": 43.1,
+      "markerToLandedMs": 541.1,
+      "framesShown": 16,
+      "missedFrames": 14,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 39730.47
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight",
+      "index": 5,
+      "warmUp": false,
+      "markerToFirstMotionMs": 58.6,
+      "markerToFittedRunStartMs": 47.3,
+      "markerToLandedMs": 550.3,
+      "framesShown": 17,
+      "missedFrames": 15,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 43988.03
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight",
+      "index": 6,
+      "warmUp": false,
+      "markerToFirstMotionMs": 87,
+      "markerToFittedRunStartMs": 40.9,
+      "markerToLandedMs": 518.6,
+      "framesShown": 14,
+      "missedFrames": 11,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 48103.96
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight",
+      "index": 7,
+      "warmUp": false,
+      "markerToFirstMotionMs": 95.2,
+      "markerToFittedRunStartMs": 39.4,
+      "markerToLandedMs": 537.2,
+      "framesShown": 15,
+      "missedFrames": 16,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 52205
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight",
+      "index": 8,
+      "warmUp": false,
+      "markerToFirstMotionMs": 81.9,
+      "markerToFittedRunStartMs": 75,
+      "markerToLandedMs": 553.8,
+      "framesShown": 12,
+      "missedFrames": 15,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 56373.59
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight",
+      "index": 9,
+      "warmUp": false,
+      "markerToFirstMotionMs": 93.4,
+      "markerToFittedRunStartMs": 36.5,
+      "markerToLandedMs": 551.3,
+      "framesShown": 16,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 60459.21
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight-tp",
+      "index": 0,
+      "warmUp": true,
+      "markerToFirstMotionMs": 55.6,
+      "markerToFittedRunStartMs": 36.7,
+      "markerToLandedMs": 511.1,
+      "framesShown": 15,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 68144.93
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight-tp",
+      "index": 1,
+      "warmUp": true,
+      "markerToFirstMotionMs": 120.8,
+      "markerToFittedRunStartMs": 52.2,
+      "markerToLandedMs": 534.8,
+      "framesShown": 12,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 72329.77
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight-tp",
+      "index": 2,
+      "warmUp": true,
+      "markerToFirstMotionMs": 95.3,
+      "markerToFittedRunStartMs": 62.8,
+      "markerToLandedMs": 561.4,
+      "framesShown": 14,
+      "missedFrames": 15,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 76523.91
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight-tp",
+      "index": 0,
+      "warmUp": false,
+      "markerToFirstMotionMs": 101.5,
+      "markerToFittedRunStartMs": 32,
+      "markerToLandedMs": 538.5,
+      "framesShown": 15,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 80682.8
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight-tp",
+      "index": 1,
+      "warmUp": false,
+      "markerToFirstMotionMs": 90.4,
+      "markerToFittedRunStartMs": 59.1,
+      "markerToLandedMs": 527.9,
+      "framesShown": 16,
+      "missedFrames": 15,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 84897.9
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight-tp",
+      "index": 2,
+      "warmUp": false,
+      "markerToFirstMotionMs": 52.2,
+      "markerToFittedRunStartMs": 46.1,
+      "markerToLandedMs": 538.3,
+      "framesShown": 17,
+      "missedFrames": 14,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 89187.96
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight-tp",
+      "index": 3,
+      "warmUp": false,
+      "markerToFirstMotionMs": 47.9,
+      "markerToFittedRunStartMs": 50.1,
+      "markerToLandedMs": 556.1,
+      "framesShown": 16,
+      "missedFrames": 17,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 93607.28
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight-tp",
+      "index": 4,
+      "warmUp": false,
+      "markerToFirstMotionMs": 59.4,
+      "markerToFittedRunStartMs": 51.2,
+      "markerToLandedMs": 504.4,
+      "framesShown": 14,
+      "missedFrames": 14,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 97772.07
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight-tp",
+      "index": 5,
+      "warmUp": false,
+      "markerToFirstMotionMs": 52.9,
+      "markerToFittedRunStartMs": 39.5,
+      "markerToLandedMs": 545.1,
+      "framesShown": 17,
+      "missedFrames": 15,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 102139.12
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight-tp",
+      "index": 6,
+      "warmUp": false,
+      "markerToFirstMotionMs": 71.3,
+      "markerToFittedRunStartMs": 58,
+      "markerToLandedMs": 512.4,
+      "framesShown": 15,
+      "missedFrames": 14,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 106378.64
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight-tp",
+      "index": 7,
+      "warmUp": false,
+      "markerToFirstMotionMs": 96.8,
+      "markerToFittedRunStartMs": 29.8,
+      "markerToLandedMs": 544.4,
+      "framesShown": 15,
+      "missedFrames": 14,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 110553.34
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight-tp",
+      "index": 8,
+      "warmUp": false,
+      "markerToFirstMotionMs": 101.4,
+      "markerToFittedRunStartMs": 14.2,
+      "markerToLandedMs": 522.8,
+      "framesShown": 15,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 114654.06
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "flight-tp",
+      "index": 9,
+      "warmUp": false,
+      "markerToFirstMotionMs": 91.5,
+      "markerToFittedRunStartMs": 42.3,
+      "markerToLandedMs": 545.1,
+      "framesShown": 16,
+      "missedFrames": 11,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 118855.08
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "set",
+      "index": 0,
+      "warmUp": true,
+      "markerToFirstMotionMs": 153.8,
+      "markerToFittedRunStartMs": 41.5,
+      "markerToLandedMs": 519.1,
+      "framesShown": 11,
+      "missedFrames": 10,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 126932.44
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "set",
+      "index": 1,
+      "warmUp": true,
+      "markerToFirstMotionMs": 131.3,
+      "markerToFittedRunStartMs": 81.5,
+      "markerToLandedMs": 539.8,
+      "framesShown": 12,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 131138.17
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "set",
+      "index": 2,
+      "warmUp": true,
+      "markerToFirstMotionMs": 127.3,
+      "markerToFittedRunStartMs": 58.5,
+      "markerToLandedMs": 555,
+      "framesShown": 14,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 135425.56
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "set",
+      "index": 0,
+      "warmUp": false,
+      "markerToFirstMotionMs": 124.8,
+      "markerToFittedRunStartMs": 60.8,
+      "markerToLandedMs": 529.8,
+      "framesShown": 13,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 139422.38
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "set",
+      "index": 1,
+      "warmUp": false,
+      "markerToFirstMotionMs": 116.3,
+      "markerToFittedRunStartMs": 79,
+      "markerToLandedMs": 515.9,
+      "framesShown": 12,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 143847.47
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "set",
+      "index": 2,
+      "warmUp": false,
+      "markerToFirstMotionMs": 122.1,
+      "markerToFittedRunStartMs": 65.3,
+      "markerToLandedMs": 513.2,
+      "framesShown": 12,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 147865.73
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "set",
+      "index": 3,
+      "warmUp": false,
+      "markerToFirstMotionMs": 131.8,
+      "markerToFittedRunStartMs": 54.6,
+      "markerToLandedMs": 529.2,
+      "framesShown": 13,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 151952.67
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "set",
+      "index": 4,
+      "warmUp": false,
+      "markerToFirstMotionMs": 112.8,
+      "markerToFittedRunStartMs": 48.8,
+      "markerToLandedMs": 543.1,
+      "framesShown": 14,
+      "missedFrames": 11,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 156222.99
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "set",
+      "index": 5,
+      "warmUp": false,
+      "markerToFirstMotionMs": 147.6,
+      "markerToFittedRunStartMs": 63.4,
+      "markerToLandedMs": 530.6,
+      "framesShown": 12,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 160380.59
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "set",
+      "index": 6,
+      "warmUp": false,
+      "markerToFirstMotionMs": 133,
+      "markerToFittedRunStartMs": 71.5,
+      "markerToLandedMs": 577.8,
+      "framesShown": 13,
+      "missedFrames": 14,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 164489.69
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "set",
+      "index": 7,
+      "warmUp": false,
+      "markerToFirstMotionMs": 111,
+      "markerToFittedRunStartMs": 86.5,
+      "markerToLandedMs": 550.1,
+      "framesShown": 14,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 168699.09
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "set",
+      "index": 8,
+      "warmUp": false,
+      "markerToFirstMotionMs": 125.5,
+      "markerToFittedRunStartMs": 52.3,
+      "markerToLandedMs": 530.5,
+      "framesShown": 14,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 173389.84
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "set",
+      "index": 9,
+      "warmUp": false,
+      "markerToFirstMotionMs": 120.5,
+      "markerToFittedRunStartMs": 44.7,
+      "markerToLandedMs": 532.3,
+      "framesShown": 13,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 177525.54
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st",
+      "index": 0,
+      "warmUp": true,
+      "markerToFirstMotionMs": 176.3,
+      "markerToFittedRunStartMs": 131.9,
+      "markerToLandedMs": 621.7,
+      "framesShown": 15,
+      "missedFrames": 14,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 185200.37
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st",
+      "index": 1,
+      "warmUp": true,
+      "markerToFirstMotionMs": 157.3,
+      "markerToFittedRunStartMs": 96,
+      "markerToLandedMs": 582.7,
+      "framesShown": 15,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 189563.57
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st",
+      "index": 2,
+      "warmUp": true,
+      "markerToFirstMotionMs": 135,
+      "markerToFittedRunStartMs": 71.8,
+      "markerToLandedMs": 516.8,
+      "framesShown": 13,
+      "missedFrames": 11,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 193852.48
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st",
+      "index": 0,
+      "warmUp": false,
+      "markerToFirstMotionMs": 135.9,
+      "markerToFittedRunStartMs": 77.3,
+      "markerToLandedMs": 549,
+      "framesShown": 14,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 198103.8
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st",
+      "index": 1,
+      "warmUp": false,
+      "markerToFirstMotionMs": 174.2,
+      "markerToFittedRunStartMs": 127.9,
+      "markerToLandedMs": 617.5,
+      "framesShown": 13,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 202272.97
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st",
+      "index": 2,
+      "warmUp": false,
+      "markerToFirstMotionMs": 158.6,
+      "markerToFittedRunStartMs": 115.2,
+      "markerToLandedMs": 577.3,
+      "framesShown": 15,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 206486.94
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st",
+      "index": 3,
+      "warmUp": false,
+      "markerToFirstMotionMs": 147.9,
+      "markerToFittedRunStartMs": 100.3,
+      "markerToLandedMs": 587.7,
+      "framesShown": 15,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 210566.04
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st",
+      "index": 4,
+      "warmUp": false,
+      "markerToFirstMotionMs": 182.2,
+      "markerToFittedRunStartMs": 128.4,
+      "markerToLandedMs": 616.6,
+      "framesShown": 15,
+      "missedFrames": 15,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 214830.91
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st",
+      "index": 5,
+      "warmUp": false,
+      "markerToFirstMotionMs": 171.1,
+      "markerToFittedRunStartMs": 72,
+      "markerToLandedMs": 583.2,
+      "framesShown": 14,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 219171.41
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st",
+      "index": 6,
+      "warmUp": false,
+      "markerToFirstMotionMs": 142.9,
+      "markerToFittedRunStartMs": 79.9,
+      "markerToLandedMs": 602,
+      "framesShown": 16,
+      "missedFrames": 10,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 223603.49
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st",
+      "index": 7,
+      "warmUp": false,
+      "markerToFirstMotionMs": 148.7,
+      "markerToFittedRunStartMs": 107.9,
+      "markerToLandedMs": 570.3,
+      "framesShown": 15,
+      "missedFrames": 14,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 227799.8
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st",
+      "index": 8,
+      "warmUp": false,
+      "markerToFirstMotionMs": 140,
+      "markerToFittedRunStartMs": 87.7,
+      "markerToLandedMs": 594.6,
+      "framesShown": 15,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 232166.1
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st",
+      "index": 9,
+      "warmUp": false,
+      "markerToFirstMotionMs": 149.6,
+      "markerToFittedRunStartMs": 85.2,
+      "markerToLandedMs": 544.3,
+      "framesShown": 14,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 236330.16
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st-tp",
+      "index": 0,
+      "warmUp": true,
+      "markerToFirstMotionMs": 161.7,
+      "markerToFittedRunStartMs": 100.3,
+      "markerToLandedMs": 584.8,
+      "framesShown": 15,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 244038.12
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st-tp",
+      "index": 1,
+      "warmUp": true,
+      "markerToFirstMotionMs": 177,
+      "markerToFittedRunStartMs": 118.7,
+      "markerToLandedMs": 606.4,
+      "framesShown": 15,
+      "missedFrames": 14,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 248212.77
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st-tp",
+      "index": 2,
+      "warmUp": true,
+      "markerToFirstMotionMs": 195.8,
+      "markerToFittedRunStartMs": 156.8,
+      "markerToLandedMs": 609.8,
+      "framesShown": 13,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 252449.51
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st-tp",
+      "index": 0,
+      "warmUp": false,
+      "markerToFirstMotionMs": 222.8,
+      "markerToFittedRunStartMs": 181.9,
+      "markerToLandedMs": 653.5,
+      "framesShown": 14,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 256684.74
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st-tp",
+      "index": 1,
+      "warmUp": false,
+      "markerToFirstMotionMs": 216.9,
+      "markerToFittedRunStartMs": 131.8,
+      "markerToLandedMs": 576.5,
+      "framesShown": 11,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 261029.7
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st-tp",
+      "index": 2,
+      "warmUp": false,
+      "markerToFirstMotionMs": 178,
+      "markerToFittedRunStartMs": 152.8,
+      "markerToLandedMs": 634.8,
+      "framesShown": 15,
+      "missedFrames": 14,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 265312.38
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st-tp",
+      "index": 3,
+      "warmUp": false,
+      "markerToFirstMotionMs": 186.4,
+      "markerToFittedRunStartMs": 123.5,
+      "markerToLandedMs": 605.9,
+      "framesShown": 14,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 270030.86
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st-tp",
+      "index": 4,
+      "warmUp": false,
+      "markerToFirstMotionMs": 189.9,
+      "markerToFittedRunStartMs": 147.2,
+      "markerToLandedMs": 599.5,
+      "framesShown": 14,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 274303.14
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st-tp",
+      "index": 5,
+      "warmUp": false,
+      "markerToFirstMotionMs": 168.2,
+      "markerToFittedRunStartMs": 118.3,
+      "markerToLandedMs": 583,
+      "framesShown": 15,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 278668.71
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st-tp",
+      "index": 6,
+      "warmUp": false,
+      "markerToFirstMotionMs": 167.1,
+      "markerToFittedRunStartMs": 159.5,
+      "markerToLandedMs": 631,
+      "framesShown": 16,
+      "missedFrames": 14,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 282930.34
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st-tp",
+      "index": 7,
+      "warmUp": false,
+      "markerToFirstMotionMs": 187.7,
+      "markerToFittedRunStartMs": 125.4,
+      "markerToLandedMs": 603.9,
+      "framesShown": 14,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 287388.32
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st-tp",
+      "index": 8,
+      "warmUp": false,
+      "markerToFirstMotionMs": 173,
+      "markerToFittedRunStartMs": 121.4,
+      "markerToLandedMs": 582.6,
+      "framesShown": 14,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 291699.42
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "st-tp",
+      "index": 9,
+      "warmUp": false,
+      "markerToFirstMotionMs": 181.1,
+      "markerToFittedRunStartMs": 127.2,
+      "markerToLandedMs": 567.9,
+      "framesShown": 14,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 296047.72
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "choreo",
+      "index": 0,
+      "warmUp": true,
+      "markerToFirstMotionMs": 152.6,
+      "markerToFittedRunStartMs": 127.3,
+      "markerToLandedMs": 534.5,
+      "framesShown": 14,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 303816.47
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "choreo",
+      "index": 1,
+      "warmUp": true,
+      "markerToFirstMotionMs": 140,
+      "markerToFittedRunStartMs": 125.4,
+      "markerToLandedMs": 535.9,
+      "framesShown": 13,
+      "missedFrames": 11,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 307866.42
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "choreo",
+      "index": 2,
+      "warmUp": true,
+      "markerToFirstMotionMs": 114.2,
+      "markerToFittedRunStartMs": 141,
+      "markerToLandedMs": 512.9,
+      "framesShown": 13,
+      "missedFrames": 11,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 311931.27
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "choreo",
+      "index": 0,
+      "warmUp": false,
+      "markerToFirstMotionMs": 131.6,
+      "markerToFittedRunStartMs": 144.3,
+      "markerToLandedMs": 570.4,
+      "framesShown": 15,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 316033.47
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "choreo",
+      "index": 1,
+      "warmUp": false,
+      "markerToFirstMotionMs": 99.3,
+      "markerToFittedRunStartMs": 115,
+      "markerToLandedMs": 531.9,
+      "framesShown": 15,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 320122.56
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "choreo",
+      "index": 2,
+      "warmUp": false,
+      "markerToFirstMotionMs": 144,
+      "markerToFittedRunStartMs": 145.4,
+      "markerToLandedMs": 561.8,
+      "framesShown": 14,
+      "missedFrames": 14,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 324103.6
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "choreo",
+      "index": 3,
+      "warmUp": false,
+      "markerToFirstMotionMs": 117.3,
+      "markerToFittedRunStartMs": 142.5,
+      "markerToLandedMs": 527.8,
+      "framesShown": 14,
+      "missedFrames": 10,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 328146.26
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "choreo",
+      "index": 4,
+      "warmUp": false,
+      "markerToFirstMotionMs": 212.3,
+      "markerToFittedRunStartMs": 163.5,
+      "markerToLandedMs": 575.1,
+      "framesShown": 13,
+      "missedFrames": 11,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 332183.08
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "choreo",
+      "index": 5,
+      "warmUp": false,
+      "markerToFirstMotionMs": 137.7,
+      "markerToFittedRunStartMs": 132.8,
+      "markerToLandedMs": 539,
+      "framesShown": 14,
+      "missedFrames": 13,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 336356.54
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "choreo",
+      "index": 6,
+      "warmUp": false,
+      "markerToFirstMotionMs": 155.2,
+      "markerToFittedRunStartMs": 126,
+      "markerToLandedMs": 542.1,
+      "framesShown": 14,
+      "missedFrames": 12,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 340491.23
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "choreo",
+      "index": 7,
+      "warmUp": false,
+      "markerToFirstMotionMs": 176.1,
+      "markerToFittedRunStartMs": 169.6,
+      "markerToLandedMs": 598.8,
+      "framesShown": 13,
+      "missedFrames": 14,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 344531.12
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "choreo",
+      "index": 8,
+      "warmUp": false,
+      "markerToFirstMotionMs": 155.7,
+      "markerToFittedRunStartMs": 124.5,
+      "markerToLandedMs": 553,
+      "framesShown": 14,
+      "missedFrames": 14,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 348587.7
+      }
+    },
+    {
+      "platform": "android",
+      "variant": "choreo",
+      "index": 9,
+      "warmUp": false,
+      "markerToFirstMotionMs": 165.4,
+      "markerToFittedRunStartMs": 166.7,
+      "markerToLandedMs": 573.5,
+      "framesShown": 14,
+      "missedFrames": 11,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 352871.62
+      }
     }
-  ]
+  ],
+  "android": {
+    "measured": "2026-11-22",
+    "metric": "Tap marker (the first recorded frame that shows it) to the first recorded frame in which the photo has moved more than 4 dp from its tile. Android has no native trace, so there is no touch-up time.",
+    "device": {
+      "emulator": "Pixel_10_Pro AVD (sdk_gphone16k_arm64), Android 17, API 37 (CP41.260831.007)",
+      "emulatorVersion": "37.2.12.0",
+      "screen": "1280 x 2856 px, 480 dpi (426.7 x 952 dp), 60 Hz display mode",
+      "recording": "adb screenrecord --size 640x1428 --bit-rate 8000000"
+    },
+    "build": "Release (arm64-v8a), the same code as iOS (gallery-mount-time 8822d9e)",
+    "cells": "No load. Per variant 3 warm-up cycles (warmUp: true), then 10 measured open/close cycles of tile 4, in one recording.",
+    "caveat": "The emulator's frame rate is not trustworthy (about 33 recorded frames per second during a run): compare the Android variants with each other only, not with iOS.",
+    "recording": "showcases/gallery-mount-time/gallery-mount-time-android.mp4 in app-showcase (untracked); recording times are in ms from its start"
+  }
 }

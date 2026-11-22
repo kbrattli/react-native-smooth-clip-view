@@ -152,8 +152,29 @@ epoch fit (`name/0:10:easeOutCubic`); `timing.mjs` also writes `timing.json`,
 the per-run rows; and `contact-sheet.swift` tiles every recorded frame of a
 time window into one PNG, labelled with its time.
 
+The gallery bench also ran on the Android emulator. `record.sh` records a
+device that `adb devices` lists with `adb shell screenrecord --size 640x1428`
+(`HERO_RECORD_SIZE`; at the Pixel 10 Pro emulator's native 1280x2856 the
+encoder falls back to a distorted 720x1280) and runs the flow with
+`--platform android`. At 1.5 px per dp the encoder bleeds a photo's edge into
+the 6 dp gutters, so on Android each masked tile grows by 1 dp
+(`HERO_MASK_PAD`, default 1 on Android, 0 on iOS). The layout comes from a
+Debug build through Metro, as on iOS (`--device_id <adb serial>`). There is no
+native trace, so `trace.sh` and `timing.mjs` do not apply: Android times run
+from the tap marker, and `gallery-json.mjs --android` merges them into the
+JSON.
+
+```sh
+HERO_LAYOUT=$LAYOUT example/scripts/hero-bench/record.sh emulator-5554 \
+  .argent/flows/gallery-bench/bench.yaml /tmp/gallery-android $CELLS
+node example/scripts/hero-bench/gallery-json.mjs --android /tmp/gallery-android \
+  $CELLS docs/gallery-mount-time.json <meta.json>
+```
+
 ## Android
 
 The bench runs on Android, for correctness only. The emulator's frame rate is
 not trustworthy, and Android has no native trace. A page sheet is an iOS
-presentation: on Android the sheet variants are full screens.
+presentation: on Android the sheet variants are full screens. The gallery
+bench's Android numbers (`docs/gallery-mount-time.md`) compare its variants
+with each other on the emulator only.

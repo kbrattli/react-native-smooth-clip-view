@@ -4,9 +4,11 @@ Measured 2026-11-22. One photo gallery (12 photos, 3 columns) in the example
 app, opened to a detail route by six transition variants. **Mount time** is
 the time from the hardware touch-up on a tile to the first recorded frame in
 which the photo has moved more than 4 pt from its tile: the "Mount time"
-column of `docs/hero-flight-results.md`, measured the same way.
+column of `docs/hero-flight-results.md`, measured the same way. On iOS it runs
+from the touch-up; on the Android emulator, which has no native trace, from
+the tap marker ([Results: Android emulator](#results-android-emulator)).
 
-## Results
+## Results: iOS
 
 Release build, iPhone 18 Pro simulator (iOS 27.0, 60 Hz), no load; 10 measured
 openings of the same tile per variant after 3 warm-ups, all in one recording.
@@ -50,6 +52,47 @@ that is an estimate, not a measurement.
 
 Simulator numbers compare the variants with each other on one machine. They
 are not device numbers.
+
+## Results: Android emulator
+
+Release build (arm64-v8a, the same code), Pixel 10 Pro emulator (Android 17,
+API 37), no load; 10 measured openings of the same tile per variant after 3
+warm-ups, all in one recording. Median (range) in ms **after the tap marker**,
+not the touch-up: Android has no native trace, so these numbers have no
+touch-up time and no cross-check. n = 10 for every cell.
+
+| Variant                              | Teleport                | Version                               | **Mount time** (tap marker → first motion > 4 dp) | n   | Fitted run start (after the marker) | Landed (after the marker) |
+| ------------------------------------ | ----------------------- | ------------------------------------- | ------------------------------------------------- | --- | ----------------------------------- | ------------------------- |
+| SmoothClipView flight                | without                 | 0.5.4 + flights (`f0db256`)           | **84.5** (55.1–95.2)                              | 10  | 45.2 (23.5–75.0)                    | 545.2 (518.2–562.8)       |
+| SmoothClipView flight                | with (added by hand)    | the same, react-native-teleport 1.2.5 | **80.8** (47.9–101.5)                             | 10  | 44.2 (14.2–59.1)                    | 538.4 (504.4–556.1)       |
+| Reanimated shared element transition | none (no teleport mode) | react-native-reanimated 4.8.0         | **123.4** (111.0–147.6)                           | 10  | 62.1 (44.7–86.5)                    | 530.5 (513.2–577.8)       |
+| react-native-screen-transitions      | without                 | 4.2.0                                 | **149.1** (135.9–182.2)                           | 10  | 94.0 (72.0–128.4)                   | 585.5 (544.3–617.5)       |
+| react-native-screen-transitions      | with (`handoff`)        | 4.2.0, react-native-teleport 1.2.5    | **183.8** (167.1–222.8)                           | 10  | 129.5 (118.3–181.9)                 | 601.7 (567.9–653.5)       |
+| react-native-screen-choreography     | with (required)         | 0.9.0, react-native-teleport 1.2.5    | **149.6** (99.3–212.3) ¹                          | 10  | 143.4 (115.0–169.6)                 | 557.4 (527.8–598.8)       |
+
+¹ Choreography runs cubic ease-out here too (see the iOS note): its first
+motion is the first frame of its run.
+
+- **Mount time** is the tap marker → first recorded frame in which the photo
+  has moved more than 4 dp from its tile. The marker is lit in the touch-up's
+  UI-thread turn, so the touch-up itself comes a little earlier (6–13 ms on
+  iOS); Android cannot say how much.
+- **The emulator's frame rate is not trustworthy.** Its display mode is
+  60 Hz, but it showed 11–18 frames per 500 ms run (about 33 per second;
+  every run "misses" 10–17 display frames). Android numbers compare the
+  variants with each other on the emulator only: not with iOS, and not with
+  a device.
+- No opening showed a blank frame. The behaviour check (`check.yaml`, one
+  recorded opening per variant, frame by frame) found every variant landing
+  without a blank frame, a double image or a jump of the photo. One
+  difference from iOS: **choreography's grid disappears in one recorded
+  frame** at the start of its run, where iOS fades it out over about three
+  frames. The photo itself is clean.
+- The order matches iOS except SET, which is slower than both flights by
+  about 40 ms here (on iOS by 15–19 ms), and choreography, whose run starts
+  last on Android (143 ms after the marker; on iOS it starts before both
+  screen-transitions runs). screen-transitions with `handoff` again starts
+  its run about 35 ms later than without (129.5 against 94.0).
 
 ## The variants
 
@@ -97,6 +140,35 @@ under the flying photo. Back closes every variant.
   ended (about 617 ms; 38 blank frames per opening in a Debug recording). A
   broken transition is not a fast one, so there is no SET + teleport row.
 
+### Is screen-transitions set up right?
+
+Kenneth asked whether it is odd that screen-transitions is faster without
+teleport. Its setup matches the library's documentation (its repository,
+`packages/docs` at v4.2.0):
+
+- **`handoff` on both boundaries** of the pair, the tile's and the detail's.
+  "Every matching boundary that should participate in that handoff should set
+  `handoff`" ("Bounds Transitions" and the 3.9 changelog).
+- **An empty destination.** "The destination defines the receiving bounds; it
+  does not need to render a second copy of the live child." The docs' example
+  wraps the payload in `Transition.Boundary.Target`; our boundaries have no
+  target, so each boundary's own frame is measured and animated. The library
+  supports that: a boundary without a target gets its handoff host at its
+  root (`shouldRenderHandoffHost: handoffEnabled && !hasTarget` in
+  `boundary-root.provider.tsx`).
+- **Nothing else differs** between the two variants: the same Blank Stack,
+  interpolator (`bounds().styles({ method: 'size' })`), 500 ms timing and tap.
+- **No option skips the extra work.** The open waits until the destination
+  boundary has measured itself and linked to its source
+  (`useInitialDestinationMeasurement`); `handoff` adds no gate to that, and
+  the library's own harness (`apps/harness`) has no teleport case.
+
+So it is the library's handoff path, not a setup mistake: with `handoff`, its
+run starts about 30 ms later on iOS (fitted run start 99.8 against 70.2 ms)
+and about 35 ms later on the Android emulator (129.5 against 94.0 ms). We did
+not trace those milliseconds to a phase inside the library; it was not worth
+a patched build. The docs call `handoff` experimental since 3.9.
+
 ## Method
 
 The hero bench's tooling (`docs/hero-bench.md`), extended for a grid:
@@ -124,6 +196,17 @@ The hero bench's tooling (`docs/hero-bench.md`), extended for a grid:
 - **Cells.** Release build on the iPhone 18 Pro simulator
   (`E99A3C2E-3463-439A-8088-A108DB9DB535`, iOS 27.0, 60 Hz), no load (no busy
   main thread, no JS block).
+- **Android.** The same flows and cells in a Release build on the
+  Pixel_10_Pro emulator (`emulator-5554`, API 37, emulator 37.2.12.0).
+  `record.sh` records an adb device with `screenrecord --size 640x1428`
+  (half the native 1280 × 2856; at full size the encoder falls back to a
+  distorted 720 × 1280) and runs the flow with `--platform android`; the
+  layout comes from a Debug build through Metro, as on iOS (the window is
+  426.7 × 952 dp with a 52 dp status bar, so its rects differ). At 1.5 px per
+  dp the encoder bleeds a photo's edge into the 6 dp gutters, so each masked
+  tile grows by 1 dp on Android (`HERO_MASK_PAD`). There is no native trace:
+  times run from the tap marker, and `gallery-json.mjs --android` merges the
+  runs into the JSON.
 
 ```sh
 UDID=E99A3C2E-3463-439A-8088-A108DB9DB535
@@ -132,7 +215,14 @@ HERO_LAYOUT=$LAYOUT example/scripts/hero-bench/trace.sh $UDID .argent/flows/gall
 ```
 
 `LAYOUT` is the `layout:` line a Debug build prints (`METRO_PORT=<port>`
-`record.sh … check.yaml`), as for the hero bench. Frames of one opening can be
+`record.sh … check.yaml`), as for the hero bench. On Android:
+
+````sh
+HERO_LAYOUT=$ANDROID_LAYOUT example/scripts/hero-bench/record.sh emulator-5554 \
+  .argent/flows/gallery-bench/bench.yaml /tmp/gallery-android $CELLS
+node example/scripts/hero-bench/gallery-json.mjs --android /tmp/gallery-android \
+  $CELLS docs/gallery-mount-time.json <meta.json>
+``` Frames of one opening can be
 checked with `contact-sheet.swift` (every recorded frame, labelled with its
 time after the marker).
 
@@ -203,8 +293,19 @@ patched (the repo's existing `@legendapp/list` patch is unrelated).
   lands on a display frame, so single runs are quantized to about 16.7 ms.
 - **One recording.** All 78 openings are in one 7-minute recording, flights
   first (26 flights calibrate its clock; all 26 agree within 5 ms).
+- **Android is the emulator, timed from the marker.** No native trace, so no
+  touch-up time; the emulator draws about 33 frames per second on a 60 Hz
+  mode, so a first motion is quantized to about 30 ms and the numbers compare
+  the variants with each other on the emulator only. All 78 Android openings
+  are in one 6-minute recording.
 
 ## Data
 
 `docs/gallery-mount-time.json`: the versions, the calibration, and every run
 (warm-ups marked), with the recording times of its touch-up and marker frame.
+Every run and variant carries `platform`. The Android ones (`"android"`)
+have marker-based times only (`markerToFirstMotionMs`,
+`markerToFittedRunStartMs`, `markerToLandedMs`, and the recording time of the
+marker frame); the top-level `android` entry describes their device, build
+and recording.
+````
