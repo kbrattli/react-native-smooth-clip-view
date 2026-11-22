@@ -233,16 +233,43 @@ under the flying photo. Back closes every variant.
 - **SmoothClipView** has no teleport mode. At Kenneth's request a second row
   adds react-native-teleport by hand, as described above; the flight itself
   is unchanged, so both rows start the same way.
-- **Reanimated** shared element transitions have no teleport mode. A
-  hand-wired attempt, made the same way as SmoothClipView's
-  (`app/gallery-set-teleport/`, not measured), breaks the transition. Both
-  ends are an `Animated.View` with the tile's tag; the detail's holds a
-  `PortalHost`, and the tile's live photo is teleported into it in the
-  commit that mounts the detail. SET then flies the detail's tagged view
-  without the photo. The tile empties about 70 ms after the tap, nothing
-  visible moves, and the photo appears at the detail only when the run has
-  ended (about 617 ms; 38 blank frames per opening in a Debug recording). A
-  broken transition is not a fast one, so there is no SET + teleport row.
+- **Reanimated** shared element transitions have no teleport mode, and no
+  hand-wired one worked, so there is no SET + teleport row. Reanimated 4.8
+  flies the source's own tagged view (the tile's), moved to an overlay and
+  put back where it was when the run lands; it animates only that view's
+  frame, not its children's; and it hides the target until the landing,
+  when one internal step hides the source again and shows the target
+  (`SharedTransitions.cpp`: `startSharedTransitionRun`, `attachCarrier`). App
+  code first runs a frame later (`withCallback`). Two attempts:
+  - **Teleport at the detail's mount** (`app/gallery-set-teleport/`, kept,
+    not measured), made the same way as SmoothClipView's. Both ends are an
+    `Animated.View` with the tile's tag; the detail's holds a `PortalHost`,
+    and the tile's live photo is teleported into it in the commit that
+    mounts the detail. SET then flies the tile's tagged view, which the photo
+    has just left, while the photo waits in the hidden target. The tile
+    empties about 70 ms after the tap, nothing visible moves, and the photo
+    appears at the detail only when the run has ended (about 617 ms; 38 blank
+    frames per opening in a Debug recording).
+  - **Teleport hosts as the tagged views** (not committed; Debug builds on
+    both platforms, checked frame by frame), so that the view SET flies holds
+    the photo and teleport sizes it to that view. That needed two more
+    workarounds and still broke:
+    - `PortalHost` does not pass Reanimated's `nativeID` to its native view,
+      and Reanimated reads a tag given at mount from it, so the hosts got
+      their tag a commit after mount. The detail's boundary then had to turn
+      on a commit after the detail mounted, with the grid's held on until
+      then: SET's run starts about a commit later than plain SET's.
+    - SET then flew the live photo, its size a frame behind its host (the
+      teleport lag below). To avoid a frame of the empty target at the
+      landing, the photo must move to an untagged host just before it, and
+      no clock held: on iOS the landing waited past the run (a second,
+      shorter SET pair used as the clock landed with the photo's), so one
+      frame showed the empty host. On Android, about 300 ms into the
+      opening, teleport stopped resizing the photo: it fell back to the
+      tile's size in the corner of the growing host.
+    - On both platforms the photo left the detail's host as the pop started,
+      so the close flew an empty host home and the photo reappeared at the
+      tile after the landing. The cause was not found.
 - **Reanimated `measure()` + width/height** has no teleport mode either. At
   Kenneth's request its second row adds react-native-teleport by hand, as for
   SmoothClipView. Unlike SET's, it works: see below.

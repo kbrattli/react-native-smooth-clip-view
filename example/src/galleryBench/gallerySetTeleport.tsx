@@ -34,10 +34,12 @@ import {
 
 /**
  * NOT MEASURED: this wiring breaks the transition (docs/gallery-mount-time.md,
- * "Reanimated SET with teleport"). SET flies the detail's tagged view without
- * the teleported photo: the tile empties when the detail mounts and the photo
- * appears only when the run has ended. Kept to show why the bench has no
- * SET + teleport row.
+ * "Teleport, checked against each library"). Reanimated 4.8 flies the
+ * source's own tagged view, the tile's, which the photo has just left, and
+ * keeps the detail's view, which now holds the photo, hidden until the run
+ * lands: the tile empties when the detail mounts and the photo appears only
+ * when the run has ended. Kept to show why the bench has no SET + teleport
+ * row (the doc also describes a second, uncommitted attempt).
  *
  * Reanimated shared element transitions with react-native-teleport added by
  * hand (Reanimated has no teleport mode), as for the SmoothClipView variant:
@@ -45,8 +47,8 @@ import {
  * with the tile's `sharedTransitionTag`; the detail's holds a `PortalHost`,
  * and the tile's live photo is teleported into it in the commit that mounts
  * the detail (the open request and the Portal's `hostName` are one React
- * update), so SET animates the detail's view with the tile's own photo in it.
- * When the detail unmounts after its close, the photo returns to the tile.
+ * update). When the detail unmounts after its close, the photo returns to the
+ * tile.
  */
 const SET_TRANSITION = SharedTransition.duration(GALLERY_DURATION_MS);
 
