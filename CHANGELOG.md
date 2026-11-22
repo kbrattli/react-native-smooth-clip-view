@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.6.0](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.6.0) — 2026-11-22
 
 - **Flights (hero transitions).** `flight` on `SmoothClipView` moves the
   host's content into a window-level flight layer while a run (or
