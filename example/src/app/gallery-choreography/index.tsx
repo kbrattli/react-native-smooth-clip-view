@@ -9,6 +9,7 @@ import {
 import {
   GalleryGridScreen,
   GalleryPhoto,
+  galleryStyles,
   galleryTileTap,
   scheduleGalleryMarkerClear,
 } from '../../galleryBench/GalleryBench';
@@ -84,7 +85,8 @@ function ChoreographyTile({
           name="photo"
           style={[StyleSheet.absoluteFill, galleryRounded]}
         >
-          <GalleryPhoto photo={photo} />
+          {/* Its own corners: it is teleported, so sized a frame late. */}
+          <GalleryPhoto photo={photo} style={galleryStyles.roundedFill} />
         </galleryChoreography.Element>
       </View>
     </GestureDetector>

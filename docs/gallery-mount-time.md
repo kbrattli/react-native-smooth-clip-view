@@ -603,6 +603,20 @@ unrelated).
   screen-transitions' interpolator hides the tile while its copy flies and
   fades the backdrop (`galleryScreenTransitions.tsx`). SET and choreography
   need none.
+- **Corners, fixed after these recordings.** Two things squared some
+  corners in the recordings and the video; neither moves the analysed box
+  (its edges' midpoints are photo), so no number changes.
+  - On Android, `SmoothClipFlightTarget` ignored its `borderRadius` and
+    `overflow` (a library bug: its codegen view manager dropped them), so the
+    flights' photos lost their corners in the frame they landed. Fixed in
+    the library (`ViewStyleDelegate.kt`).
+  - react-native-teleport sizes a teleported photo from its host's previous
+    frame, so while the host grows the photo is smaller than its rounded
+    clip, pinned to its top-left corner: mid-run only that corner was rounded
+    in screen-transitions with `handoff` and in choreography, on both
+    platforms. Their photos now carry their own 20 pt corners
+    (`galleryStyles.roundedFill`; screen-transitions' photos without
+    `handoff` too, so the pair stays alike).
 - **Flight + teleport close glitch.** Its opening is clean, but its closes
   show the photo missing for a frame before the run home lifts it (one
   recorded frame on iOS, two at 60 fps on Android): the photo is teleported

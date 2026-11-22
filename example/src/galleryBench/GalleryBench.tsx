@@ -18,6 +18,7 @@ import type { GalleryImage } from '../galleryImages';
 import {
   GALLERY_BACKGROUND,
   galleryLayout,
+  galleryRounded,
   publishGalleryLayout,
   type GalleryLayout,
 } from './galleryBenchGeometry';
@@ -178,6 +179,14 @@ export function GalleryDetailScreen({
 
 export const galleryStyles = StyleSheet.create({
   fill: { height: '100%', width: '100%' },
+  /**
+   * A photo that fills its frame with its own gallery-radius corners. The
+   * teleported photos use it: react-native-teleport sizes a moved photo from
+   * its host's previous frame, so while a host grows the photo is smaller than
+   * its rounded clip, and without its own corners only the one it shares with
+   * the clip (top left) would be rounded.
+   */
+  roundedFill: { height: '100%', width: '100%', ...galleryRounded },
   screen: { flex: 1, backgroundColor: GALLERY_BACKGROUND },
 });
 

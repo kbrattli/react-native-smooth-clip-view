@@ -14,6 +14,7 @@ import {
   GalleryDetailScreen,
   GalleryGridScreen,
   GalleryPhoto,
+  galleryStyles,
   galleryTileTap,
   scheduleGalleryMarkerClear,
   useGalleryLayout,
@@ -179,6 +180,7 @@ function BoundaryTile({
           id={String(index)}
           style={[StyleSheet.absoluteFill, galleryRounded]}
         >
+          {/* Its own corners: with handoff it is sized a frame late. */}
           <GalleryPhoto
             onLoad={
               GALLERY_MARKS && teleport
@@ -186,6 +188,7 @@ function BoundaryTile({
                 : undefined
             }
             photo={photo}
+            style={galleryStyles.roundedFill}
           />
         </Transition.Boundary>
       </View>
@@ -219,6 +222,7 @@ export function ScreenTransitionsDetail({
               GALLERY_MARKS ? (e) => markGalleryLoad(e.cacheType) : undefined
             }
             photo={photo}
+            style={galleryStyles.roundedFill}
           />
         )}
       </Transition.Boundary>
