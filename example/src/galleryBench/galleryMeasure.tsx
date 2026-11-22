@@ -1,6 +1,6 @@
 import { Stack, useRouter } from 'expo-router';
 import { useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 import { GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   Easing,
@@ -15,6 +15,7 @@ import Animated, {
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
+import { useReanimatedTransitionProgress } from 'react-native-screens/reanimated';
 import { Portal, PortalHost, PortalProvider } from 'react-native-teleport';
 import { scheduleOnRN } from 'react-native-worklets';
 import type { GalleryImage } from '../galleryImages';
@@ -47,9 +48,10 @@ import { GALLERY_BENCH_EASING, isGalleryStartBench } from './galleryStartBench';
  * The do-it-yourself hero (docs/gallery-mount-time.md): plain Reanimated, no
  * transition library. The tile's UI-thread tap calls `measure()` on the
  * tile's animated ref and keeps its window rect in a shared value; the detail
- * starts a `withTiming` run (500 ms, ease-in-out-quad) on mount, in an
- * effect. The run animates a rounded clip (absolute, `overflow: 'hidden'`,
- * the gallery radius) by its left / top / width / height from that rect to
+ * starts a `withTiming` run (500 ms, ease-in-out-quad) when it is on screen
+ * (react-native-screens' transition progress, on the UI thread). The run
+ * animates a rounded clip (absolute, `overflow: 'hidden'`, the gallery
+ * radius) by its left / top / width / height from that rect to
  * the detail rect, so its corners keep their radius. Inside it the photo is
  * laid out once at the detail rect's size and only scaled by a transform to
  * cover the clip (`galleryPhotoFrame`): the photo never changes size, so
@@ -70,16 +72,17 @@ import { GALLERY_BENCH_EASING, isGalleryStartBench } from './galleryStartBench';
  *
  * Without teleport, the detail renders its own photo over the tile. The tile
  * is not hidden: the detail rect contains it, so the opaque copy covers it for
- * the whole run. Hiding it from the effect that starts the run left it empty
- * before the copy showed (9 of 10 Release openings): the hide reached the UI
- * thread before the copy's mount.
+ * the whole run. Hiding it from the mount effect left it empty before the
+ * copy showed (9 of 10 Release openings): the hide reached the UI thread
+ * before the copy's mount.
  *
  * With teleport (react-native-teleport added by hand), the detail renders no
- * photo: its container mounts empty over the tile, and the run's first frame
- * moves the tile's live photo into it, through the Portal's `hostName`, set
- * from the UI thread as the flight + teleport variant does. Its host sits in
- * the scaled, detail-sized frame, so it never resizes either (a resizing host
- * sizes a teleported photo a frame late: docs/gallery-mount-time.md).
+ * photo: its container mounts empty over the tile, and once the detail is on
+ * screen, just before the run's first frame, the tile's live photo moves into
+ * it, through the Portal's `hostName`, set from the UI thread as the flight +
+ * teleport variant does. Its host sits in the scaled, detail-sized frame, so
+ * it never resizes either (a resizing host sizes a teleported photo a frame
+ * late: docs/gallery-mount-time.md).
  * Back moves the photo back when the run home ends, with the container on the
  * tile.
  */
@@ -116,6 +119,9 @@ function hostName(index: number): string {
 }
 
 const AnimatedPortal = Animated.createAnimatedComponent(Portal);
+
+/** A screen is on screen at its will-appear event on Android, not on iOS. */
+const SHOWN_AT_WILL_APPEAR = Platform.OS === 'android';
 
 function onLanded(finished?: boolean) {
   'worklet';
@@ -269,22 +275,54 @@ export function GalleryMeasureDetail({
   markGalleryJS('render', teleport ? 'measure-tp' : 'measure');
   useLayoutEffect(() => markGalleryJS('layoutEffect'), []);
 
-  // The run starts on mount, as such heroes usually start it.
-  useEffect(() => {
-    markGalleryJS('effect');
-    progress.set(withTiming(1, timing, GALLERY_MARKS ? onLanded : undefined));
-  }, [progress, timing]);
-  // Teleport: the tile hands its photo over in the run's first frame. From
-  // the mount effect it could move before this screen was on screen.
+  useEffect(() => markGalleryJS('effect'), []);
+  // The run starts when this screen is on screen, which react-native-screens
+  // reports on the UI thread through its transition events. It shows a new
+  // screen a frame or two after its mount, so a run started from the mount
+  // effect ran unseen until then (its first visible frame was a fifth of the
+  // way in), and with teleport the photo could leave the tile for a host not
+  // yet on screen: the tile showed empty for a frame
+  // (docs/gallery-mount-time.md).
+  // - Android: will-appear (progress 0, going forward), sent when the screen's
+  //   (empty) animation starts, after its first draw. Its appear event comes
+  //   only when that animation ends, about two frames later.
+  // - iOS: appear (progress 1, from `viewDidAppear`), 2–3 ms after
+  //   will-appear, which comes before the view is in the window.
+  // Appear also starts it on Android if will-appear never came.
+  //
+  // Teleport: the tile hands its photo over in the same reaction, before the
+  // run's first frame. The clip still sits on the tile then, so the photo
+  // shows where it was, and the first frame moves it.
+  const screen = useReanimatedTransitionProgress();
   useAnimatedReaction(
-    () => progress.get() > 0,
-    (started, wasStarted) => {
-      if (started) markGalleryUI('frame1');
-      if (teleport && started && !wasStarted && opened.get() !== index) {
+    () =>
+      screen.closing.get() === 0 &&
+      (screen.progress.get() >= 1 ||
+        (SHOWN_AT_WILL_APPEAR && screen.goingForward.get() === 1)),
+    (shown, wasShown) => {
+      if (!shown || wasShown || progress.get() > 0) return;
+      markGalleryUI('shown');
+      if (teleport && opened.get() !== index) {
         markGalleryUI('handover');
         opened.set(index);
       }
+      progress.set(withTiming(1, timing, GALLERY_MARKS ? onLanded : undefined));
     }
+  );
+  useAnimatedReaction(
+    () => progress.get() > 0,
+    (started) => {
+      if (started) markGalleryUI('frame1');
+    }
+  );
+  // Diagnostics (GALLERY_MARKS): the screen's will-appear event (progress 0,
+  // going forward) and its appear event (progress 1).
+  useAnimatedReaction(
+    () =>
+      screen.closing.get() === 0
+        ? `${screen.progress.get()}/${screen.goingForward.get()}`
+        : 'closing',
+    (event) => markGalleryUI(`screen:${event}`)
   );
   // A detail popped some other way gives the tile back its photo.
   useEffect(() => () => opened.set(-1), [opened]);
