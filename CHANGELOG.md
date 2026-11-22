@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.6.2](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.6.2) — 2026-11-22
 
 - **Android: `SmoothClipView` and `SmoothClipBackdropView` take the border
   props, and a percent `borderRadius` no longer crashes.** Their codegen
