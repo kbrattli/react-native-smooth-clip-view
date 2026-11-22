@@ -1,0 +1,20 @@
+# Benchmark of the two Reanimated measure() variants (docs/gallery-mount-time.md),
+# added after the first six: per variant, 3 warm-up cycles then 10 measured
+# ones. The flight cell comes first because timing.mjs calibrates the
+# recording's clock with its flights; on iOS it only calibrates (and checks
+# the session against the first recording), its numbers stay those of bench.yaml.
+# Cells: flight-warm/0:3,flight/0:10,measure-warm/0:3,measure/0:10,measure-tp-warm/0:3,measure-tp/0:10
+steps:
+  - run: hub
+  - run: enter-flight
+  - run: warmup
+  - run: cycles
+  - run: exit
+  - run: enter-measure
+  - run: warmup
+  - run: cycles
+  - run: exit
+  - run: enter-measure-teleport
+  - run: warmup
+  - run: cycles
+  - run: exit

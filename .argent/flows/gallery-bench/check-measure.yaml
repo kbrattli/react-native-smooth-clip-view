@@ -1,0 +1,12 @@
+# One open/close of each Reanimated measure() variant, for the behaviour check
+# before measuring them.
+steps:
+  - run: hub
+  - run: enter-measure
+  - run: open-tile
+  - run: back
+  - run: exit
+  - run: enter-measure-teleport
+  - run: open-tile
+  - run: back
+  - run: exit
