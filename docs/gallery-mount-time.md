@@ -26,27 +26,23 @@ every cell.
 
 | Variant                               | Teleport                | **Start latency** (handler → first changed frame) | Touch-up → handler | Old mount time (handler → moved > 4 pt) | Run start, fitted: position / size | Landed              |
 | ------------------------------------- | ----------------------- | ------------------------------------------------- | ------------------ | --------------------------------------- | ---------------------------------- | ------------------- |
-| SmoothClipView flight                 | without                 | **3.0** (−1.6–7.1)                                | 2.0 (1.2–13.8)     | 3.6 (1.1–16.7)                          | 0.8 / 0.0                          | 397.3 (386.8–402.0) |
-| SmoothClipView flight                 | with (added by hand)    | **3.5** (0.1–4.6)                                 | 6.7 (0.7–18.4)     | 4.5 (2.2–18.1)                          | 1.5 / 0.5                          | 390.4 (388.1–403.9) |
-| Reanimated shared element transition  | none (no teleport mode) | **34.6** (18.6–51.7)                              | 3.9 (1.0–18.6)     | 34.6 (18.6–51.7)                        | 20.6 / 19.9                        | 417.4 (407.0–421.5) |
-| Reanimated `measure()` + width/height | without                 | **50.8** (41.3–54.7)                              | 4.0 (1.8–20.1)     | 50.8 (41.3–54.7)                        | 17.1 / 16.4                        | 414.1 (398.7–419.7) |
-| Reanimated `measure()` + width/height | with (added by hand)    | **41.9** (23.2–65.2) ¹                            | 6.7 (0.9–17.5)     | 41.9 (23.2–65.2)                        | 18.8 / 18.1                        | 413.2 (396.9–418.0) |
-| react-native-screen-transitions       | without                 | **88.5** (71.7–106.4)                             | 3.5 (2.0–15.5)     | 88.5 (71.7–106.4)                       | 67.6 / 66.8                        | 467.6 (453.3–488.0) |
-| react-native-screen-transitions       | with (`handoff`)        | **85.2** (64.8–98.9)                              | 4.5 (2.1–16.3)     | 85.2 (64.8–98.9)                        | 65.5 / 81.4                        | 483.3 (468.0–502.2) |
-| react-native-screen-choreography      | with (required)         | **48.0** (41.7–49.9)                              | 3.1 (1.6–13.3)     | 48.6 (45.0–56.7)                        | 34.2 / 50.1                        | 448.9 (433.1–451.6) |
-
-¹ 2 of the 10 openings showed one blank recorded frame (about 7 ms) before
-the first changed frame: see
-[the do-it-yourself hero](#the-do-it-yourself-hero-reanimated-measure--widthheight).
+| SmoothClipView flight                 | without                 | **3.0** (−3.5–14.2)                               | 1.7 (0.7–7.5)      | 3.9 (2.6–16.0)                          | 0.6 / 0.1                          | 394.9 (386.7–403.7) |
+| SmoothClipView flight                 | with (added by hand)    | **3.5** (0.0–11.8)                                | 5.6 (1.6–16.6)     | 4.1 (2.5–18.3)                          | 0.9 / 0.3                          | 387.9 (385.0–399.2) |
+| Reanimated shared element transition  | none (no teleport mode) | **34.2** (17.3–48.7)                              | 4.0 (1.9–16.7)     | 34.2 (17.3–48.7)                        | 20.6 / 19.8                        | 418.9 (410.9–420.2) |
+| Reanimated `measure()` + width/height | without                 | **47.0** (32.4–54.8)                              | 2.8 (1.1–14.9)     | 47.0 (32.4–54.8)                        | 35.6 / 34.5                        | 431.4 (413.4–434.3) |
+| Reanimated `measure()` + width/height | with (added by hand)    | **38.0** (31.8–51.7)                              | 2.3 (0.7–16.5)     | 38.0 (31.8–51.7)                        | 26.5 / 26.0                        | 423.9 (416.8–435.1) |
+| react-native-screen-transitions       | without                 | **81.5** (69.8–95.0)                              | 2.5 (0.7–18.4)     | 81.5 (69.8–95.0)                        | 62.0 / 61.1                        | 461.5 (448.1–475.0) |
+| react-native-screen-transitions       | with (`handoff`)        | **78.3** (70.7–101.0)                             | 2.4 (0.7–6.6)      | 78.3 (70.7–101.0)                       | 64.7 / 80.8                        | 479.8 (472.0–502.6) |
+| react-native-screen-choreography      | with (required)         | **47.0** (27.1–55.7)                              | 2.4 (0.8–4.0)      | 47.8 (32.1–58.7)                        | 34.6 / 50.5                        | 441.2 (428.7–451.0) |
 
 - **Start latency** runs from the handler's `performance.now()`, which is the
   native trace's clock (`CLOCK_UPTIME_RAW`); the recording is placed on that
   clock with the flights' run epochs (26 flights agree within ±2 ms). The
   flights' runs start in the handler and show in the next frame, which the
-  recorder stamps 2–3 ms after it; a negative single run (−1.6 ms) is that
-  ±2 ms error.
-- **Touch-up → handler** is usually 1–6 ms, but up to 13–20 ms in every
-  variant when the touch arrives while the main thread is busy (the trace
+  recorder stamps 2–3 ms after it; a negative single run (−3.5 ms) is that
+  calibration error.
+- **Touch-up → handler** is usually 1–6 ms, but up to 15–18 ms in most
+  variants when the touch arrives while the main thread is busy (the trace
   logs the touch-up's hardware time and the time `sendEvent:` delivered it).
   That wait is the app's, not the transition's, so the start runs from the
   handler.
@@ -63,8 +59,8 @@ the first changed frame: see
   ([Why teleport starts later](#why-teleport-starts-later)).
 - **Landed** is the first frame within 4 pt of the detail rect. Ease-out
   covers the last 4 pt slowly, so it comes about 100 ms before the run ends.
-- No other opening showed a blank frame, and every run drew 60 frames per
-  second (1 missed frame in 80 runs).
+- No opening showed a blank frame, and every run drew 60 frames per second
+  (3 missed frames in 80 runs).
 
 ## Results: Android emulator
 
@@ -75,27 +71,27 @@ in ms and in 60 Hz display frames; n = 10 for every cell.
 
 | Variant                               | Teleport                | **Start latency** (marker frame → first changed frame) | Display frames | Touch-up → handler | Old mount time (marker → moved > 4 dp) | Run start, fitted: position / size | Landed              |
 | ------------------------------------- | ----------------------- | ------------------------------------------------------ | -------------- | ------------------ | -------------------------------------- | ---------------------------------- | ------------------- |
-| SmoothClipView flight                 | without                 | **16.1** (0.0–16.5)                                    | 1 (0–1)        | 0.9 (0.6–1.4)      | 16.1 (0.0–16.5)                        | 2.6 / 2.1                          | 400.7 (382.8–416.8) |
-| SmoothClipView flight                 | with (added by hand)    | **0.0** (0.0–16.9)                                     | 0 (0–1)        | 0.9 (0.6–2.3)      | 0.0 (0.0–16.9)                         | −9.5 / −10.2                       | 383.2 (382.1–399.9) |
-| Reanimated shared element transition  | none (no teleport mode) | **32.7** (15.8–49.3)                                   | 2 (1–3)        | 1.0 (0.8–1.4)      | 32.7 (15.8–49.3)                       | 17.6 / 16.9                        | 416.2 (398.8–432.6) |
-| Reanimated `measure()` + width/height | without                 | **49.1** (32.3–50.0)                                   | 3 (2–3)        | 0.9 (0.6–1.4)      | 49.1 (32.3–50.0)                       | 16.9 / 16.2                        | 415.5 (398.8–418.7) |
-| Reanimated `measure()` + width/height | with (added by hand)    | **48.9** (32.7–58.5)                                   | 3 (2–4)        | 1.4 (0.8–1.9)      | 48.9 (32.7–58.5)                       | 16.8 / 16.1                        | 415.7 (398.9–424.6) |
-| react-native-screen-transitions       | without                 | **57.8** (33.3–115.1)                                  | 4 (2–7)        | 1.0 (0.7–1.5)      | 57.8 (33.3–115.1)                      | 42.4 / 41.5                        | 441.6 (416.5–498.3) |
-| react-native-screen-transitions       | with (`handoff`)        | **67.0** (50.2–85.0)                                   | 4 (3–5)        | 1.2 (0.9–2.1)      | 67.0 (50.2–85.0)                       | 51.6 / 67.3                        | 466.4 (450.8–500.3) |
-| react-native-screen-choreography      | with (required)         | **66.3** (49.3–83.0)                                   | 4 (3–5)        | 1.0 (0.7–1.4)      | 66.3 (49.3–83.0)                       | 43.7 / 59.6                        | 457.4 (433.3–482.3) |
+| SmoothClipView flight                 | without                 | **14.9** (0.0–17.0)                                    | 1 (0–1)        | 1.0 (0.7–1.4)      | 14.9 (0.0–17.0)                        | 0.3 / −0.2                         | 399.9 (392.2–419.3) |
+| SmoothClipView flight                 | with (added by hand)    | **0.0** (0.0–0.0)                                      | 0 (0–0)        | 0.9 (0.7–1.2)      | 0.0 (0.0–0.0)                          | −8.1 / −8.4                        | 391.4 (381.3–400.4) |
+| Reanimated shared element transition  | none (no teleport mode) | **32.6** (15.9–33.9)                                   | 2 (1–2)        | 1.0 (0.8–2.5)      | 32.6 (15.9–33.9)                       | 17.2 / 16.2                        | 415.4 (399.1–417.5) |
+| Reanimated `measure()` + width/height | without                 | **50.9** (34.4–66.4)                                   | 3 (2–4)        | 1.0 (0.6–1.4)      | 50.9 (34.4–66.4)                       | 35.0 / 34.0                        | 433.8 (416.6–449.9) |
+| Reanimated `measure()` + width/height | with (added by hand)    | **58.0** (30.6–84.6)                                   | 4 (2–5)        | 1.0 (0.9–1.6)      | 58.0 (30.6–84.6)                       | 43.4 / 42.5                        | 441.3 (415.4–449.9) |
+| react-native-screen-transitions       | without                 | **66.5** (49.0–82.4)                                   | 4 (3–5)        | 0.9 (0.7–1.9)      | 66.5 (49.0–82.4)                       | 50.8 / 49.8                        | 449.1 (432.9–465.4) |
+| react-native-screen-transitions       | with (`handoff`)        | **66.7** (49.8–83.3)                                   | 4 (3–5)        | 1.0 (0.8–1.2)      | 66.7 (49.8–83.3)                       | 51.6 / 67.2                        | 466.1 (449.3–483.3) |
+| react-native-screen-choreography      | with (required)         | **66.5** (48.5–100.7)                                  | 4 (3–6)        | 1.0 (0.5–1.5)      | 66.5 (48.5–100.7)                      | 38.0 / 54.1                        | 449.8 (432.5–482.8) |
 
 - **From the marker's frame, not the handler.** The handler lights the tap
   marker, so its frame is the first frame after the handler. The screen
   recording shares no clock with the app, so the handler itself cannot be
   placed on it: Android numbers start up to one frame later than iOS's, and
   compare with them only that roughly. Medians of 10 frame-quantized runs can
-  fall between frames (16.1 against 0.0 for the two flights is the same 0–1
+  fall between frames (14.9 against 0.0 for the two flights is the same 0–1
   frame).
 - **Touch-up → handler** comes from the kernel's touch events
   (`getevent -lt`; argent's taps go through the emulator's virtio touch
   device) and the handler's logged `performance.now()`, both on the uptime
-  clock: 0.6–2.3 ms in every variant.
-- Every opening was recorded at 60 frames per second (5 missed frames in 80
+  clock: 0.5–2.5 ms in every variant.
+- Every opening was recorded at 60 frames per second (1 missed frame in 80
   runs), with no blank frame. The emulator's default GPU mode records about
   35: [Why the Android clips looked laggy](#why-the-android-clips-looked-laggy).
 
@@ -104,28 +100,34 @@ in ms and in 60 Hz display frames; n = 10 for every cell.
 - **SmoothClipView starts in the tap's own frame**, with or without teleport:
   its run starts in the handler (fitted 0–2 ms) and the next frame shows it,
   3 ms after the handler on iOS and 0–1 frames after the marker on Android.
-- **Reanimated SET** shows its run 35 ms after the handler (iOS) and 2 frames
+- **Reanimated SET** shows its run 34 ms after the handler (iOS) and 2 frames
   after the marker (Android). Its run starts at about 20 ms (fitted) and is
   seen in the frame after.
-- **`measure()` + width/height** shows its run 51 ms after the handler (iOS),
-  3 frames after the marker (Android), although its run's clock starts at
-  about 17 ms: the first frame that shows the photo moved already has 15–19 %
-  of the run behind it, about two frames, on both platforms. The run starts
-  in the detail's mount effect, before its transparent modal is on screen.
-  With teleport: 42 ms on iOS, 49 ms on Android, the same within the spread;
-  with the photo at a fixed size the teleported photo no longer lags.
-- **screen-choreography** shows its run 48 ms after the handler (iOS), 4
+- **`measure()` + width/height** shows its run 47 ms after the handler (iOS),
+  3 frames after the marker (Android). Its run starts when the detail screen
+  is on screen (react-native-screens' transition event, on the UI thread; at
+  about 35 ms) and is seen in the frame after, as SET's. With teleport: 38 ms
+  on iOS, 58 ms (4 frames) on Android, where its screen was shown a frame
+  later in more of its runs; within the frame-quantized spread of each other.
+  A first version started the run from the detail's mount effect, before the
+  screen was shown: its first frame or two went unseen (first seen at 15–24 %
+  of the run), and with teleport 2 of 10 iOS openings showed the tile empty
+  for a frame ([the do-it-yourself hero](#the-do-it-yourself-hero-reanimated-measure--widthheight)).
+- **screen-choreography** shows its run 47 ms after the handler (iOS), 4
   frames after the marker (Android).
-- **screen-transitions** is last on both: 85–89 ms (iOS), 58–67 ms from the
-  marker (Android). On iOS, `handoff` no longer starts later than without
-  (position fit 65.5 against 67.6 ms).
+- **screen-transitions** is last on both: 78–82 ms (iOS), 67 ms from the
+  marker (Android). `handoff` does not start later than without (position
+  fit 64.7 against 62.0 ms on iOS).
 
 How far each run is in the first frame that shows it (median progress by the
-box's height, iOS / Android): flights 0.016 / 0.04–0.06, SET 0.07 / 0.09,
-`measure()` 0.16 / 0.19 (with teleport 0.09 / 0.19), screen-transitions
+box's height, iOS / Android): flights 0.016 / 0.02–0.03, SET 0.07 / 0.09,
+`measure()` 0.06 / 0.09 (with teleport 0.06 / 0.09), screen-transitions
 0.09 / 0.09, and 0 for the two whose teleported photo is a frame behind in
 size (choreography, screen-transitions with `handoff`). At this curve one
-frame is 0.10 of progress.
+frame is 0.10 of progress, so every variant is seen from its run's first
+frame. (One Android opening of `measure()` + teleport was first seen at
+0.19: its photo reached the moving clip a frame after the run's first
+frame.)
 
 ### Cross-check against the earlier run starts
 
@@ -136,23 +138,25 @@ the touch-up:
 
 | Variant                        | Earlier, position | Now, position | Now, start latency from the touch-up |
 | ------------------------------ | ----------------- | ------------- | ------------------------------------ |
-| SmoothClipView flight          | 2.2 (size)        | 3.0           | 5.4                                  |
-| SmoothClipView flight + tp     | 3.3 (size)        | 8.6           | 9.3                                  |
-| SET                            | 25.3 (size)       | 24.4          | 38.7                                 |
-| `measure()`                    | 25.8              | 22.6          | 54.7                                 |
-| `measure()` + teleport         | 24.0              | 25.4          | 47.5                                 |
-| screen-transitions             | 70.8              | 70.2          | 91.0                                 |
-| screen-transitions + `handoff` | 83.9              | 69.8          | 87.8                                 |
-| choreography                   | 46.4              | 37.0          | 51.1                                 |
+| SmoothClipView flight          | 2.2 (size)        | 2.5           | 5.2                                  |
+| SmoothClipView flight + tp     | 3.3 (size)        | 6.7           | 9.8                                  |
+| SET                            | 25.3 (size)       | 24.6          | 38.2                                 |
+| `measure()`                    | 25.8              | 38.5          | 49.8                                 |
+| `measure()` + teleport         | 24.0              | 32.3          | 41.3                                 |
+| screen-transitions             | 70.8              | 67.8          | 89.3                                 |
+| screen-transitions + `handoff` | 83.9              | 67.0          | 80.6                                 |
+| choreography                   | 46.4              | 37.0          | 49.6                                 |
 
-The run starts reproduce within about 3 ms for SET, both `measure()` variants and
-screen-transitions. Two differ: screen-transitions with `handoff` no longer
-starts its run a frame later than without, and choreography's run starts about
-9 ms earlier than in the earlier session. Flight + teleport is later here
-only because its touch-ups waited longer for the main thread (touch-up →
-handler 6.7 against 2.0 ms); from the handler both flights start in it. The
-direct start latency adds what the fits cannot see: the frame or two between
-a run's clock and the first frame that shows it.
+The run starts reproduce within about 3 ms for SET and screen-transitions.
+Both `measure()` variants now start their run later (38.5 and 32.3 against
+25.8 and 24.0): when the detail is on screen, not from its mount effect, a
+frame or so earlier but unseen. screen-transitions with `handoff` no longer
+starts its run a frame later than without, and choreography's run starts
+about 9 ms earlier than in the earlier session. Flight + teleport is later
+here only because its touch-ups waited longer for the main thread (touch-up →
+handler 5.6 against 1.7 ms); from the handler both flights start in it. The
+direct start latency adds what the fits cannot see: the frame between a run's
+clock and the first frame that shows it.
 
 ## Why the Android clips looked laggy
 
@@ -202,16 +206,16 @@ tile that lights the hero bench's tap marker and then calls the variant's open
 function. The grid never moves; the detail's background fades in or appears
 under the flying photo. Back closes every variant.
 
-| Variant                                    | Routes                                           | Navigator                                                                                                                                                                  | The transition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Teleport                                                |
-| ------------------------------------------ | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| SmoothClipView flight                      | `app/gallery-flight/`                            | native stack, `animation: 'fade'`                                                                                                                                          | Each tile is a window-sized `SmoothClipView` with `flight`, its photo laid out at the detail rect and cropped into the tile. The tap starts the run in its worklet (`clip.ui.animateTo`, window space), then pushes; the detail's `SmoothClipFlightTarget` takes over when it lands.                                                                                                                                                                                                                                                                                                  | not used                                                |
-| SmoothClipView flight + teleport           | `app/gallery-flight-teleport/`                   | the same, inside teleport's `PortalProvider`                                                                                                                               | The same flight. react-native-teleport is added by hand (the library has no teleport mode): the detail renders no photo; its target holds a `PortalHost`, and the tile's live photo is teleported into it in the transaction that lands the flight (`ready` and the Portal's `hostName` change in one UI-thread props update), and back into its host when Back starts the run home.                                                                                                                                                                                                  | added by hand                                           |
-| Reanimated shared element transition       | `app/gallery-set/`                               | native stack, `animation: 'fade'`                                                                                                                                          | An animated expo-image with `sharedTransitionTag` on both ends, `SharedTransition.duration(500)`, `SharedTransitionBoundary` per screen, as `hero-bench-set.tsx`.                                                                                                                                                                                                                                                                                                                                                                                                                     | none (no teleport mode)                                 |
-| Reanimated `measure()` + width/height      | `app/gallery-measure/`                           | native stack; the detail is a `containedTransparentModal` with `animation: 'none'`                                                                                         | Plain Reanimated, no transition library (below): the tap worklet calls `measure()` on the tile's animated ref and keeps its window rect in a shared value; the detail starts `withTiming` (500 ms, `Easing.inOut(Easing.quad)`) in a mount effect and animates a rounded clip's left / top / width / height from that rect to the detail rect; the photo inside it is laid out once at the detail rect's size and only scaled by a transform (`galleryPhotoFrame`), so expo-image never re-fits it; its backdrop fades in with the same progress. Back runs it in reverse, then pops. | without: the detail renders its own copy                |
-| Reanimated `measure()` + teleport          | `app/gallery-measure-teleport/`                  | the same, inside teleport's `PortalProvider`                                                                                                                               | The same run. The tile holds the photo that moves, laid out at the detail rect's size and scaled down to the tile, so its host never resizes. The detail renders no photo: its clip mounts empty over the tile, and the run's first frame moves the tile's live photo into it (the Portal's `hostName`, set from the UI thread); it moves back when the run home ends.                                                                                                                                                                                                                | added by hand                                           |
-| react-native-screen-transitions            | `app/gallery-transitions/`                       | its Blank Stack (a JS navigator), nested in the root stack                                                                                                                 | `Transition.Boundary` (group `gallery`) on the tile and on the detail; the detail's interpolator styles its boundary with `bounds().styles({ method: 'size' })`, so the photo's frame moves and resizes from tile to detail; the backdrop fades in; the tile is hidden while its copy flies.                                                                                                                                                                                                                                                                                          | without: no boundary sets `handoff` or `escapeClipping` |
-| react-native-screen-transitions + teleport | `app/gallery-transitions-teleport/`              | the same                                                                                                                                                                   | The same interpolator with `handoff` on both boundaries: the tile's live photo moves into the detail's empty boundary through react-native-teleport.                                                                                                                                                                                                                                                                                                                                                                                                                                  | with: `handoff`                                         |
-| react-native-screen-choreography           | `app/gallery-choreography/index.tsx`, `[id].tsx` | the app's root native stack with `ChoreographyProvider` above it, each route in a `ChoreographyScreen`, the detail with `choreographyStackOptions` (its Expo Router guide) | `defineTransition` with one `bounds` shared element and `motion: { duration: 500 }`; the tile's photo is the owner, the detail an empty `Element.Target` with `fromSource`; `useChoreographyRouter().push` with the tile's group (what `Element.Pressable` passes), `back()` to close. The library moves the live photo through its overlay with react-native-teleport.                                                                                                                                                                                                               | required                                                |
+| Variant                                    | Routes                                           | Navigator                                                                                                                                                                  | The transition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Teleport                                                |
+| ------------------------------------------ | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| SmoothClipView flight                      | `app/gallery-flight/`                            | native stack, `animation: 'fade'`                                                                                                                                          | Each tile is a window-sized `SmoothClipView` with `flight`, its photo laid out at the detail rect and cropped into the tile. The tap starts the run in its worklet (`clip.ui.animateTo`, window space), then pushes; the detail's `SmoothClipFlightTarget` takes over when it lands.                                                                                                                                                                                                                                                                                                                                                                 | not used                                                |
+| SmoothClipView flight + teleport           | `app/gallery-flight-teleport/`                   | the same, inside teleport's `PortalProvider`                                                                                                                               | The same flight. react-native-teleport is added by hand (the library has no teleport mode): the detail renders no photo; its target holds a `PortalHost`, and the tile's live photo is teleported into it in the transaction that lands the flight (`ready` and the Portal's `hostName` change in one UI-thread props update), and back into its host when Back starts the run home.                                                                                                                                                                                                                                                                 | added by hand                                           |
+| Reanimated shared element transition       | `app/gallery-set/`                               | native stack, `animation: 'fade'`                                                                                                                                          | An animated expo-image with `sharedTransitionTag` on both ends, `SharedTransition.duration(500)`, `SharedTransitionBoundary` per screen, as `hero-bench-set.tsx`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | none (no teleport mode)                                 |
+| Reanimated `measure()` + width/height      | `app/gallery-measure/`                           | native stack; the detail is a `containedTransparentModal` with `animation: 'none'`                                                                                         | Plain Reanimated, no transition library (below): the tap worklet calls `measure()` on the tile's animated ref and keeps its window rect in a shared value; the detail starts `withTiming` (500 ms, `Easing.inOut(Easing.quad)`) when it is on screen (react-native-screens' transition events, on the UI thread) and animates a rounded clip's left / top / width / height from that rect to the detail rect; the photo inside it is laid out once at the detail rect's size and only scaled by a transform (`galleryPhotoFrame`), so expo-image never re-fits it; its backdrop fades in with the same progress. Back runs it in reverse, then pops. | without: the detail renders its own copy                |
+| Reanimated `measure()` + teleport          | `app/gallery-measure-teleport/`                  | the same, inside teleport's `PortalProvider`                                                                                                                               | The same run. The tile holds the photo that moves, laid out at the detail rect's size and scaled down to the tile, so its host never resizes. The detail renders no photo: its clip mounts empty over the tile, and the run's first frame moves the tile's live photo into it (the Portal's `hostName`, set from the UI thread); it moves back when the run home ends.                                                                                                                                                                                                                                                                               | added by hand                                           |
+| react-native-screen-transitions            | `app/gallery-transitions/`                       | its Blank Stack (a JS navigator), nested in the root stack                                                                                                                 | `Transition.Boundary` (group `gallery`) on the tile and on the detail; the detail's interpolator styles its boundary with `bounds().styles({ method: 'size' })`, so the photo's frame moves and resizes from tile to detail; the backdrop fades in; the tile is hidden while its copy flies.                                                                                                                                                                                                                                                                                                                                                         | without: no boundary sets `handoff` or `escapeClipping` |
+| react-native-screen-transitions + teleport | `app/gallery-transitions-teleport/`              | the same                                                                                                                                                                   | The same interpolator with `handoff` on both boundaries: the tile's live photo moves into the detail's empty boundary through react-native-teleport.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | with: `handoff`                                         |
+| react-native-screen-choreography           | `app/gallery-choreography/index.tsx`, `[id].tsx` | the app's root native stack with `ChoreographyProvider` above it, each route in a `ChoreographyScreen`, the detail with `choreographyStackOptions` (its Expo Router guide) | `defineTransition` with one `bounds` shared element and `motion: { duration: 500 }`; the tile's photo is the owner, the detail an empty `Element.Target` with `fromSource`; `useChoreographyRouter().push` with the tile's group (what `Element.Pressable` passes), `back()` to close. The library moves the live photo through its overlay with react-native-teleport.                                                                                                                                                                                                                                                                              | required                                                |
 
 ### Teleport, checked against each library
 
@@ -256,12 +260,43 @@ usually does, and what the behaviour check showed:
   (`containedTransparentModal`, mounted in the stack's own view, as
   screen-transitions and choreography use); in a Debug check, a UIKit
   `transparentModal` left the tile empty for a frame.
-- **The run starts on mount,** in a `useEffect`, from the JS thread.
+- **The run starts when the detail is on screen**, on the UI thread, from
+  react-native-screens' transition events (`useReanimatedTransitionProgress`;
+  the example wraps its app in `ReanimatedScreenProvider`). react-native-screens
+  shows a new screen a frame or two after its mount: on iOS it attaches it in
+  a `dispatch_async` after the mount transaction, on Android it draws it when
+  its (empty) `animation: 'none'` animation starts. Phase marks (ms after the
+  tap handler, 3 + 5 openings of each variant per platform):
+
+  |                                                      | iOS   | Android |
+  | ---------------------------------------------------- | ----- | ------- |
+  | Mount effect (where a first version started the run) | 9–18  | 6–11    |
+  | will-appear event                                    | 18–34 | 27–43   |
+  | appear event                                         | 20–36 | 59–77   |
+  - A run started from the mount effect ran a frame or two unseen: both
+    `measure()` variants showed their first frame at 15–24 % of the run, and
+    with teleport the photo could leave the tile for a host not yet on
+    screen. 2 of 10 measured iOS openings showed the tile empty for one
+    recorded frame (about 7 ms; in that frame the control bar still showed
+    the grid's Exit button, the detail's Back came 6.6 ms later).
+  - On iOS will-appear comes before the view is in the window and appear
+    2–3 ms after it, both before the next frame: the run starts at appear.
+    On Android will-appear comes when the screen's animation starts, after
+    its first draw, and appear only when that animation ends, about two
+    frames later: the run starts at will-appear (appear too, if will-appear
+    never came).
+  - Started there, the run's first frame is its first visible frame on both
+    platforms (progress under 0.10, one frame at this curve; one Android
+    teleport opening in 21 was first seen a frame later), and no
+    `measure()` + teleport opening or close showed a blank frame: none of 23
+    in an iOS check, 8 in an Android check, or the benchmark's 13 per
+    platform.
+
 - **The tile is not hidden.** The detail rect contains the tile, so the
-  opaque copy covers it for the whole run. Hiding it from the effect that
-  starts the run left it empty before the copy showed in 8 of 10 measured
-  Release openings (and 2 of 3 warm-ups; 3–7 ms, twice about 18 ms): the
-  hide reached the UI thread before the detail's mount.
+  opaque copy covers it for the whole run. Hiding it from the mount effect
+  left it empty before the copy showed in 8 of 10 measured Release openings
+  (and 2 of 3 warm-ups; 3–7 ms, twice about 18 ms): the hide reached the UI
+  thread before the detail's mount.
 - **A rounded clip around a photo of fixed size.** The clip animates left /
   top / width / height and keeps the gallery radius; the photo inside is laid
   out once at the detail rect's size and scaled by a transform to cover the
@@ -269,19 +304,15 @@ usually does, and what the behaviour check showed:
   so the teleported photo no longer trails its host by a frame (position and
   size fits agree: 18.8 / 18.1 ms). The plain tile shows a tile-sized photo;
   the teleport tile holds the detail-sized, scaled photo that moves.
-- **With teleport, the photo moves in the run's first frame.** Teleporting
-  it in the commit that mounts the detail (a Debug check) or from the mount
-  effect (two Release recordings: 7 and 4 of 10 measured openings) left the
-  tile empty for 3–7 ms, one recorded frame: the photo reached its new host
-  before the detail's screen was shown. From the run's first frame (a
-  UI-thread reaction to the progress) no opening showed a blank frame in the
-  earlier structure. With the fixed-size photo frame, 2 of 10 measured iOS
-  openings (none of the 3 warm-ups, none on Android) show the tile empty for
-  one recorded frame, about 7 ms, just before the first moving frame: the
-  hand-over still reaches the screen a commit before the detail's clip shows
-  the photo there. It is not fixed here; the start latency skips blank
-  frames. The photo moves back into its tile when the run home ends, with the
-  container on the tile; no close showed a blank frame.
+- **With teleport, the photo moves just before the run's first frame**, in
+  the reaction that starts the run, once the detail is on screen. The clip
+  still sits on the tile then, so the photo shows where it was, and the first
+  frame moves it. Teleporting it in the commit that mounts the detail (a
+  Debug check) or from the mount effect (two Release recordings: 7 and 4 of
+  10 measured openings) left the tile empty for 3–7 ms, one recorded frame:
+  the photo reached its new host before the detail's screen was shown. The
+  photo moves back into its tile when the run home ends, with the container
+  on the tile; no close showed a blank frame.
 
 ### Is screen-transitions set up right?
 
@@ -317,12 +348,13 @@ library's: with `handoff`, its run starts a frame later after the detail
 mounts.
 
 Those numbers come from the earlier recordings (ease-in-out runs, timed from
-the touch-up). In the start-latency recording the extra frame did not recur
-on iOS: with `handoff` the run started as early as without (position fit 65.5
-against 67.6 ms after the handler) and showed in the same frame (85.2 against
-88.5 ms), though its photo's size still trails by a frame (size fit 81.4). On
-the Android emulator `handoff` was still later: 67.0 against 57.8 ms from the
-marker's frame (position fits 51.6 against 42.4).
+the touch-up). In the start-latency recording the extra frame did not recur:
+with `handoff` the run started as early as without on iOS (position fit 64.7
+against 62.0 ms after the handler) and showed as early (78.3 against 81.5
+ms), though its photo's size still trails by a frame (size fit 80.8). On the
+Android emulator: 66.7 against 66.5 ms from the marker's frame (position fits
+51.6 against 50.8). (A first start-latency recording, in git history, still
+had `handoff` a frame later on Android.)
 
 ### Why teleport starts later
 
@@ -577,8 +609,6 @@ unrelated).
   which it calls deprecated on macOS for API 37; every variant rendered
   correctly on it (frame-by-frame checks). The AVD's own setting is still
   `auto`, so a cold launch without the flag renders in software again.
-- **`measure()` + teleport blank frame:** 2 of 10 measured iOS openings
-  (about 7 ms each), above.
 - **Navigators.** Each library runs as its docs recommend, so the navigators
   differ. The flights and SET push a native-stack route that fades in
   (`animation: 'fade'`), nested in the root stack. screen-transitions needs
@@ -603,9 +633,9 @@ unrelated).
   screen-transitions' interpolator hides the tile while its copy flies and
   fades the backdrop (`galleryScreenTransitions.tsx`). SET and choreography
   need none.
-- **Corners, fixed after these recordings.** Two things squared some
-  corners in the recordings and the video; neither moves the analysed box
-  (its edges' midpoints are photo), so no number changes.
+- **Corners, fixed before these recordings.** Two things squared some
+  corners in the first start-latency recordings and their video (git
+  history); neither moves the analysed box (its edges' midpoints are photo).
   - On Android, `SmoothClipFlightTarget` ignored its `borderRadius` and
     `overflow` (a library bug: its codegen view manager dropped them), so the
     flights' photos lost their corners in the frame they landed. Fixed in
