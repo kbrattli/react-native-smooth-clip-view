@@ -41,6 +41,7 @@ import {
   rectStyle,
   type GalleryLayout,
 } from './galleryBenchGeometry';
+import { markGalleryJS } from './galleryMarks';
 
 /**
  * The SmoothClipView variants of the gallery bench
@@ -128,6 +129,7 @@ export function GalleryFlightGrid({
   const router = useRouter();
   const open = useCallback(
     (index: number) => {
+      markGalleryJS('open');
       router.push(`${base}/${index}` as never);
       scheduleGalleryMarkerClear();
     },
@@ -253,6 +255,7 @@ export function GalleryFlightDetail({
   const tag = flightTag(teleport, index);
   const placement = placements[index]!;
   const leaving = leavings[index]!;
+  markGalleryJS('render', teleport ? 'flight-tp' : 'flight');
   // Published by the tile before this route mounts.
   const flight = flights.get(tag);
 

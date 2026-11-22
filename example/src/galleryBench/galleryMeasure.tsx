@@ -1,5 +1,5 @@
 import { Stack, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
 import { StyleSheet } from 'react-native';
 import { GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
@@ -29,6 +29,12 @@ import {
   useGalleryLayout,
 } from './GalleryBench';
 import { GALLERY_BACKGROUND, rectStyle } from './galleryBenchGeometry';
+import {
+  GALLERY_MARKS,
+  markGalleryJS,
+  markGalleryLoad,
+  markGalleryUI,
+} from './galleryMarks';
 
 /**
  * The do-it-yourself hero (docs/gallery-mount-time.md): plain Reanimated, no
@@ -92,6 +98,11 @@ function hostName(index: number): string {
 
 const AnimatedPortal = Animated.createAnimatedComponent(Portal);
 
+function onLanded(finished?: boolean) {
+  'worklet';
+  if (finished) markGalleryUI('landed');
+}
+
 export function GalleryMeasureLayout({ teleport }: Mode) {
   const stack = (
     <Stack
@@ -124,6 +135,7 @@ export function GalleryMeasureGrid({
   const router = useRouter();
   const open = useCallback(
     (index: number) => {
+      markGalleryJS('open');
       router.push(`${base}/${index}` as never);
       scheduleGalleryMarkerClear();
     },
@@ -194,7 +206,12 @@ function MeasureTile({
             name={`gallery-measure-photo-${index}`}
             style={galleryStyles.fill}
           >
-            <GalleryPhoto photo={photo} />
+            <GalleryPhoto
+              onLoad={
+                GALLERY_MARKS ? (e) => markGalleryLoad(e.cacheType) : undefined
+              }
+              photo={photo}
+            />
           </AnimatedPortal>
         ) : (
           <GalleryPhoto photo={photo} />
@@ -214,17 +231,22 @@ export function GalleryMeasureDetail({
   const { detail } = useGalleryLayout();
   const { measured, opened } = stateOf(teleport);
   const progress = useSharedValue(0);
+  markGalleryJS('render', teleport ? 'measure-tp' : 'measure');
+  useLayoutEffect(() => markGalleryJS('layoutEffect'), []);
 
   // The run starts on mount, as such heroes usually start it.
   useEffect(() => {
-    progress.set(withTiming(1, TIMING));
+    markGalleryJS('effect');
+    progress.set(withTiming(1, TIMING, GALLERY_MARKS ? onLanded : undefined));
   }, [progress]);
   // Teleport: the tile hands its photo over in the run's first frame. From
   // the mount effect it could move before this screen was on screen.
   useAnimatedReaction(
     () => progress.get() > 0,
     (started, wasStarted) => {
+      if (started) markGalleryUI('frame1');
       if (teleport && started && !wasStarted && opened.get() !== index) {
+        markGalleryUI('handover');
         opened.set(index);
       }
     }
@@ -267,7 +289,12 @@ export function GalleryMeasureDetail({
         {teleport ? (
           <PortalHost name={hostName(index)} style={StyleSheet.absoluteFill} />
         ) : (
-          <GalleryPhoto photo={photo} />
+          <GalleryPhoto
+            onLoad={
+              GALLERY_MARKS ? (e) => markGalleryLoad(e.cacheType) : undefined
+            }
+            photo={photo}
+          />
         )}
       </Animated.View>
     </GalleryDetailScreen>

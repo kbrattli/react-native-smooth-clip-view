@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { GestureDetector } from 'react-native-gesture-handler';
 import { Easing, interpolate } from 'react-native-reanimated';
@@ -19,6 +19,12 @@ import {
   useGalleryLayout,
 } from './GalleryBench';
 import { GALLERY_BACKGROUND, rectStyle } from './galleryBenchGeometry';
+import {
+  GALLERY_MARKS,
+  markGalleryJS,
+  markGalleryLoad,
+  markGalleryUI,
+} from './galleryMarks';
 
 /**
  * react-native-screen-transitions 4.2 (docs/gallery-mount-time.md): its Blank
@@ -67,6 +73,10 @@ function detailOptions({ teleport }: Mode) {
       if (!id) return {};
       const tag = `${GROUP}:${id}`;
       if (props.focused) {
+        if (GALLERY_MARKS && props.progress > 0) {
+          markGalleryUI('frame1');
+          if (props.progress >= 1) markGalleryUI('landed');
+        }
         return {
           [tag]: {
             style: props
@@ -107,6 +117,7 @@ export function ScreenTransitionsGrid({
   const router = useRouter();
   const open = useCallback(
     (index: number) => {
+      markGalleryJS('open');
       router.push(`${base}/${index}` as never);
       scheduleGalleryMarkerClear();
     },
@@ -152,7 +163,14 @@ function BoundaryTile({
           id={String(index)}
           style={StyleSheet.absoluteFill}
         >
-          <GalleryPhoto photo={photo} />
+          <GalleryPhoto
+            onLoad={
+              GALLERY_MARKS && teleport
+                ? (e) => markGalleryLoad(e.cacheType)
+                : undefined
+            }
+            photo={photo}
+          />
         </Transition.Boundary>
       </View>
     </GestureDetector>
@@ -167,6 +185,9 @@ export function ScreenTransitionsDetail({
 }: Mode & { index: number; label: string; photo: GalleryImage }) {
   const router = useRouter();
   const { detail } = useGalleryLayout();
+  markGalleryJS('render', teleport ? 'st-tp' : 'st');
+  useLayoutEffect(() => markGalleryJS('layoutEffect'), []);
+  useEffect(() => markGalleryJS('effect'), []);
   return (
     <GalleryDetailScreen label={label} onBack={() => router.back()} transparent>
       <Transition.Boundary
@@ -176,7 +197,14 @@ export function ScreenTransitionsDetail({
         style={rectStyle(detail)}
       >
         {/* With handoff, the tile's own photo arrives here. */}
-        {teleport ? null : <GalleryPhoto photo={photo} />}
+        {teleport ? null : (
+          <GalleryPhoto
+            onLoad={
+              GALLERY_MARKS ? (e) => markGalleryLoad(e.cacheType) : undefined
+            }
+            photo={photo}
+          />
+        )}
       </Transition.Boundary>
     </GalleryDetailScreen>
   );

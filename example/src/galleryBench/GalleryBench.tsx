@@ -22,6 +22,7 @@ import {
   type GalleryLayout,
 } from './galleryBenchGeometry';
 import { GALLERY_PHOTOS } from './galleryBenchPhotos';
+import { markGalleryTap } from './galleryMarks';
 
 /** Every variant's run: 500 ms, ease-in-out-quad where the library allows. */
 export const GALLERY_DURATION_MS = 500;
@@ -51,6 +52,7 @@ export function galleryTileTap(
   return Gesture.Tap().onEnd((_event, success) => {
     'worklet';
     if (!success) return;
+    markGalleryTap();
     lightHeroBenchMarker();
     start?.();
     scheduleOnRN(open, index);

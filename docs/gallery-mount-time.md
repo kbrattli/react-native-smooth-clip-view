@@ -34,7 +34,10 @@ choreography's first visible motion is the first frame of its run, while its
 run itself starts later than every variant but screen-transitions: 62 ms
 after the touch-up (fitted), against 2–3 ms for the flights and 25 ms for
 SET. With the bench's curve its mount time would be about 62 + 36 ≈ 98 ms;
-that is an estimate, not a measurement.
+that is an estimate, not a measurement. (The 62 ms is fitted from the
+photo's size, which trails choreography's teleported photo by a frame; by its
+position the run starts at 46 ms. See
+[Why teleport starts later](#why-teleport-starts-later).)
 
 ² **Measured later, in a second recording** (`bench-measure.yaml`): a flight
 cell, which calibrates the recording's clock, then the two `measure()`
@@ -54,8 +57,12 @@ first recording's 54.3, so the two sessions compare. No opening of either
   the variant's curve to the time its run must have started (median of the
   frames). It does not depend on how fast a curve starts, so it ranks the
   variants by when their runs begin. It assumes the photo's height follows
-  the curve, which holds for all eight (the rect is interpolated linearly in
-  progress); for the flights it agrees with the run epochs in the trace.
+  the curve (the rect is interpolated linearly in progress); for the flights
+  it agrees with the run epochs in the trace. In the three variants that
+  teleport the photo at the start of the run (`measure()` + teleport,
+  screen-transitions with `handoff`, choreography) the height follows it one
+  frame late, so their fitted run start is a frame after the run's own start
+  ([Why teleport starts later](#why-teleport-starts-later)).
 - **Landed** is the first frame at the detail rect. Every run lasts 500 ms.
 - No measured opening showed a blank frame or missed a display frame.
 
@@ -110,7 +117,8 @@ only within that margin. Neither showed a blank frame.
   about 40 ms here (on iOS by 15–19 ms), and choreography, whose run starts
   last on Android (143 ms after the marker; on iOS it starts before both
   screen-transitions runs). screen-transitions with `handoff` again starts
-  its run about 35 ms later than without (129.5 against 94.0).
+  its run about 35 ms later than without (129.5 against 94.0); most of that
+  is teleport's size lag ([Why teleport starts later](#why-teleport-starts-later)).
 
 ## The variants
 
@@ -216,9 +224,145 @@ teleport. Its setup matches the library's documentation (its repository,
 
 So it is the library's handoff path, not a setup mistake: with `handoff`, its
 run starts about 30 ms later on iOS (fitted run start 99.8 against 70.2 ms)
-and about 35 ms later on the Android emulator (129.5 against 94.0 ms). We did
-not trace those milliseconds to a phase inside the library; it was not worth
-a patched build. The docs call `handoff` experimental since 3.9.
+and about 35 ms later on the Android emulator (129.5 against 94.0 ms). The
+docs call `handoff` experimental since 3.9.
+[Why teleport starts later](#why-teleport-starts-later) splits those
+milliseconds in two. One frame is react-native-teleport's: the handed-off
+photo is sized a frame behind its resizing boundary. The other is the
+library's: with `handoff`, its run starts a frame later after the detail
+mounts.
+
+### Why teleport starts later
+
+Kenneth asked why teleport makes the `measure()` hero and screen-transitions
+slower, when it only moves a view that is already mounted and decoded. Both
+are wired correctly. The extra milliseconds come from teleport sizing the
+moved photo a frame late, plus, for screen-transitions, a frame its handoff
+path waits. A decode is not one of them. The flight teleports only once it
+has landed, when nothing resizes, so it pays none of this.
+
+**1. The teleported photo is sized one frame behind its host.**
+react-native-teleport 1.2.5 lays a teleported child out at its host's size
+through the Portal's Fabric state, and that state follows the host's native
+layout:
+
+- iOS: the host's `layoutSubviews` →
+  `PortalRegistry.notifyHostLayoutChanged` →
+  `PortalView.updatePortalLayoutStateIfNeeded` → `_state->updateState`.
+- Android: `PortalHostView.onLayout` → `PortalLayoutStateController` →
+  `StateWrapper.updateState`.
+- The update is asynchronous (React Native's default
+  `EventQueue::UpdateMode::Asynchronous`): it is queued, applied on the JS
+  thread, committed and mounted later. `PortalViewComponentDescriptor::adopt`
+  then sizes the Portal, and the photo in it, from that state.
+- Both slow variants resize their host every frame: the `measure()`
+  container through left / top / width / height, the handoff boundary
+  through `bounds().styles({ method: 'size' })` (width / height plus a
+  translate). So in every frame the photo has the size its host had a frame
+  earlier, pinned to the host's top-left corner.
+
+The recorded frames show it. The top edge of the photo's box moves with its
+host, whose position is set directly; the box's height is the photo's own.
+Fitting the run start from each separately (the same fit as the fitted run
+start column), from the committed recordings:
+
+| Variant                        | Run start from the position       | Run start from the size (= fitted run start) | Size behind position, per opening |
+| ------------------------------ | --------------------------------- | -------------------------------------------- | --------------------------------- |
+| `measure()`, without teleport  | 25.8 (15.7–40.0)                  | 25.1 (15.0–39.3)                             | none (−1.1 to −0.5 ms)            |
+| `measure()`, with teleport     | **24.0** (14.4–30.6)              | 39.7 (30.4–46.8)                             | **15.6–16.1 ms**, all 10          |
+| screen-transitions, without    | 70.8 (45.1–96.7)                  | 70.2 (44.6–95.9)                             | none                              |
+| screen-transitions, `handoff`  | **83.9** (69.9–100.5)             | 99.9 (86.3–116.3)                            | **15.7–15.9 ms**, all 10          |
+| choreography (teleport always) | **46.4** (25.3–60.2)              | 62.4 (40.7–76.1)                             | **15.7–16.2 ms**, all 10          |
+| flights (both), SET            | equal to the size fit within 1 ms | equal to the position fit within 1 ms        | none                              |
+
+iOS, ms after the touch-up, median (range), n = 10. On the Android emulator,
+after the marker: `measure()` 57.3 / 56.2 without teleport and **54.5** / 83.5
+with it; screen-transitions 95.7 / 94.5 without and **104.4** / 133.1 with
+`handoff`. There the size trails by one to three display frames (16–48 ms) in
+every teleport opening and by nothing in the others.
+
+So the `measure()` + teleport run starts when the run without teleport does;
+only its photo's size is a frame behind, in every opening. Mount time counts
+the photo's size, so it lands a frame later too: 91.9 against 72.4 ms.
+
+**2. With a host of constant size, the lag goes away.** A local diagnostic
+build (not committed, not a measured variant) moved and scaled the same
+containers with a transform instead of width / height, and gave
+screen-transitions `method: 'transform'`, so no host changed size. Both
+builds are Release on the iPhone 18 Pro simulator: build A is the committed
+code with marks on, build B is A with the transforms. Each recording ran one
+flow (a flight cell, then the four variants; 3 warm-ups and 10 measured
+openings each). Fitted run start (from the size), ms after the touch-up:
+
+| Variant                       | A: width / height animated | B: transform, host size constant |
+| ----------------------------- | -------------------------- | -------------------------------- |
+| `measure()`, without teleport | 25.3 (20.3–34.9)           | 25.0 (12.7–38.1)                 |
+| `measure()`, with teleport    | 39.8 (30.6–50.2)           | **25.5** (12.5–37.2)             |
+| screen-transitions, without   | 67.2 (57.4–105.0)          | 75.1 (62.6–101.3)                |
+| screen-transitions, `handoff` | 91.8 (70.0–105.1)          | 89.9 (65.5–105.9)                |
+
+Build A reproduces the committed numbers. In build B no opening shows the
+size behind the position (−1.2 to −0.3 ms in all 50), and the `measure()`
+teleport penalty is gone. A frame remains for screen-transitions, the next
+point. In B every `handoff` opening also showed one blank frame, so it is not
+a usable setup; it only isolates the lag.
+
+**3. screen-transitions' handoff also starts its run a frame later.** Phase
+marks (`galleryMarks.ts`, below), median ms after the tap worklet, without →
+with `handoff`:
+
+| Build         | Detail renders | Its mount effect | The run's first animated frame |
+| ------------- | -------------- | ---------------- | ------------------------------ |
+| A (size)      | 18.6 → 22.6    | 23.2 → 27.9      | 68.0 → **82.2**                |
+| B (transform) | 19.3 → 19.9    | 23.1 → 25.8      | 81.8 → **96.8**                |
+
+The handoff boundaries render a few ms slower (a Portal and a PortalHost
+each), and the first animated frame comes one frame, 14–15 ms, later. That
+frame is spent between the detail's mount and the library's first frame
+(its handoff path). We did not trace it further; that would need a patched
+library. On iOS the two frames add up to the 30 ms in the table (99.8
+against 70.2).
+
+**4. Not the hand-over, and not the portals' mount.** In the `measure()`
+variant (build A), the marks put the hand-over in the run's first frame
+(27.0 ms after the tap), and that first frame as early as without teleport
+(27.0 against 24.6 ms; ranges 16–43 and 16–49, both quantized to display
+frames). Its detail even
+renders and runs its mount effect a little sooner (8.3 and 11.4 ms against
+9.6 and 13.4), since it has no photo of its own. The 12 Portals, the
+`PortalProvider` and the detail's `PortalHost` cost nothing measurable. The
+photo is in the moving container from the first moving frame. Handing it over
+sooner could not help, since the lag recurs in every frame the host resizes.
+
+**5. Teleport saves one decode in about thirty.** expo-image's iOS default
+`cachePolicy` is `'disk'`, so SDWebImage queries and stores only its disk
+cache: every load reads the JPEG and decodes it, off the main thread
+(`onLoad` reported `cacheType: "disk"` for every load, never `"memory"`).
+And expo-image's `ImageView` reloads whenever its bounds change size
+(`bounds didSet → reload()`). So in both `measure()` variants the photo is
+reloaded once per frame of the run: 31 (30–31) loads per opening without
+teleport, 29.5 (28–30) with it. screen-transitions: 30 and 29. Teleport
+saves only the detail copy's load at mount (29 ms after the tap, while the
+tile still shows its own photo). With a constant-size host (build B) the
+counts fall to 1 without teleport and 0 with it.
+
+**So it is inherent** to react-native-teleport when the host's size
+animates: the teleported content is laid out through Fabric state, one
+commit behind its host. Our hand-over timing and the portals' mount add
+nothing. A teleport hero that keeps its host's size constant and moves it
+with a transform avoids the lag. It scales the photo instead of re-fitting it,
+though, so it is a different transition from the one measured here. The
+numbers above stay as measured.
+
+**How it was measured.** The position / size split re-analyses the committed
+recordings with `analyze-frames.swift` and fits each moving frame's top edge
+and height separately through the variant's curve. On Android the layout was
+recomputed from the geometry, so its fitted run starts differ from the
+table's by up to 4 ms. The marks come from `example/src/galleryBench/galleryMarks.ts`, off
+by default (`GALLERY_MARKS`). With it on, every opening logs its phases and
+expo-image loads at the info level, readable with
+`xcrun simctl spawn <udid> log show --info`. The transform builds are not
+committed.
 
 ## Method
 
