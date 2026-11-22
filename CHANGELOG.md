@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Android: `SmoothClipFlightTarget` takes `borderRadius`, `overflow` and the
+  border props.** Its view manager's codegen delegate dropped them, so a
+  rounded, clipped target (`borderRadius` with `overflow: 'hidden'`) drew
+  square corners once a flight landed on it; iOS applied them. They now reach
+  React Native's own `View` setters.
 - **Flights (hero transitions).** `flight` on `SmoothClipView` moves the
   host's content into a window-level flight layer while a run (or
   `beginInteraction()`) moves it, above navigation transitions and sheets, and

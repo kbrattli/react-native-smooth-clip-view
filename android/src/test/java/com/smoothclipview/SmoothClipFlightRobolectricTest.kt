@@ -10,10 +10,14 @@ import android.view.animation.AlphaAnimation
 import com.facebook.react.bridge.JavaOnlyMap
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.internal.featureflags.ReactNativeFeatureFlagsForTests
+import com.facebook.react.uimanager.BackgroundStyleApplicator
 import com.facebook.react.uimanager.DisplayMetricsHolder
+import com.facebook.react.uimanager.LengthPercentage
+import com.facebook.react.uimanager.LengthPercentageType
 import com.facebook.react.uimanager.ReactStylesDiffMap
 import com.facebook.react.uimanager.RootView
 import com.facebook.react.uimanager.ThemedReactContext
+import com.facebook.react.uimanager.style.BorderRadiusProp
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -948,5 +952,40 @@ class SmoothClipFlightRobolectricTest {
         assertEquals(1, asyncHandoffs)
         assertFalse(SmoothClipFlightTargets.isAirborne("hero"))
         assertFalse(host.flight.isHolding)
+    }
+
+    @Test
+    fun aTargetTakesTheViewStylePropsACodegenDelegateDrops() {
+        // A rounded, clipped target (`borderRadius` + `overflow: 'hidden'`,
+        // as a View takes them): the codegen delegate used to drop both, so
+        // the landed content drew square corners on Android.
+        val target = mountTarget("hero")
+        SmoothClipFlightTargetManager().updateProperties(
+            target,
+            ReactStylesDiffMap(
+                JavaOnlyMap.of(
+                    "borderRadius", 20.0,
+                    "borderTopLeftRadius", 8.0,
+                    "overflow", "hidden",
+                    "ready", false,
+                ),
+            ),
+        )
+        assertEquals("hidden", target.overflow)
+        assertEquals(
+            LengthPercentage(20f, LengthPercentageType.POINT),
+            BackgroundStyleApplicator.getBorderRadius(target, BorderRadiusProp.BORDER_RADIUS),
+        )
+        assertEquals(
+            LengthPercentage(8f, LengthPercentageType.POINT),
+            BackgroundStyleApplicator.getBorderRadius(
+                target,
+                BorderRadiusProp.BORDER_TOP_LEFT_RADIUS,
+            ),
+        )
+        // The component's own props still reach it, through the codegen delegate.
+        assertFalse(target.flightReady)
+        // Its content draws inside the clip: the target, not the container, clips.
+        assertEquals("visible", target.contentContainer.overflow)
     }
 }

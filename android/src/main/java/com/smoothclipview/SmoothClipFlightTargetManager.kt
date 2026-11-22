@@ -12,8 +12,12 @@ import com.facebook.react.viewmanagers.SmoothClipFlightTargetManagerInterface
 @ReactModule(name = SmoothClipFlightTargetManager.NAME)
 class SmoothClipFlightTargetManager : ViewGroupManager<SmoothClipFlightTarget>(),
     SmoothClipFlightTargetManagerInterface<SmoothClipFlightTarget> {
-    private val delegate = PointerEventsDelegate(
-        SmoothClipFlightTargetManagerDelegate<SmoothClipFlightTarget, SmoothClipFlightTargetManager>(this)
+    // The target is styled like a View (e.g. rounded and clipped), so it
+    // also takes the View style props a codegen delegate drops.
+    private val delegate = ViewStyleDelegate(
+        PointerEventsDelegate(
+            SmoothClipFlightTargetManagerDelegate<SmoothClipFlightTarget, SmoothClipFlightTargetManager>(this)
+        )
     )
 
     override fun getName(): String = NAME
