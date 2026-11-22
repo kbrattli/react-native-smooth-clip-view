@@ -3,7 +3,7 @@ import { RouteCard } from '../components/RouteCard';
 
 /**
  * The gallery mount-time bench (docs/gallery-mount-time.md): the same photo
- * grid, opened to a detail route by six transition variants.
+ * grid, opened to a detail route by seven transition variants.
  */
 const VARIANTS = [
   { href: '/gallery-flight', title: 'SmoothClipView flight, no teleport' },
@@ -11,7 +11,12 @@ const VARIANTS = [
     href: '/gallery-flight-teleport',
     title: 'SmoothClipView flight, with teleport',
   },
-  { href: '/gallery-set', title: 'Reanimated shared transition' },
+  { href: '/gallery-set', title: 'Reanimated shared transition, no teleport' },
+  {
+    href: '/gallery-set-teleport',
+    // Not measured: the photo is hidden for the whole run (docs).
+    title: 'Reanimated SET + teleport (broken, not measured)',
+  },
   { href: '/gallery-transitions', title: 'screen-transitions, no teleport' },
   {
     href: '/gallery-transitions-teleport',

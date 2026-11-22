@@ -86,7 +86,16 @@ under the flying photo. Back closes every variant.
 - **SmoothClipView** has no teleport mode. At Kenneth's request a second row
   adds react-native-teleport by hand, as described above; the flight itself
   is unchanged, so both rows start the same way.
-- **Reanimated** shared element transitions have no teleport mode.
+- **Reanimated** shared element transitions have no teleport mode. A
+  hand-wired attempt, made the same way as SmoothClipView's
+  (`app/gallery-set-teleport/`, not measured), breaks the transition. Both
+  ends are an `Animated.View` with the tile's tag; the detail's holds a
+  `PortalHost`, and the tile's live photo is teleported into it in the
+  commit that mounts the detail. SET then flies the detail's tagged view
+  without the photo. The tile empties about 70 ms after the tap, nothing
+  visible moves, and the photo appears at the detail only when the run has
+  ended (about 617 ms; 38 blank frames per opening in a Debug recording). A
+  broken transition is not a fast one, so there is no SET + teleport row.
 
 ## Method
 

@@ -107,6 +107,7 @@ export default function RootLayout() {
                   'gallery-flight',
                   'gallery-flight-teleport',
                   'gallery-set',
+                  'gallery-set-teleport',
                   'gallery-transitions',
                   'gallery-transitions-teleport',
                 ].map((name) => (
