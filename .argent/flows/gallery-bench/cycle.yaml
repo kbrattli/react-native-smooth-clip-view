@@ -1,0 +1,4 @@
+# Fragment: one open/close cycle of the selected variant.
+steps:
+  - run: open-tile
+  - run: back

@@ -1,0 +1,27 @@
+# One open/close of each variant, for the behaviour check before measuring.
+steps:
+  - run: hub
+  - run: enter-flight
+  - run: open-tile
+  - run: back
+  - run: exit
+  - run: enter-flight-teleport
+  - run: open-tile
+  - run: back
+  - run: exit
+  - run: enter-set
+  - run: open-tile
+  - run: back
+  - run: exit
+  - run: enter-transitions
+  - run: open-tile
+  - run: back
+  - run: exit
+  - run: enter-transitions-teleport
+  - run: open-tile
+  - run: back
+  - run: exit
+  - run: enter-choreography
+  - run: open-tile
+  - run: back
+  - run: exit

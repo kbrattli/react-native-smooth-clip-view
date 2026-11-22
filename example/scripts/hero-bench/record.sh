@@ -51,6 +51,9 @@ region=$(field '[8,l.detail.y,l.windowWidth-16,l.controlsTop-l.detail.y].join(" 
 card=$(field '[l.card.x,l.card.y,l.card.width,l.card.height].join(",")')
 detail=$(field '[8,l.detail.y,l.windowWidth-16,l.detail.height].join(",")')
 marker=$(field '[l.marker.x,l.marker.y,l.marker.width,l.marker.height].join(" ")')
+# The gallery bench publishes `mask`: the tiles other than the measured one.
+HERO_MASK=$(field '(l.mask||[]).map(r=>[r.x,r.y,r.width,r.height].join(",")).join(";")')
+export HERO_MASK
 
 # Compiled: a five-minute recording is about 15,000 frames.
 swiftc -O "$here/analyze-frames.swift" -o "$out/analyze-frames" 2>/dev/null

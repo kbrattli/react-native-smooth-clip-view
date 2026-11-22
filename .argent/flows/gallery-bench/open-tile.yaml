@@ -1,0 +1,5 @@
+# Fragment: open the measured tile (index 4) and let the detail settle.
+steps:
+  - tap: { id: gallery-tile-4 }
+  - await: { visible: { id: gallery-back }, timeout: 10000 }
+  - await: { idle: true, stableFor: 400, timeout: 9000 }

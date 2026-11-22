@@ -141,6 +141,17 @@ SMOOTH_CLIP_HERO_TRACE=1 LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 pod install
 Then rebuild. A plain `pod install` turns it off again. Measure CPU, memory
 and frames without it.
 
+## The gallery bench
+
+`docs/gallery-mount-time.md` reuses these scripts for a 12-photo grid opened
+by six transition variants (`app/gallery-*`, `.argent/flows/gallery-bench/`).
+For it, `analyze-frames.swift` takes `HERO_MASK` (window rects whose pixels it
+ignores: the other tiles, which `record.sh` reads from the layout's `mask`)
+and `HERO_THRESHOLD`; a `summarize.mjs` cell can name its run's curve for the
+epoch fit (`name/0:10:easeOutCubic`); `timing.mjs` also writes `timing.json`,
+the per-run rows; and `contact-sheet.swift` tiles every recorded frame of a
+time window into one PNG, labelled with its time.
+
 ## Android
 
 The bench runs on Android, for correctness only. The emulator's frame rate is

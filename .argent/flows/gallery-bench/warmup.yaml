@@ -1,0 +1,5 @@
+# Fragment: 3 open/close cycles whose numbers are discarded.
+steps:
+  - run: cycle
+  - run: cycle
+  - run: cycle

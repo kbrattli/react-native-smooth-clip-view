@@ -16,6 +16,12 @@
 // (the bench screens use one fixed layout); the video's pixel scale is derived
 // from its width. Output is one JSON object per frame on stdout. Uses
 // AVFoundation only, so it needs no ffmpeg.
+//
+// Environment (both optional, for the gallery bench):
+//   HERO_MASK       "x,y,w,h;x,y,w,h;..." window rects whose pixels are
+//                   ignored: the gallery's other tiles, so only the measured
+//                   photo is tracked (it stays visible in the gutters).
+//   HERO_THRESHOLD  the hero-pixel threshold (default 110, any channel).
 import AVFoundation
 import CoreVideo
 import Foundation
@@ -36,7 +42,21 @@ let marker: [Double]? =
   args.count == 11 ? args[7...10].compactMap { Double($0) } : nil
 
 // The bench background is #07111F; the photo's edges are far brighter.
-let heroThreshold = 110
+let heroThreshold =
+  Int(ProcessInfo.processInfo.environment["HERO_THRESHOLD"] ?? "") ?? 110
+let masks: [[Double]] = (ProcessInfo.processInfo.environment["HERO_MASK"] ?? "")
+  .split(separator: ";")
+  .map { $0.split(separator: ",").compactMap { Double($0) } }
+  .filter { $0.count == 4 }
+func isMasked(_ x: Double, _ y: Double) -> Bool {
+  for rect in masks
+  where x >= rect[0] && x < rect[0] + rect[2] && y >= rect[1]
+    && y < rect[1] + rect[3]
+  {
+    return true
+  }
+  return false
+}
 // A pixel of the placeholder must be close to pure magenta.
 func isPlaceholder(_ r: Int, _ g: Int, _ b: Int) -> Bool {
   return r > 200 && b > 200 && g < 70
@@ -94,6 +114,10 @@ while let sample = output.copyNextSampleBuffer() {
     while pointX < regionX + regionW {
       let px = Int(pointX * scale)
       if px >= width { break }
+      if !masks.isEmpty && isMasked(pointX, pointY) {
+        pointX += 1
+        continue
+      }
       let pixel = base + py * rowBytes + px * 4
       let b = Int(pixel[0])
       let g = Int(pixel[1])

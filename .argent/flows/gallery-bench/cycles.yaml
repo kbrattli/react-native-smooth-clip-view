@@ -1,0 +1,12 @@
+# Fragment: 10 measured open/close cycles of the selected variant.
+steps:
+  - run: cycle
+  - run: cycle
+  - run: cycle
+  - run: cycle
+  - run: cycle
+  - run: cycle
+  - run: cycle
+  - run: cycle
+  - run: cycle
+  - run: cycle

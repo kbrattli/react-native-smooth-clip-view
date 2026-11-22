@@ -1,0 +1,29 @@
+# Fragment: from Home or the gallery bench hub, show the hub. Does not relaunch,
+# so a dev client on a non-default Metro port stays connected.
+steps:
+  - when:
+      visible: { text: Continue }
+    steps:
+      - echo: Dismiss the optional Expo development-build introduction.
+      - tap: { text: Continue }
+      - await: { hidden: { text: Continue } }
+  - when:
+      visible: { id: gallery-back }
+    steps:
+      - echo: On a detail, go back to its grid.
+      - tap: { id: gallery-back }
+      - await: { visible: { id: gallery-exit }, timeout: 10000 }
+      - await: { idle: true, stableFor: 400, timeout: 9000 }
+  - when:
+      visible: { id: gallery-exit }
+    steps:
+      - echo: On a variant's grid, go back to the hub.
+      - tap: { id: gallery-exit }
+      - await: { visible: { id: gallery-bench-home }, timeout: 10000 }
+  - when:
+      visible: { id: route-card-gallery-bench }
+    steps:
+      - echo: On Home, open the gallery bench.
+      - tap: { id: route-card-gallery-bench }
+  - await: { visible: { id: gallery-bench-home }, timeout: 10000 }
+  - await: { idle: true }

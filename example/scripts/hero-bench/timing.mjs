@@ -2,6 +2,10 @@
 //
 //   node timing.mjs <out-dir> [cells, e.g. flight/0:10,set/0:10]
 //
+// Also writes <out-dir>/timing.json: the calibration and one row per opening
+// (its cell, the recording time of its touch-up and of its marker frame, and
+// the times below), for docs and for videos synced on the touch-up.
+//
 // Reads trace.log and summary.json from trace.sh. The library's trace build
 // logs the hardware time of every touch (`touch-ended at=`) and the epoch of
 // every run it installs (`clip-install begin= duration=`), on the uptime
@@ -12,7 +16,7 @@
 //
 // Per opening: the first frame that showed the hero moving and the first at
 // the detail rect, in ms after the last touch-up before it.
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const [dir, cellsArg] = process.argv.slice(2);
@@ -84,6 +88,16 @@ const rows = openings.map((opening) => {
     marker: after(0),
     firstMotion: after(opening.firstMotionMs),
     landed: after(opening.landMs),
+    // The run's start fitted from its frames (summarize.mjs `epochMs`).
+    runStart: after(opening.epochMs),
+    markerToFirstMotion: opening.firstMotionMs,
+    recording: {
+      markerMs: opening.t0Ms,
+      touchUpMs:
+        touchUp === undefined
+          ? null
+          : Number(((touchUp + offset) * 1000).toFixed(1)),
+    },
   };
 });
 
@@ -96,12 +110,30 @@ let at = 0;
 const cells = cellsArg
   ? cellsArg.split(',').map((cell) => cell.split(':'))
   : [['all', rows.length]];
+const cellRows = [];
 for (const [name, size] of cells) {
   const group = rows.slice(at, at + Number(size));
+  group.forEach((row, index) => cellRows.push({ cell: name, index, ...row }));
   at += Number(size);
   console.log(
     `${name} n=${group.length} | touch-up -> marker shown ${stats(group.map((row) => row.marker))} ms` +
       ` | touch-up -> first motion ${stats(group.map((row) => row.firstMotion))} ms` +
-      ` | touch-up -> landed ${stats(group.map((row) => row.landed))} ms`
+      ` | touch-up -> landed ${stats(group.map((row) => row.landed))} ms` +
+      ` | touch-up -> fitted run start ${stats(group.map((row) => row.runStart))} ms`
   );
 }
+writeFileSync(
+  join(dir, 'timing.json'),
+  JSON.stringify(
+    {
+      calibration: {
+        offsetS: offset,
+        flightsAgreeing: votes,
+        runsLogged: flightEpochs.length,
+      },
+      rows: cellRows,
+    },
+    null,
+    2
+  ) + '\n'
+);

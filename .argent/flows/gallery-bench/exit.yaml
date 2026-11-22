@@ -1,0 +1,5 @@
+# Fragment: leave a variant's grid for the hub.
+steps:
+  - tap: { id: gallery-exit }
+  - await: { visible: { id: gallery-bench-home }, timeout: 10000 }
+  - await: { idle: true, stableFor: 400, timeout: 9000 }

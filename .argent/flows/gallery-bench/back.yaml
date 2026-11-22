@@ -1,0 +1,5 @@
+# Fragment: close the detail with its Back button and let the grid settle.
+steps:
+  - tap: { id: gallery-back }
+  - await: { visible: { id: gallery-tile-4 }, timeout: 10000 }
+  - await: { idle: true, stableFor: 400, timeout: 9000 }

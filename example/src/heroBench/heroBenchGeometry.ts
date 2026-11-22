@@ -82,8 +82,14 @@ export function heroLayout(
 
 declare global {
   // Read by scripts/hero-bench/record.sh to place the analysis region.
+  // The gallery bench adds `mask`: rects whose pixels the analysis ignores.
   var __heroBenchLayout:
-    (HeroLayout & { windowWidth: number; windowHeight: number }) | undefined;
+    | (HeroLayout & {
+        windowWidth: number;
+        windowHeight: number;
+        mask?: readonly HeroRect[];
+      })
+    | undefined;
 }
 
 export function publishHeroLayout(

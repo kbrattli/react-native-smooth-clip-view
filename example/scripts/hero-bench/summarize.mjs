@@ -30,7 +30,9 @@
 //                   the recording clock with it.
 //
 // With `cells`, the openings are split in order into named cells and each
-// cell's median and range are printed (to stderr; stdout stays JSON).
+// cell's median and range are printed (to stderr; stdout stays JSON). A cell
+// may name its run's curve as a third field, for the epoch fit:
+// `choreo/0:10:easeOutCubic` (default `easeInOutQuad`; also `linear`).
 import { readFileSync } from 'node:fs';
 
 const [file, cardArg, detailArg, cellsArg, periodArg, durationArg] =
@@ -50,6 +52,29 @@ const runDurationMs = Number(durationArg ?? 500);
 // cubic-Bezier fit (0.455, 0.03, 0.515, 0.955), within ~1% of progress.
 const inverseEaseInOutQuad = (p) =>
   p < 0.5 ? Math.sqrt(p / 2) : 1 - Math.sqrt((1 - p) / 2);
+// Progress -> time fraction for the other curves a cell can name.
+const INVERSE_CURVES = {
+  easeInOutQuad: inverseEaseInOutQuad,
+  // Easing.out(Easing.cubic): p = 1 - (1 - t)^3.
+  easeOutCubic: (p) => 1 - Math.cbrt(1 - p),
+  linear: (p) => p,
+};
+const cellSpecs = cellsArg
+  ? cellsArg.split(',').map((cell) => {
+      const [name, size, curve = 'easeInOutQuad'] = cell.split(':');
+      if (!INVERSE_CURVES[curve]) throw new Error(`unknown curve ${curve}`);
+      return { name, size: Number(size), curve };
+    })
+  : [];
+// The curve of the n-th opening, from the cell it falls in.
+const curveOf = (n) => {
+  let at = 0;
+  for (const cell of cellSpecs) {
+    at += cell.size;
+    if (n < at) return INVERSE_CURVES[cell.curve];
+  }
+  return inverseEaseInOutQuad;
+};
 const frames = readFileSync(file, 'utf8')
   .trim()
   .split('\n')
@@ -111,7 +136,7 @@ for (let index = 1; index < states.length; index++) {
     if (states[at].state !== 'moving' || !box) continue;
     const progress = (box[3] - card[3]) / (detail[3] - card[3]);
     if (progress < 0.1 || progress > 0.9) continue;
-    epochs.push(states[at].t - inverseEaseInOutQuad(progress) * runDurationMs);
+    epochs.push(states[at].t - curveOf(openings.length)(progress) * runDurationMs);
   }
   epochs.sort((a, b) => a - b);
   const epoch = epochs.length ? epochs[Math.floor(epochs.length / 2)] : null;
@@ -145,10 +170,9 @@ if (cellsArg) {
     return `${median} (${list[0]}–${list.at(-1)})`;
   };
   let at = 0;
-  for (const cell of cellsArg.split(',')) {
-    const [name, size] = cell.split(':');
-    const group = openings.slice(at, at + Number(size));
-    at += Number(size);
+  for (const { name, size } of cellSpecs) {
+    const group = openings.slice(at, at + size);
+    at += size;
     const pick = (key) => group.map((opening) => opening[key]);
     console.error(
       `${name} n=${group.length} | first motion after marker ${stats(pick('firstMotionMs'))} ms` +

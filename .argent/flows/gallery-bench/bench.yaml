@@ -1,0 +1,29 @@
+# Benchmark (docs/gallery-mount-time.md): per variant, 3 warm-up cycles then
+# 10 measured ones, flight first so the recording can calibrate its clock.
+# Cells: flight-warm/0:3,flight/0:10,flight-tp-warm/0:3,flight-tp/0:10,set-warm/0:3,set/0:10,st-warm/0:3,st/0:10,st-tp-warm/0:3,st-tp/0:10,choreo-warm/0:3:easeOutCubic,choreo/0:10:easeOutCubic
+steps:
+  - run: hub
+  - run: enter-flight
+  - run: warmup
+  - run: cycles
+  - run: exit
+  - run: enter-flight-teleport
+  - run: warmup
+  - run: cycles
+  - run: exit
+  - run: enter-set
+  - run: warmup
+  - run: cycles
+  - run: exit
+  - run: enter-transitions
+  - run: warmup
+  - run: cycles
+  - run: exit
+  - run: enter-transitions-teleport
+  - run: warmup
+  - run: cycles
+  - run: exit
+  - run: enter-choreography
+  - run: warmup
+  - run: cycles
+  - run: exit
