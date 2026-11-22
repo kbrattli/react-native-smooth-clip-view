@@ -41,6 +41,7 @@ import {
   markGalleryLoad,
   markGalleryUI,
 } from './galleryMarks';
+import { GALLERY_BENCH_EASING, isGalleryStartBench } from './galleryStartBench';
 
 /**
  * The do-it-yourself hero (docs/gallery-mount-time.md): plain Reanimated, no
@@ -88,6 +89,8 @@ const TIMING = {
   duration: GALLERY_DURATION_MS,
   easing: Easing.inOut(Easing.quad),
 };
+/** The start-latency bench's run (galleryStartBench.ts). */
+const TIMING_BENCH = { ...TIMING, easing: GALLERY_BENCH_EASING };
 
 type MeasureState = Readonly<{
   /** The opened tile's window rect, measured in the tap. */
@@ -261,14 +264,16 @@ export function GalleryMeasureDetail({
   const { detail } = useGalleryLayout();
   const { measured, opened } = stateOf(teleport);
   const progress = useSharedValue(0);
+  // The bench's curve, or the start-latency bench's (choreography's).
+  const timing = isGalleryStartBench() ? TIMING_BENCH : TIMING;
   markGalleryJS('render', teleport ? 'measure-tp' : 'measure');
   useLayoutEffect(() => markGalleryJS('layoutEffect'), []);
 
   // The run starts on mount, as such heroes usually start it.
   useEffect(() => {
     markGalleryJS('effect');
-    progress.set(withTiming(1, TIMING, GALLERY_MARKS ? onLanded : undefined));
-  }, [progress]);
+    progress.set(withTiming(1, timing, GALLERY_MARKS ? onLanded : undefined));
+  }, [progress, timing]);
   // Teleport: the tile hands its photo over in the run's first frame. From
   // the mount effect it could move before this screen was on screen.
   useAnimatedReaction(
@@ -323,7 +328,7 @@ export function GalleryMeasureDetail({
 
   const back = useCallback(() => {
     progress.set(
-      withTiming(0, TIMING, (finished) => {
+      withTiming(0, timing, (finished) => {
         'worklet';
         if (!finished) return;
         // The container sits on the tile now: with teleport the tile takes
@@ -332,7 +337,7 @@ export function GalleryMeasureDetail({
         scheduleOnRN(router.back);
       })
     );
-  }, [opened, progress, router]);
+  }, [opened, progress, router, timing]);
 
   return (
     <GalleryDetailScreen label={label} onBack={back} transparent>

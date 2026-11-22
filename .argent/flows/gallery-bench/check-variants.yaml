@@ -1,0 +1,27 @@
+# Fragment: from the hub, one open/close of each of the eight variants, in
+# the bench's order.
+steps:
+  - run: enter-flight
+  - run: cycle
+  - run: exit
+  - run: enter-flight-teleport
+  - run: cycle
+  - run: exit
+  - run: enter-set
+  - run: cycle
+  - run: exit
+  - run: enter-measure
+  - run: cycle
+  - run: exit
+  - run: enter-measure-teleport
+  - run: cycle
+  - run: exit
+  - run: enter-transitions
+  - run: cycle
+  - run: exit
+  - run: enter-transitions-teleport
+  - run: cycle
+  - run: exit
+  - run: enter-choreography
+  - run: cycle
+  - run: exit

@@ -23,8 +23,13 @@ import {
 } from './galleryBenchGeometry';
 import { GALLERY_PHOTOS } from './galleryBenchPhotos';
 import { markGalleryTap } from './galleryMarks';
+import { isGalleryStartBenchUI, logGalleryTap } from './galleryStartBench';
 
-/** Every variant's run: 500 ms, ease-in-out-quad where the library allows. */
+/**
+ * Every variant's run: 500 ms, ease-in-out-quad where the library allows
+ * (choreography's cubic ease-out for every variant with the start-latency
+ * bench switch, `galleryStartBench.ts`).
+ */
 export const GALLERY_DURATION_MS = 500;
 /** The tap marker stays lit this long after the run's duration. */
 const MARKER_TAIL_MS = 700;
@@ -52,10 +57,13 @@ export function galleryTileTap(
   return Gesture.Tap().onEnd((_event, success) => {
     'worklet';
     if (!success) return;
+    // t = 0 of a run's start latency (the start-latency bench logs it).
+    const handlerAt = performance.now();
     markGalleryTap();
     lightHeroBenchMarker();
     start?.();
     scheduleOnRN(open, index);
+    if (isGalleryStartBenchUI()) scheduleOnRN(logGalleryTap, handlerAt);
   });
 }
 

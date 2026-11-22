@@ -5,11 +5,15 @@ import Animated, { SharedTransition } from 'react-native-reanimated';
 import type { GalleryImage } from '../galleryImages';
 import { GALLERY_DURATION_MS, galleryStyles } from './GalleryBench';
 import { GALLERY_RADIUS } from './galleryBenchGeometry';
+import { GALLERY_BENCH_EASING, isGalleryStartBench } from './galleryStartBench';
 
 const AnimatedImage = Animated.createAnimatedComponent(Image);
 
 /** SET's default run is `withTiming` with ease-in-out-quad: only the length is set. */
 const GALLERY_SET_TRANSITION = SharedTransition.duration(GALLERY_DURATION_MS);
+/** The start-latency bench's run (galleryStartBench.ts). */
+const GALLERY_SET_TRANSITION_BENCH =
+  SharedTransition.duration(GALLERY_DURATION_MS).easing(GALLERY_BENCH_EASING);
 
 /**
  * A gallery photo as a Reanimated shared element: the same expo-image view
@@ -31,7 +35,11 @@ export function GallerySetPhoto({
     <AnimatedImage
       accessibilityLabel={photo.accessibilityLabel}
       contentFit="cover"
-      sharedTransitionStyle={GALLERY_SET_TRANSITION}
+      sharedTransitionStyle={
+        isGalleryStartBench()
+          ? GALLERY_SET_TRANSITION_BENCH
+          : GALLERY_SET_TRANSITION
+      }
       sharedTransitionTag={`gallery-set-${index}`}
       source={photo.source}
       style={[style ?? galleryStyles.fill, styles.rounded]}

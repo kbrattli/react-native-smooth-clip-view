@@ -1,0 +1,11 @@
+# Fragment: on the hub, turn the start-latency bench switch on (choreography's
+# cubic ease-out for every variant, tap handler times logged;
+# galleryStartBench.ts).
+steps:
+  # The switch tops the hub, which may be scrolled down.
+  - scroll-to: { target: { id: gallery-start-bench }, direction: up }
+  - when:
+      visible: { text: 'Start-latency bench: off' }
+    steps:
+      - tap: { id: gallery-start-bench }
+  - await: { visible: { text: 'Start-latency bench: on' }, timeout: 5000 }

@@ -29,6 +29,7 @@ import {
   markGalleryLoad,
   markGalleryUI,
 } from './galleryMarks';
+import { GALLERY_BENCH_EASING, isGalleryStartBench } from './galleryStartBench';
 
 /**
  * react-native-screen-transitions 4.2 (docs/gallery-mount-time.md): its Blank
@@ -54,6 +55,8 @@ const TIMING = {
   duration: GALLERY_DURATION_MS,
   easing: Easing.inOut(Easing.quad),
 };
+/** The start-latency bench's run (galleryStartBench.ts). */
+const TIMING_BENCH = { ...TIMING, easing: GALLERY_BENCH_EASING };
 
 function routeId(props: ScreenInterpolationProps): string | undefined {
   'worklet';
@@ -66,11 +69,15 @@ function routeId(props: ScreenInterpolationProps): string | undefined {
   );
 }
 
-function detailOptions({ teleport }: Mode) {
+function detailOptions({
+  teleport,
+  benchCurve,
+}: Mode & { benchCurve: boolean }) {
+  const timing = benchCurve ? TIMING_BENCH : TIMING;
   return {
     gestureEnabled: false,
     // The bench's 500 ms ease-in-out-quad in place of the default spring.
-    transitionSpec: { open: TIMING, close: TIMING },
+    transitionSpec: { open: timing, close: timing },
     screenStyleInterpolator: (props: ScreenInterpolationProps) => {
       'worklet';
       const id = routeId(props);
@@ -104,7 +111,12 @@ function detailOptions({ teleport }: Mode) {
 }
 
 export function ScreenTransitionsLayout({ teleport }: Mode) {
-  const options = useMemo(() => detailOptions({ teleport }), [teleport]);
+  // Read when the navigator mounts: the start-latency bench's curve.
+  const benchCurve = isGalleryStartBench();
+  const options = useMemo(
+    () => detailOptions({ teleport, benchCurve }),
+    [benchCurve, teleport]
+  );
   return (
     <BlankStack>
       <BlankStack.Screen name="index" />

@@ -1,0 +1,7 @@
+# The same behaviour check with the start-latency bench switch on, as
+# bench.yaml runs: choreography's cubic ease-out for every variant.
+steps:
+  - run: hub
+  - run: start-bench-on
+  - run: check-variants
+  - run: start-bench-off

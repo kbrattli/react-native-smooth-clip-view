@@ -1,0 +1,10 @@
+# Fragment: on the hub, turn the start-latency bench switch off (every
+# variant's usual curve).
+steps:
+  # The switch tops the hub, which may be scrolled down.
+  - scroll-to: { target: { id: gallery-start-bench }, direction: up }
+  - when:
+      visible: { text: 'Start-latency bench: on' }
+    steps:
+      - tap: { id: gallery-start-bench }
+  - await: { visible: { text: 'Start-latency bench: off' }, timeout: 5000 }

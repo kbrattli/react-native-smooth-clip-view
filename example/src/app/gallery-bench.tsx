@@ -1,5 +1,11 @@
-import { ScrollView, StyleSheet, Text } from 'react-native';
+import { useState } from 'react';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { RouteCard } from '../components/RouteCard';
+import {
+  isGalleryStartBench,
+  setGalleryStartBench,
+} from '../galleryBench/galleryStartBench';
+import { HeroBenchButton } from '../heroBench/HeroBenchChrome';
 
 /**
  * The gallery mount-time bench (docs/gallery-mount-time.md): the same photo
@@ -34,12 +40,25 @@ const VARIANTS = [
 ] as const;
 
 export default function GalleryBenchHome() {
+  const [startBench, setStartBench] = useState(isGalleryStartBench);
   return (
     <ScrollView
       contentContainerStyle={styles.content}
       style={styles.screen}
       testID="gallery-bench-home"
     >
+      {/* Off by default; the start-latency flows turn it on (docs). */}
+      <View style={styles.switches}>
+        <HeroBenchButton
+          label={`Start-latency bench: ${startBench ? 'on' : 'off'}`}
+          onPress={() => {
+            setGalleryStartBench(!startBench);
+            setStartBench(!startBench);
+          }}
+          selected={startBench}
+          testID="gallery-start-bench"
+        />
+      </View>
       <Text style={styles.eyebrow}>GALLERY VARIANTS</Text>
       {VARIANTS.map((variant) => (
         <RouteCard key={variant.href} {...variant} />
@@ -51,6 +70,7 @@ export default function GalleryBenchHome() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#07111F' },
   content: { paddingBottom: 28, paddingHorizontal: 20, paddingTop: 16 },
+  switches: { alignItems: 'flex-start', marginBottom: 16 },
   eyebrow: {
     color: '#66E3FF',
     fontSize: 11,

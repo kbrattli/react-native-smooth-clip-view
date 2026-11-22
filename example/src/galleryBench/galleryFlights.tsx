@@ -43,6 +43,10 @@ import {
   type GalleryLayout,
 } from './galleryBenchGeometry';
 import { markGalleryJS } from './galleryMarks';
+import {
+  GALLERY_BENCH_CONTROL_POINTS,
+  isGalleryStartBenchUI,
+} from './galleryStartBench';
 
 /**
  * The SmoothClipView variants of the gallery bench
@@ -68,6 +72,16 @@ const RUN = {
   duration: GALLERY_DURATION_MS,
   controlPoints: HERO_EASE_IN_OUT_QUAD,
 } as const;
+/** The start-latency bench's run (galleryStartBench.ts). */
+const RUN_BENCH = {
+  ...RUN,
+  controlPoints: GALLERY_BENCH_CONTROL_POINTS,
+} as const;
+
+function flightRun() {
+  'worklet';
+  return isGalleryStartBenchUI() ? RUN_BENCH : RUN;
+}
 /** After the run's end (it started before `open`), the photo moves over. */
 const TELEPORT_AFTER_MS = GALLERY_DURATION_MS + 80;
 
@@ -196,7 +210,7 @@ function FlightTile({
     () =>
       galleryTileTap(index, open, () => {
         'worklet';
-        clip.ui.animateTo(detail, RUN);
+        clip.ui.animateTo(detail, flightRun());
         if (teleport) {
           // After the run's end: the target waits (`ready` false) until then.
           placement.set(
@@ -271,7 +285,7 @@ export function GalleryFlightDetail({
         scheduleOnRN(router.back);
         return;
       }
-      flight.clip.ui.animateTo(flight.rest, RUN);
+      flight.clip.ui.animateTo(flight.rest, flightRun());
       scheduleOnRN(router.back);
     }
   );
@@ -296,7 +310,7 @@ export function GalleryFlightDetail({
     }
     scheduleOnUI(() => {
       'worklet';
-      flight.clip.ui.animateTo(flight.rest, RUN);
+      flight.clip.ui.animateTo(flight.rest, flightRun());
       scheduleOnRN(router.back);
     });
   }, [flight, leaving, placement, router, teleport]);

@@ -1,8 +1,12 @@
-# Benchmark (docs/gallery-mount-time.md): per variant, 3 warm-up cycles then
-# 10 measured ones, flight first so the recording can calibrate its clock.
-# Cells: flight-warm/0:3,flight/0:10,flight-tp-warm/0:3,flight-tp/0:10,set-warm/0:3,set/0:10,st-warm/0:3,st/0:10,st-tp-warm/0:3,st-tp/0:10,choreo-warm/0:3:easeOutCubic,choreo/0:10:easeOutCubic
+# Start-latency benchmark (docs/gallery-mount-time.md): the start-latency
+# bench switch on (every variant runs choreography's 500 ms cubic ease-out),
+# then per variant 3 warm-up cycles and 10 measured ones, all eight variants
+# in one recording. The flights come first: on iOS, timing.mjs
+# calibrates the recording's clock with their runs.
+# Cells: flight-warm/0:3:easeOutCubic,flight/0:10:easeOutCubic,flight-tp-warm/0:3:easeOutCubic,flight-tp/0:10:easeOutCubic,set-warm/0:3:easeOutCubic,set/0:10:easeOutCubic,measure-warm/0:3:easeOutCubic,measure/0:10:easeOutCubic,measure-tp-warm/0:3:easeOutCubic,measure-tp/0:10:easeOutCubic,st-warm/0:3:easeOutCubic,st/0:10:easeOutCubic,st-tp-warm/0:3:easeOutCubic,st-tp/0:10:easeOutCubic,choreo-warm/0:3:easeOutCubic,choreo/0:10:easeOutCubic
 steps:
   - run: hub
+  - run: start-bench-on
   - run: enter-flight
   - run: warmup
   - run: cycles
@@ -12,6 +16,14 @@ steps:
   - run: cycles
   - run: exit
   - run: enter-set
+  - run: warmup
+  - run: cycles
+  - run: exit
+  - run: enter-measure
+  - run: warmup
+  - run: cycles
+  - run: exit
+  - run: enter-measure-teleport
   - run: warmup
   - run: cycles
   - run: exit
@@ -27,3 +39,4 @@ steps:
   - run: warmup
   - run: cycles
   - run: exit
+  - run: start-bench-off

@@ -1,5 +1,7 @@
 # Fragment: from the hub, open the choreography gallery.
 steps:
+  # The last card can sit below the fold.
+  - scroll-to: { target: { id: route-card-gallery-choreography } }
   - tap: { id: route-card-gallery-choreography }
   - await: { visible: { id: gallery-tile-4 }, timeout: 10000 }
   - await: { idle: true, stableFor: 400, timeout: 9000 }

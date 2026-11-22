@@ -1,0 +1,8 @@
+# Frame-rate probe (docs/gallery-mount-time.md, "Why the Android clips look
+# laggy"): from the hub, 3 open/close cycles of the flight variant, for
+# `dumpsys gfxinfo` / SurfaceFlinger frame timing with and without a recorder.
+steps:
+  - run: hub
+  - run: enter-flight
+  - run: warmup
+  - run: exit
