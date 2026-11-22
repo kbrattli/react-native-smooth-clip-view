@@ -26,7 +26,11 @@ import {
   scheduleGalleryMarkerClear,
   useGalleryLayout,
 } from './GalleryBench';
-import { GALLERY_BACKGROUND, rectStyle } from './galleryBenchGeometry';
+import {
+  GALLERY_BACKGROUND,
+  galleryRounded,
+  rectStyle,
+} from './galleryBenchGeometry';
 
 /**
  * NOT MEASURED: this wiring breaks the transition (docs/gallery-mount-time.md,
@@ -185,6 +189,6 @@ export function GallerySetTeleportDetail({
 }
 
 const styles = StyleSheet.create({
-  clip: { overflow: 'hidden' },
-  frame: { height: '100%', overflow: 'hidden', width: '100%' },
+  clip: galleryRounded,
+  frame: { ...galleryRounded, height: '100%', width: '100%' },
 });

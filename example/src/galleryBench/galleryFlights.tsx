@@ -37,6 +37,7 @@ import {
 import {
   GALLERY_BACKGROUND,
   galleryDetailPresentation,
+  galleryRounded,
   galleryTilePresentation,
   rectStyle,
   type GalleryLayout,
@@ -306,13 +307,16 @@ export function GalleryFlightDetail({
         <AnimatedFlightTarget
           animatedProps={targetProps}
           ready={false}
-          style={rectStyle(detail)}
+          style={[rectStyle(detail), galleryRounded]}
           tag={tag}
         >
           <PortalHost name={portalHostName(index)} style={galleryStyles.fill} />
         </AnimatedFlightTarget>
       ) : (
-        <SmoothClipFlightTarget style={rectStyle(detail)} tag={tag}>
+        <SmoothClipFlightTarget
+          style={[rectStyle(detail), galleryRounded]}
+          tag={tag}
+        >
           <GalleryPhoto photo={photo} />
         </SmoothClipFlightTarget>
       )}

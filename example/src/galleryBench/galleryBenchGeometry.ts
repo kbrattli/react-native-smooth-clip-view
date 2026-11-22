@@ -22,8 +22,17 @@ export const GALLERY_TILE_COUNT = GALLERY_COLUMNS * GALLERY_ROWS;
 /** Every measured opening starts from this tile (row 2, column 2). */
 export const GALLERY_MEASURED_TILE = 4;
 export const GALLERY_BACKGROUND = '#07111F';
-/** Square tiles and a square-cornered detail, so no variant animates a radius. */
-export const GALLERY_RADIUS = 0;
+/**
+ * Every gallery photo's corner radius, on the tiles and the detail alike, so
+ * no variant animates a radius: each keeps 20 pt from tile to detail.
+ */
+export const GALLERY_RADIUS = 20;
+
+/** A photo's rounded clip at the gallery radius. */
+export const galleryRounded = {
+  borderRadius: GALLERY_RADIUS,
+  overflow: 'hidden' as const,
+};
 
 const MARGIN = 12;
 const GAP = 6;
@@ -65,6 +74,33 @@ export function galleryLayout(
     Math.max(detail.y + detail.height, gridBottom) + 16
   );
   return { tiles, detail, controlsTop };
+}
+
+/**
+ * A photo laid out at the detail rect's size, at the origin of a clip with
+ * `rect`'s size, and scaled with a transform to cover that clip (centred, as
+ * expo-image's `cover` would fit it). The photo never changes size: only
+ * this transform does, so expo-image never re-fits it and a teleport host
+ * inside it never resizes.
+ */
+export function galleryPhotoFrame(rect: HeroRect, detail: HeroRect) {
+  'worklet';
+  const scale = Math.max(
+    rect.width / detail.width,
+    rect.height / detail.height
+  );
+  return {
+    height: detail.height,
+    left: 0,
+    position: 'absolute' as const,
+    top: 0,
+    transform: [
+      { translateX: (rect.width - detail.width) / 2 },
+      { translateY: (rect.height - detail.height) / 2 },
+      { scale },
+    ],
+    width: detail.width,
+  };
 }
 
 export function rectStyle(rect: HeroRect) {

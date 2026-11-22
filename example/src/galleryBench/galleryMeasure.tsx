@@ -1,6 +1,6 @@
 import { Stack, useRouter } from 'expo-router';
 import { useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   Easing,
@@ -10,6 +10,7 @@ import Animated, {
   useAnimatedReaction,
   useAnimatedRef,
   useAnimatedStyle,
+  useDerivedValue,
   useSharedValue,
   withTiming,
   type SharedValue,
@@ -28,7 +29,12 @@ import {
   scheduleGalleryMarkerClear,
   useGalleryLayout,
 } from './GalleryBench';
-import { GALLERY_BACKGROUND, rectStyle } from './galleryBenchGeometry';
+import {
+  GALLERY_BACKGROUND,
+  galleryPhotoFrame,
+  galleryRounded,
+  rectStyle,
+} from './galleryBenchGeometry';
 import {
   GALLERY_MARKS,
   markGalleryJS,
@@ -41,10 +47,18 @@ import {
  * transition library. The tile's UI-thread tap calls `measure()` on the
  * tile's animated ref and keeps its window rect in a shared value; the detail
  * starts a `withTiming` run (500 ms, ease-in-out-quad) on mount, in an
- * effect, that animates its photo container's left / top / width / height
- * from that rect to the detail rect, so expo-image re-fits the photo every
- * frame. Its backdrop fades in with the same progress. Back runs it in
- * reverse and pops when it ends.
+ * effect. The run animates a rounded clip (absolute, `overflow: 'hidden'`,
+ * the gallery radius) by its left / top / width / height from that rect to
+ * the detail rect, so its corners keep their radius. Inside it the photo is
+ * laid out once at the detail rect's size and only scaled by a transform to
+ * cover the clip (`galleryPhotoFrame`): the photo never changes size, so
+ * expo-image never re-fits it. Its backdrop fades in with the same progress.
+ * Back runs it in reverse and pops when it ends.
+ *
+ * The tile is a rounded clip at the tile rect. Without teleport it shows a
+ * plain tile-sized photo, as a grid would; the detail's copy starts as the
+ * same crop. With teleport it holds the photo that moves: laid out at the
+ * detail rect's size and scaled down to cover the tile, so it never resizes.
  *
  * The detail is a transparent modal without a native animation, as such
  * heroes usually are: the grid must stay visible under it, and a natively
@@ -62,7 +76,9 @@ import {
  * With teleport (react-native-teleport added by hand), the detail renders no
  * photo: its container mounts empty over the tile, and the run's first frame
  * moves the tile's live photo into it, through the Portal's `hostName`, set
- * from the UI thread as the flight + teleport variant does.
+ * from the UI thread as the flight + teleport variant does. Its host sits in
+ * the scaled, detail-sized frame, so it never resizes either (a resizing host
+ * sizes a teleported photo a frame late: docs/gallery-mount-time.md).
  * Back moves the photo back when the run home ends, with the container on the
  * tile.
  */
@@ -145,8 +161,9 @@ export function GalleryMeasureGrid({
     <GalleryGridScreen
       label={label}
       onExit={() => router.back()}
-      renderTile={({ index, photo, rect }) => (
+      renderTile={({ index, photo, rect, layout }) => (
         <MeasureTile
+          detail={layout.detail}
           index={index}
           key={photo.id}
           open={open}
@@ -160,12 +177,14 @@ export function GalleryMeasureGrid({
 }
 
 function MeasureTile({
+  detail,
   index,
   open,
   photo,
   rect,
   teleport,
 }: Mode & {
+  detail: HeroRect;
   index: number;
   open: (index: number) => void;
   photo: GalleryImage;
@@ -193,27 +212,38 @@ function MeasureTile({
   const portalProps = useAnimatedProps(() => ({
     hostName: opened.get() === index ? host : '',
   }));
+  const photoFrame = useMemo(
+    () => galleryPhotoFrame(rect, detail),
+    [detail, rect]
+  );
   return (
     <GestureDetector gesture={tap}>
       <Animated.View
         ref={ref}
-        style={[rectStyle(rect), styles.clip]}
+        style={[rectStyle(rect), galleryRounded]}
         testID={`gallery-tile-${index}`}
       >
         {teleport ? (
-          <AnimatedPortal
-            animatedProps={portalProps}
-            name={`gallery-measure-photo-${index}`}
-            style={galleryStyles.fill}
-          >
-            <GalleryPhoto
-              onLoad={
-                GALLERY_MARKS ? (e) => markGalleryLoad(e.cacheType) : undefined
-              }
-              photo={photo}
-            />
-          </AnimatedPortal>
+          // The photo that teleports: laid out at the detail rect's size and
+          // scaled down to the tile, so it never resizes.
+          <View style={photoFrame}>
+            <AnimatedPortal
+              animatedProps={portalProps}
+              name={`gallery-measure-photo-${index}`}
+              style={galleryStyles.fill}
+            >
+              <GalleryPhoto
+                onLoad={
+                  GALLERY_MARKS
+                    ? (e) => markGalleryLoad(e.cacheType)
+                    : undefined
+                }
+                photo={photo}
+              />
+            </AnimatedPortal>
+          </View>
         ) : (
+          // A plain grid photo; the detail renders its own copy.
           <GalleryPhoto photo={photo} />
         )}
       </Animated.View>
@@ -254,16 +284,41 @@ export function GalleryMeasureDetail({
   // A detail popped some other way gives the tile back its photo.
   useEffect(() => () => opened.set(-1), [opened]);
 
-  const frame = useAnimatedStyle(() => {
+  // The clip's rect at the run's progress: it animates left / top / width /
+  // height; the photo inside only follows with its cover transform.
+  const clip = useDerivedValue(() => {
     const from = measured.get() ?? detail;
     const p = progress.get();
     return {
-      left: from.x + (detail.x - from.x) * p,
-      top: from.y + (detail.y - from.y) * p,
+      x: from.x + (detail.x - from.x) * p,
+      y: from.y + (detail.y - from.y) * p,
       width: from.width + (detail.width - from.width) * p,
       height: from.height + (detail.height - from.height) * p,
     };
   });
+  const frame = useAnimatedStyle(() => {
+    const rect = clip.get();
+    return {
+      left: rect.x,
+      top: rect.y,
+      width: rect.width,
+      height: rect.height,
+    };
+  });
+  // The photo's size is fixed (the detail rect's); only its transform runs.
+  const photoSize = useMemo(
+    () => ({
+      height: detail.height,
+      left: 0,
+      position: 'absolute' as const,
+      top: 0,
+      width: detail.width,
+    }),
+    [detail]
+  );
+  const photoTransform = useAnimatedStyle(() => ({
+    transform: galleryPhotoFrame(clip.get(), detail).transform,
+  }));
   const backdrop = useAnimatedStyle(() => ({ opacity: progress.get() }));
 
   const back = useCallback(() => {
@@ -286,16 +341,21 @@ export function GalleryMeasureDetail({
         style={[StyleSheet.absoluteFill, styles.backdrop, backdrop]}
       />
       <Animated.View style={[styles.frame, frame]}>
-        {teleport ? (
-          <PortalHost name={hostName(index)} style={StyleSheet.absoluteFill} />
-        ) : (
-          <GalleryPhoto
-            onLoad={
-              GALLERY_MARKS ? (e) => markGalleryLoad(e.cacheType) : undefined
-            }
-            photo={photo}
-          />
-        )}
+        <Animated.View style={[photoSize, photoTransform]}>
+          {teleport ? (
+            <PortalHost
+              name={hostName(index)}
+              style={StyleSheet.absoluteFill}
+            />
+          ) : (
+            <GalleryPhoto
+              onLoad={
+                GALLERY_MARKS ? (e) => markGalleryLoad(e.cacheType) : undefined
+              }
+              photo={photo}
+            />
+          )}
+        </Animated.View>
       </Animated.View>
     </GalleryDetailScreen>
   );
@@ -303,6 +363,5 @@ export function GalleryMeasureDetail({
 
 const styles = StyleSheet.create({
   backdrop: { backgroundColor: GALLERY_BACKGROUND },
-  clip: { overflow: 'hidden' },
-  frame: { overflow: 'hidden', position: 'absolute' },
+  frame: { ...galleryRounded, position: 'absolute' },
 });

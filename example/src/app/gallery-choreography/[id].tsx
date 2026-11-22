@@ -7,7 +7,10 @@ import {
   GalleryDetailScreen,
   useGalleryLayout,
 } from '../../galleryBench/GalleryBench';
-import { rectStyle } from '../../galleryBench/galleryBenchGeometry';
+import {
+  galleryRounded,
+  rectStyle,
+} from '../../galleryBench/galleryBenchGeometry';
 import { galleryChoreography } from '../../galleryBench/galleryChoreography';
 
 /**
@@ -31,7 +34,7 @@ export default function GalleryChoreographyDetail() {
         <galleryChoreography.Element.Target
           fromSource
           name="photo"
-          style={rectStyle(detail)}
+          style={[rectStyle(detail), galleryRounded]}
         />
       </GalleryDetailScreen>
     </ChoreographyScreen>

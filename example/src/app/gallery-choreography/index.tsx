@@ -12,7 +12,10 @@ import {
   galleryTileTap,
   scheduleGalleryMarkerClear,
 } from '../../galleryBench/GalleryBench';
-import { rectStyle } from '../../galleryBench/galleryBenchGeometry';
+import {
+  galleryRounded,
+  rectStyle,
+} from '../../galleryBench/galleryBenchGeometry';
 import {
   galleryChoreography,
   galleryChoreographyGroup,
@@ -79,7 +82,7 @@ function ChoreographyTile({
         <galleryChoreography.Element
           groupId={galleryChoreographyGroup(index)}
           name="photo"
-          style={StyleSheet.absoluteFill}
+          style={[StyleSheet.absoluteFill, galleryRounded]}
         >
           <GalleryPhoto photo={photo} />
         </galleryChoreography.Element>

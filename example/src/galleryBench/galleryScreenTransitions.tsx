@@ -18,7 +18,11 @@ import {
   scheduleGalleryMarkerClear,
   useGalleryLayout,
 } from './GalleryBench';
-import { GALLERY_BACKGROUND, rectStyle } from './galleryBenchGeometry';
+import {
+  GALLERY_BACKGROUND,
+  galleryRounded,
+  rectStyle,
+} from './galleryBenchGeometry';
 import {
   GALLERY_MARKS,
   markGalleryJS,
@@ -161,7 +165,7 @@ function BoundaryTile({
           group={GROUP}
           handoff={teleport}
           id={String(index)}
-          style={StyleSheet.absoluteFill}
+          style={[StyleSheet.absoluteFill, galleryRounded]}
         >
           <GalleryPhoto
             onLoad={
@@ -194,7 +198,7 @@ export function ScreenTransitionsDetail({
         group={GROUP}
         handoff={teleport}
         id={String(index)}
-        style={rectStyle(detail)}
+        style={[rectStyle(detail), galleryRounded]}
       >
         {/* With handoff, the tile's own photo arrives here. */}
         {teleport ? null : (
