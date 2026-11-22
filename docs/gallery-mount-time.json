@@ -1,0 +1,1588 @@
+{
+  "measured": "2026-11-22",
+  "metric": "Touch-up (hardware, from the native trace) to the first recorded frame in which the photo has moved more than 4 pt from its tile",
+  "device": {
+    "simulator": "iPhone 18 Pro",
+    "udid": "E99A3C2E-3463-439A-8088-A108DB9DB535",
+    "runtime": "iOS 27.0 (24A434)",
+    "refreshHz": 60,
+    "xcode": "27.2 (27B52)"
+  },
+  "build": "Release, SMOOTH_CLIP_HERO_TRACE=1",
+  "cells": "No load. Per variant 3 warm-up cycles (warmUp: true), then 10 measured open/close cycles of tile 4, in one recording.",
+  "run": {
+    "durationMs": 500,
+    "curve": "ease-in-out-quad, except react-native-screen-choreography: Easing.out(Easing.cubic), the only timing curve it offers"
+  },
+  "versions": {
+    "react-native-smooth-clip-view": "gallery-mount-time branch (f0db256 + gallery bench), source",
+    "react-native-screen-transitions": "4.2.0",
+    "react-native-screen-choreography": "0.9.0",
+    "react-native-teleport": "1.2.5",
+    "react-native-reanimated": "4.8.0",
+    "react-native-worklets": "0.14.0",
+    "react-native-screens": "4.30.1",
+    "react-native-gesture-handler": "3.3.0",
+    "expo": "58.0.26",
+    "expo-router": "58.0.32",
+    "expo-image": "58.0.18",
+    "react-native": "0.88.1",
+    "react": "19.3.0",
+    "@react-navigation/native (peer of screen-transitions; not imported by its expo-router entry)": "7.5.2",
+    "standard-navigation (dependency of screen-transitions)": "0.0.8"
+  },
+  "variants_legend": {
+    "flight": "SmoothClipView flight, without teleport",
+    "flight-tp": "SmoothClipView flight, with react-native-teleport added by hand",
+    "set": "Reanimated shared element transition (no teleport mode)",
+    "st": "react-native-screen-transitions, without teleport",
+    "st-tp": "react-native-screen-transitions, with teleport (handoff)",
+    "choreo": "react-native-screen-choreography (teleport required)"
+  },
+  "recording": "showcases/gallery-mount-time/gallery-mount-time.mp4 in app-showcase (untracked); recording times are in ms from its start",
+  "calibration": {
+    "offsetS": -191499.321886,
+    "flightsAgreeing": 26,
+    "runsLogged": 52
+  },
+  "variants": [
+    {
+      "key": "flight",
+      "mountMs": {
+        "median": 54.3,
+        "min": 38.5,
+        "max": 69.9,
+        "n": 10
+      },
+      "markerToFirstMotionMs": {
+        "median": 49.1,
+        "min": 31.7,
+        "max": 53.3,
+        "n": 10
+      },
+      "touchUpToMarkerMs": {
+        "median": 6.5,
+        "min": 2.5,
+        "max": 18.2,
+        "n": 10
+      },
+      "touchUpToFittedRunStartMs": {
+        "median": 2.2,
+        "min": 0.4,
+        "max": 15.7,
+        "n": 10
+      },
+      "touchUpToLandedMs": {
+        "median": 479.9,
+        "min": 474.3,
+        "max": 486.5,
+        "n": 10
+      },
+      "missedFrames": 0,
+      "blankFrames": 0
+    },
+    {
+      "key": "flight-tp",
+      "mountMs": {
+        "median": 50.6,
+        "min": 38.6,
+        "max": 67,
+        "n": 10
+      },
+      "markerToFirstMotionMs": {
+        "median": 45,
+        "min": 31.7,
+        "max": 51.7,
+        "n": 10
+      },
+      "touchUpToMarkerMs": {
+        "median": 6.7,
+        "min": 1.6,
+        "max": 20.3,
+        "n": 10
+      },
+      "touchUpToFittedRunStartMs": {
+        "median": 3.3,
+        "min": -1,
+        "max": 12.2,
+        "n": 10
+      },
+      "touchUpToLandedMs": {
+        "median": 477.8,
+        "min": 474,
+        "max": 485.3,
+        "n": 10
+      },
+      "missedFrames": 0,
+      "blankFrames": 0
+    },
+    {
+      "key": "set",
+      "mountMs": {
+        "median": 69.8,
+        "min": 58,
+        "max": 83.8,
+        "n": 10
+      },
+      "markerToFirstMotionMs": {
+        "median": 63.4,
+        "min": 51.7,
+        "max": 73.3,
+        "n": 10
+      },
+      "touchUpToMarkerMs": {
+        "median": 6.4,
+        "min": 5,
+        "max": 15.5,
+        "n": 10
+      },
+      "touchUpToFittedRunStartMs": {
+        "median": 25.3,
+        "min": 16.5,
+        "max": 36.5,
+        "n": 10
+      },
+      "touchUpToLandedMs": {
+        "median": 501.1,
+        "min": 492.3,
+        "max": 503.8,
+        "n": 10
+      },
+      "missedFrames": 0,
+      "blankFrames": 0
+    },
+    {
+      "key": "st",
+      "mountMs": {
+        "median": 118.5,
+        "min": 92.9,
+        "max": 145.8,
+        "n": 10
+      },
+      "markerToFirstMotionMs": {
+        "median": 106.7,
+        "min": 88.3,
+        "max": 131.7,
+        "n": 10
+      },
+      "touchUpToMarkerMs": {
+        "median": 9.8,
+        "min": 4.6,
+        "max": 21,
+        "n": 10
+      },
+      "touchUpToFittedRunStartMs": {
+        "median": 70.2,
+        "min": 44.6,
+        "max": 95.8,
+        "n": 10
+      },
+      "touchUpToLandedMs": {
+        "median": 540.1,
+        "min": 514.6,
+        "max": 564.1,
+        "n": 10
+      },
+      "missedFrames": 0,
+      "blankFrames": 0
+    },
+    {
+      "key": "st-tp",
+      "mountMs": {
+        "median": 148.2,
+        "min": 134,
+        "max": 164.5,
+        "n": 10
+      },
+      "markerToFirstMotionMs": {
+        "median": 133.3,
+        "min": 116.7,
+        "max": 151.7,
+        "n": 10
+      },
+      "touchUpToMarkerMs": {
+        "median": 12.8,
+        "min": 5.4,
+        "max": 20.7,
+        "n": 10
+      },
+      "touchUpToFittedRunStartMs": {
+        "median": 99.8,
+        "min": 86.3,
+        "max": 116.3,
+        "n": 10
+      },
+      "touchUpToLandedMs": {
+        "median": 569,
+        "min": 555.6,
+        "max": 584.5,
+        "n": 10
+      },
+      "missedFrames": 0,
+      "blankFrames": 0
+    },
+    {
+      "key": "choreo",
+      "mountMs": {
+        "median": 59.8,
+        "min": 36.5,
+        "max": 70.1,
+        "n": 10
+      },
+      "markerToFirstMotionMs": {
+        "median": 46.7,
+        "min": 33.3,
+        "max": 50,
+        "n": 10
+      },
+      "touchUpToMarkerMs": {
+        "median": 12.1,
+        "min": 3.2,
+        "max": 23.4,
+        "n": 10
+      },
+      "touchUpToFittedRunStartMs": {
+        "median": 62.2,
+        "min": 40.5,
+        "max": 76,
+        "n": 10
+      },
+      "touchUpToLandedMs": {
+        "median": 457.3,
+        "min": 439.9,
+        "max": 473.4,
+        "n": 10
+      },
+      "missedFrames": 0,
+      "blankFrames": 0
+    }
+  ],
+  "runs": [
+    {
+      "variant": "flight",
+      "index": 0,
+      "warmUp": true,
+      "mountMs": 46.7,
+      "touchUpToMarkerMs": 15,
+      "markerToFirstMotionMs": 31.7,
+      "touchUpToLandedMs": 478.3,
+      "touchUpToFittedRunStartMs": 7.4,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 7621.67,
+        "touchUpMs": 7606.7
+      }
+    },
+    {
+      "variant": "flight",
+      "index": 1,
+      "warmUp": true,
+      "mountMs": 40.9,
+      "touchUpToMarkerMs": 5.9,
+      "markerToFirstMotionMs": 35,
+      "touchUpToLandedMs": 479.2,
+      "touchUpToFittedRunStartMs": 1.8,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 10511.67,
+        "touchUpMs": 10505.8
+      }
+    },
+    {
+      "variant": "flight",
+      "index": 2,
+      "warmUp": true,
+      "mountMs": 46.5,
+      "touchUpToMarkerMs": 3.2,
+      "markerToFirstMotionMs": 43.3,
+      "touchUpToLandedMs": 483.2,
+      "touchUpToFittedRunStartMs": 1.7,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 13406.67,
+        "touchUpMs": 13403.5
+      }
+    },
+    {
+      "variant": "flight",
+      "index": 0,
+      "warmUp": false,
+      "mountMs": 65.1,
+      "touchUpToMarkerMs": 15.1,
+      "markerToFirstMotionMs": 50,
+      "touchUpToLandedMs": 481.8,
+      "touchUpToFittedRunStartMs": 9.7,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 16335,
+        "touchUpMs": 16319.9
+      }
+    },
+    {
+      "variant": "flight",
+      "index": 1,
+      "warmUp": false,
+      "mountMs": 48.1,
+      "touchUpToMarkerMs": 3.1,
+      "markerToFirstMotionMs": 45,
+      "touchUpToLandedMs": 481.4,
+      "touchUpToFittedRunStartMs": 1.3,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 19225,
+        "touchUpMs": 19221.9
+      }
+    },
+    {
+      "variant": "flight",
+      "index": 2,
+      "warmUp": false,
+      "mountMs": 46.2,
+      "touchUpToMarkerMs": 7.9,
+      "markerToFirstMotionMs": 38.3,
+      "touchUpToLandedMs": 481.2,
+      "touchUpToFittedRunStartMs": 3.1,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 22110,
+        "touchUpMs": 22102.1
+      }
+    },
+    {
+      "variant": "flight",
+      "index": 3,
+      "warmUp": false,
+      "mountMs": 38.5,
+      "touchUpToMarkerMs": 6.8,
+      "markerToFirstMotionMs": 31.7,
+      "touchUpToLandedMs": 476.8,
+      "touchUpToFittedRunStartMs": 1.6,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 24798.33,
+        "touchUpMs": 24791.5
+      }
+    },
+    {
+      "variant": "flight",
+      "index": 4,
+      "warmUp": false,
+      "mountMs": 58.6,
+      "touchUpToMarkerMs": 6.9,
+      "markerToFirstMotionMs": 51.7,
+      "touchUpToLandedMs": 475.2,
+      "touchUpToFittedRunStartMs": 3.3,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 27688.33,
+        "touchUpMs": 27681.5
+      }
+    },
+    {
+      "variant": "flight",
+      "index": 5,
+      "warmUp": false,
+      "mountMs": 69.9,
+      "touchUpToMarkerMs": 18.2,
+      "markerToFirstMotionMs": 51.7,
+      "touchUpToLandedMs": 486.5,
+      "touchUpToFittedRunStartMs": 15.7,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 30600,
+        "touchUpMs": 30581.8
+      }
+    },
+    {
+      "variant": "flight",
+      "index": 6,
+      "warmUp": false,
+      "mountMs": 50.8,
+      "touchUpToMarkerMs": 2.5,
+      "markerToFirstMotionMs": 48.3,
+      "touchUpToLandedMs": 485.8,
+      "touchUpToFittedRunStartMs": 0.4,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 33685,
+        "touchUpMs": 33682.5
+      }
+    },
+    {
+      "variant": "flight",
+      "index": 7,
+      "warmUp": false,
+      "mountMs": 57.9,
+      "touchUpToMarkerMs": 6.2,
+      "markerToFirstMotionMs": 51.7,
+      "touchUpToLandedMs": 476.2,
+      "touchUpToFittedRunStartMs": 2.7,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 36568.33,
+        "touchUpMs": 36562.1
+      }
+    },
+    {
+      "variant": "flight",
+      "index": 8,
+      "warmUp": false,
+      "mountMs": 59.3,
+      "touchUpToMarkerMs": 6,
+      "markerToFirstMotionMs": 53.3,
+      "touchUpToLandedMs": 474.3,
+      "touchUpToFittedRunStartMs": 0.4,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 39636.67,
+        "touchUpMs": 39630.6
+      }
+    },
+    {
+      "variant": "flight",
+      "index": 9,
+      "warmUp": false,
+      "mountMs": 40.4,
+      "touchUpToMarkerMs": 5.4,
+      "markerToFirstMotionMs": 35,
+      "touchUpToLandedMs": 478.7,
+      "touchUpToFittedRunStartMs": 1.6,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 42811.67,
+        "touchUpMs": 42806.2
+      }
+    },
+    {
+      "variant": "flight-tp",
+      "index": 0,
+      "warmUp": true,
+      "mountMs": 62.7,
+      "touchUpToMarkerMs": 12.7,
+      "markerToFirstMotionMs": 50,
+      "touchUpToLandedMs": 481,
+      "touchUpToFittedRunStartMs": 7.9,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 48566.67,
+        "touchUpMs": 48554
+      }
+    },
+    {
+      "variant": "flight-tp",
+      "index": 1,
+      "warmUp": true,
+      "mountMs": 51.8,
+      "touchUpToMarkerMs": 21.8,
+      "markerToFirstMotionMs": 30,
+      "touchUpToLandedMs": 488.5,
+      "touchUpToFittedRunStartMs": 14.8,
+      "framesShown": 27,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 51686.67,
+        "touchUpMs": 51664.9
+      }
+    },
+    {
+      "variant": "flight-tp",
+      "index": 2,
+      "warmUp": true,
+      "mountMs": 57.3,
+      "touchUpToMarkerMs": 5.6,
+      "markerToFirstMotionMs": 51.7,
+      "touchUpToLandedMs": 488.9,
+      "touchUpToFittedRunStartMs": 2.2,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 54821.67,
+        "touchUpMs": 54816.1
+      }
+    },
+    {
+      "variant": "flight-tp",
+      "index": 0,
+      "warmUp": false,
+      "mountMs": 57.8,
+      "touchUpToMarkerMs": 11.1,
+      "markerToFirstMotionMs": 46.7,
+      "touchUpToLandedMs": 474.4,
+      "touchUpToFittedRunStartMs": 4,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 57921.67,
+        "touchUpMs": 57910.5
+      }
+    },
+    {
+      "variant": "flight-tp",
+      "index": 1,
+      "warmUp": false,
+      "mountMs": 67,
+      "touchUpToMarkerMs": 20.3,
+      "markerToFirstMotionMs": 46.7,
+      "touchUpToLandedMs": 485.3,
+      "touchUpToFittedRunStartMs": 12.2,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 61070,
+        "touchUpMs": 61049.7
+      }
+    },
+    {
+      "variant": "flight-tp",
+      "index": 2,
+      "warmUp": false,
+      "mountMs": 49.8,
+      "touchUpToMarkerMs": 6.5,
+      "markerToFirstMotionMs": 43.3,
+      "touchUpToLandedMs": 481.5,
+      "touchUpToFittedRunStartMs": 1.1,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 64178.33,
+        "touchUpMs": 64171.8
+      }
+    },
+    {
+      "variant": "flight-tp",
+      "index": 3,
+      "warmUp": false,
+      "mountMs": 63.7,
+      "touchUpToMarkerMs": 12,
+      "markerToFirstMotionMs": 51.7,
+      "touchUpToLandedMs": 478.7,
+      "touchUpToFittedRunStartMs": 5.6,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 67305,
+        "touchUpMs": 67293
+      }
+    },
+    {
+      "variant": "flight-tp",
+      "index": 4,
+      "warmUp": false,
+      "mountMs": 41.6,
+      "touchUpToMarkerMs": 9.9,
+      "markerToFirstMotionMs": 31.7,
+      "touchUpToLandedMs": 476.6,
+      "touchUpToFittedRunStartMs": 3.6,
+      "framesShown": 27,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 70418.33,
+        "touchUpMs": 70408.4
+      }
+    },
+    {
+      "variant": "flight-tp",
+      "index": 5,
+      "warmUp": false,
+      "mountMs": 57.4,
+      "touchUpToMarkerMs": 5.7,
+      "markerToFirstMotionMs": 51.7,
+      "touchUpToLandedMs": 474,
+      "touchUpToFittedRunStartMs": 3.1,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 73531.67,
+        "touchUpMs": 73526
+      }
+    },
+    {
+      "variant": "flight-tp",
+      "index": 6,
+      "warmUp": false,
+      "mountMs": 51.5,
+      "touchUpToMarkerMs": 3.2,
+      "markerToFirstMotionMs": 48.3,
+      "touchUpToLandedMs": 484.9,
+      "touchUpToFittedRunStartMs": 2.2,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 76621.67,
+        "touchUpMs": 76618.5
+      }
+    },
+    {
+      "variant": "flight-tp",
+      "index": 7,
+      "warmUp": false,
+      "mountMs": 38.6,
+      "touchUpToMarkerMs": 6.9,
+      "markerToFirstMotionMs": 31.7,
+      "touchUpToLandedMs": 476.9,
+      "touchUpToFittedRunStartMs": 3.4,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 79715,
+        "touchUpMs": 79708.1
+      }
+    },
+    {
+      "variant": "flight-tp",
+      "index": 8,
+      "warmUp": false,
+      "mountMs": 39.5,
+      "touchUpToMarkerMs": 6.2,
+      "markerToFirstMotionMs": 33.3,
+      "touchUpToLandedMs": 476.2,
+      "touchUpToFittedRunStartMs": 2.5,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 82896.67,
+        "touchUpMs": 82890.4
+      }
+    },
+    {
+      "variant": "flight-tp",
+      "index": 9,
+      "warmUp": false,
+      "mountMs": 44.9,
+      "touchUpToMarkerMs": 1.6,
+      "markerToFirstMotionMs": 43.3,
+      "touchUpToLandedMs": 479.9,
+      "touchUpToFittedRunStartMs": -1,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 86038.33,
+        "touchUpMs": 86036.7
+      }
+    },
+    {
+      "variant": "set",
+      "index": 0,
+      "warmUp": true,
+      "mountMs": 79.1,
+      "touchUpToMarkerMs": 12.4,
+      "markerToFirstMotionMs": 66.7,
+      "touchUpToLandedMs": 499.1,
+      "touchUpToFittedRunStartMs": 31.9,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 91833.33,
+        "touchUpMs": 91820.9
+      }
+    },
+    {
+      "variant": "set",
+      "index": 1,
+      "warmUp": true,
+      "mountMs": 68.6,
+      "touchUpToMarkerMs": 1.9,
+      "markerToFirstMotionMs": 66.7,
+      "touchUpToLandedMs": 488.6,
+      "touchUpToFittedRunStartMs": 18.1,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 94866.67,
+        "touchUpMs": 94864.7
+      }
+    },
+    {
+      "variant": "set",
+      "index": 2,
+      "warmUp": true,
+      "mountMs": 80.2,
+      "touchUpToMarkerMs": 6.9,
+      "markerToFirstMotionMs": 73.3,
+      "touchUpToLandedMs": 498.6,
+      "touchUpToFittedRunStartMs": 24.6,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 97943.33,
+        "touchUpMs": 97936.4
+      }
+    },
+    {
+      "variant": "set",
+      "index": 0,
+      "warmUp": false,
+      "mountMs": 72.3,
+      "touchUpToMarkerMs": 7.3,
+      "markerToFirstMotionMs": 65,
+      "touchUpToLandedMs": 492.3,
+      "touchUpToFittedRunStartMs": 24.6,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 100968.33,
+        "touchUpMs": 100961
+      }
+    },
+    {
+      "variant": "set",
+      "index": 1,
+      "warmUp": false,
+      "mountMs": 58,
+      "touchUpToMarkerMs": 6.3,
+      "markerToFirstMotionMs": 51.7,
+      "touchUpToLandedMs": 493,
+      "touchUpToFittedRunStartMs": 16.5,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 104015,
+        "touchUpMs": 104008.7
+      }
+    },
+    {
+      "variant": "set",
+      "index": 2,
+      "warmUp": false,
+      "mountMs": 83.8,
+      "touchUpToMarkerMs": 15.5,
+      "markerToFirstMotionMs": 68.3,
+      "touchUpToLandedMs": 502.2,
+      "touchUpToFittedRunStartMs": 36.5,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 106833.33,
+        "touchUpMs": 106817.8
+      }
+    },
+    {
+      "variant": "set",
+      "index": 3,
+      "warmUp": false,
+      "mountMs": 79.6,
+      "touchUpToMarkerMs": 7.9,
+      "markerToFirstMotionMs": 71.7,
+      "touchUpToLandedMs": 499.6,
+      "touchUpToFittedRunStartMs": 27.3,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 109878.33,
+        "touchUpMs": 109870.4
+      }
+    },
+    {
+      "variant": "set",
+      "index": 4,
+      "warmUp": false,
+      "mountMs": 66.1,
+      "touchUpToMarkerMs": 6.1,
+      "markerToFirstMotionMs": 60,
+      "touchUpToLandedMs": 502.8,
+      "touchUpToFittedRunStartMs": 22.7,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 112956.67,
+        "touchUpMs": 112950.6
+      }
+    },
+    {
+      "variant": "set",
+      "index": 5,
+      "warmUp": false,
+      "mountMs": 65.8,
+      "touchUpToMarkerMs": 5.8,
+      "markerToFirstMotionMs": 60,
+      "touchUpToLandedMs": 502.5,
+      "touchUpToFittedRunStartMs": 25,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 116023.33,
+        "touchUpMs": 116017.5
+      }
+    },
+    {
+      "variant": "set",
+      "index": 6,
+      "warmUp": false,
+      "mountMs": 67.2,
+      "touchUpToMarkerMs": 5.5,
+      "markerToFirstMotionMs": 61.7,
+      "touchUpToLandedMs": 503.8,
+      "touchUpToFittedRunStartMs": 23.1,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 119038.33,
+        "touchUpMs": 119032.8
+      }
+    },
+    {
+      "variant": "set",
+      "index": 7,
+      "warmUp": false,
+      "mountMs": 80.6,
+      "touchUpToMarkerMs": 7.3,
+      "markerToFirstMotionMs": 73.3,
+      "touchUpToLandedMs": 500.6,
+      "touchUpToFittedRunStartMs": 27.4,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 122091.67,
+        "touchUpMs": 122084.3
+      }
+    },
+    {
+      "variant": "set",
+      "index": 8,
+      "warmUp": false,
+      "mountMs": 64.9,
+      "touchUpToMarkerMs": 6.6,
+      "markerToFirstMotionMs": 58.3,
+      "touchUpToLandedMs": 501.6,
+      "touchUpToFittedRunStartMs": 26.6,
+      "framesShown": 26,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 125140,
+        "touchUpMs": 125133.4
+      }
+    },
+    {
+      "variant": "set",
+      "index": 9,
+      "warmUp": false,
+      "mountMs": 76.7,
+      "touchUpToMarkerMs": 5,
+      "markerToFirstMotionMs": 71.7,
+      "touchUpToLandedMs": 494.9,
+      "touchUpToFittedRunStartMs": 25.6,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 128196.67,
+        "touchUpMs": 128191.7
+      }
+    },
+    {
+      "variant": "st",
+      "index": 0,
+      "warmUp": true,
+      "mountMs": 110.6,
+      "touchUpToMarkerMs": 10.6,
+      "markerToFirstMotionMs": 100,
+      "touchUpToLandedMs": 530.6,
+      "touchUpToFittedRunStartMs": 62.3,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 134315,
+        "touchUpMs": 134304.4
+      }
+    },
+    {
+      "variant": "st",
+      "index": 1,
+      "warmUp": true,
+      "mountMs": 152.8,
+      "touchUpToMarkerMs": 24.5,
+      "markerToFirstMotionMs": 128.3,
+      "touchUpToLandedMs": 572.8,
+      "touchUpToFittedRunStartMs": 105.5,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 137336.67,
+        "touchUpMs": 137312.2
+      }
+    },
+    {
+      "variant": "st",
+      "index": 2,
+      "warmUp": true,
+      "mountMs": 134.1,
+      "touchUpToMarkerMs": 19.1,
+      "markerToFirstMotionMs": 115,
+      "touchUpToLandedMs": 555.8,
+      "touchUpToFittedRunStartMs": 85.8,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 140283.33,
+        "touchUpMs": 140264.3
+      }
+    },
+    {
+      "variant": "st",
+      "index": 0,
+      "warmUp": false,
+      "mountMs": 118.1,
+      "touchUpToMarkerMs": 18.1,
+      "markerToFirstMotionMs": 100,
+      "touchUpToLandedMs": 541.4,
+      "touchUpToFittedRunStartMs": 69.8,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 143265,
+        "touchUpMs": 143246.9
+      }
+    },
+    {
+      "variant": "st",
+      "index": 1,
+      "warmUp": false,
+      "mountMs": 105.9,
+      "touchUpToMarkerMs": 5.9,
+      "markerToFirstMotionMs": 100,
+      "touchUpToLandedMs": 527.6,
+      "touchUpToFittedRunStartMs": 57.6,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 146248.33,
+        "touchUpMs": 146242.4
+      }
+    },
+    {
+      "variant": "st",
+      "index": 2,
+      "warmUp": false,
+      "mountMs": 118.9,
+      "touchUpToMarkerMs": 7.2,
+      "markerToFirstMotionMs": 111.7,
+      "touchUpToLandedMs": 538.9,
+      "touchUpToFittedRunStartMs": 70.5,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 149270,
+        "touchUpMs": 149262.8
+      }
+    },
+    {
+      "variant": "st",
+      "index": 3,
+      "warmUp": false,
+      "mountMs": 111.6,
+      "touchUpToMarkerMs": 14.9,
+      "markerToFirstMotionMs": 96.7,
+      "touchUpToLandedMs": 528.2,
+      "touchUpToFittedRunStartMs": 63.3,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 152335,
+        "touchUpMs": 152320.1
+      }
+    },
+    {
+      "variant": "st",
+      "index": 4,
+      "warmUp": false,
+      "mountMs": 145.8,
+      "touchUpToMarkerMs": 14.1,
+      "markerToFirstMotionMs": 131.7,
+      "touchUpToLandedMs": 564.1,
+      "touchUpToFittedRunStartMs": 95.8,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 155401.67,
+        "touchUpMs": 155387.5
+      }
+    },
+    {
+      "variant": "st",
+      "index": 5,
+      "warmUp": false,
+      "mountMs": 92.9,
+      "touchUpToMarkerMs": 4.6,
+      "markerToFirstMotionMs": 88.3,
+      "touchUpToLandedMs": 514.6,
+      "touchUpToFittedRunStartMs": 44.6,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 158460,
+        "touchUpMs": 158455.4
+      }
+    },
+    {
+      "variant": "st",
+      "index": 6,
+      "warmUp": false,
+      "mountMs": 122.8,
+      "touchUpToMarkerMs": 9.5,
+      "markerToFirstMotionMs": 113.3,
+      "touchUpToLandedMs": 544.5,
+      "touchUpToFittedRunStartMs": 74.6,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 161285,
+        "touchUpMs": 161275.5
+      }
+    },
+    {
+      "variant": "st",
+      "index": 7,
+      "warmUp": false,
+      "mountMs": 123.5,
+      "touchUpToMarkerMs": 10.2,
+      "markerToFirstMotionMs": 113.3,
+      "touchUpToLandedMs": 543.5,
+      "touchUpToFittedRunStartMs": 75.1,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 164351.67,
+        "touchUpMs": 164341.4
+      }
+    },
+    {
+      "variant": "st",
+      "index": 8,
+      "warmUp": false,
+      "mountMs": 134.3,
+      "touchUpToMarkerMs": 21,
+      "markerToFirstMotionMs": 113.3,
+      "touchUpToLandedMs": 554.3,
+      "touchUpToFittedRunStartMs": 86,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 167418.33,
+        "touchUpMs": 167397.3
+      }
+    },
+    {
+      "variant": "st",
+      "index": 9,
+      "warmUp": false,
+      "mountMs": 110.6,
+      "touchUpToMarkerMs": 8.9,
+      "markerToFirstMotionMs": 101.7,
+      "touchUpToLandedMs": 532.2,
+      "touchUpToFittedRunStartMs": 62.2,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 170446.67,
+        "touchUpMs": 170437.8
+      }
+    },
+    {
+      "variant": "st-tp",
+      "index": 0,
+      "warmUp": true,
+      "mountMs": 164.1,
+      "touchUpToMarkerMs": 17.4,
+      "markerToFirstMotionMs": 146.7,
+      "touchUpToLandedMs": 585.7,
+      "touchUpToFittedRunStartMs": 115.8,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 176451.67,
+        "touchUpMs": 176434.3
+      }
+    },
+    {
+      "variant": "st-tp",
+      "index": 1,
+      "warmUp": true,
+      "mountMs": 151.9,
+      "touchUpToMarkerMs": 21.9,
+      "markerToFirstMotionMs": 130,
+      "touchUpToLandedMs": 571.9,
+      "touchUpToFittedRunStartMs": 103.5,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 179518.33,
+        "touchUpMs": 179496.5
+      }
+    },
+    {
+      "variant": "st-tp",
+      "index": 2,
+      "warmUp": true,
+      "mountMs": 154.3,
+      "touchUpToMarkerMs": 6,
+      "markerToFirstMotionMs": 148.3,
+      "touchUpToLandedMs": 576,
+      "touchUpToFittedRunStartMs": 107,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 182583.33,
+        "touchUpMs": 182577.3
+      }
+    },
+    {
+      "variant": "st-tp",
+      "index": 0,
+      "warmUp": false,
+      "mountMs": 145.7,
+      "touchUpToMarkerMs": 14,
+      "markerToFirstMotionMs": 131.7,
+      "touchUpToLandedMs": 567.3,
+      "touchUpToFittedRunStartMs": 97.4,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 185650,
+        "touchUpMs": 185636
+      }
+    },
+    {
+      "variant": "st-tp",
+      "index": 1,
+      "warmUp": false,
+      "mountMs": 164.5,
+      "touchUpToMarkerMs": 14.5,
+      "markerToFirstMotionMs": 150,
+      "touchUpToLandedMs": 584.5,
+      "touchUpToFittedRunStartMs": 114.5,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 188716.67,
+        "touchUpMs": 188702.2
+      }
+    },
+    {
+      "variant": "st-tp",
+      "index": 2,
+      "warmUp": false,
+      "mountMs": 137.1,
+      "touchUpToMarkerMs": 5.4,
+      "markerToFirstMotionMs": 131.7,
+      "touchUpToLandedMs": 558.7,
+      "touchUpToFittedRunStartMs": 88.7,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 191750,
+        "touchUpMs": 191744.6
+      }
+    },
+    {
+      "variant": "st-tp",
+      "index": 3,
+      "warmUp": false,
+      "mountMs": 150.7,
+      "touchUpToMarkerMs": 20.7,
+      "markerToFirstMotionMs": 130,
+      "touchUpToLandedMs": 570.7,
+      "touchUpToFittedRunStartMs": 102.3,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 194835,
+        "touchUpMs": 194814.3
+      }
+    },
+    {
+      "variant": "st-tp",
+      "index": 4,
+      "warmUp": false,
+      "mountMs": 141.8,
+      "touchUpToMarkerMs": 8.5,
+      "markerToFirstMotionMs": 133.3,
+      "touchUpToLandedMs": 561.8,
+      "touchUpToFittedRunStartMs": 92.8,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 197900,
+        "touchUpMs": 197891.5
+      }
+    },
+    {
+      "variant": "st-tp",
+      "index": 5,
+      "warmUp": false,
+      "mountMs": 144.8,
+      "touchUpToMarkerMs": 11.5,
+      "markerToFirstMotionMs": 133.3,
+      "touchUpToLandedMs": 564.8,
+      "touchUpToFittedRunStartMs": 94.9,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 200950,
+        "touchUpMs": 200938.5
+      }
+    },
+    {
+      "variant": "st-tp",
+      "index": 6,
+      "warmUp": false,
+      "mountMs": 163.9,
+      "touchUpToMarkerMs": 15.6,
+      "markerToFirstMotionMs": 148.3,
+      "touchUpToLandedMs": 583.9,
+      "touchUpToFittedRunStartMs": 116.3,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 204000,
+        "touchUpMs": 203984.4
+      }
+    },
+    {
+      "variant": "st-tp",
+      "index": 7,
+      "warmUp": false,
+      "mountMs": 157.2,
+      "touchUpToMarkerMs": 5.5,
+      "markerToFirstMotionMs": 151.7,
+      "touchUpToLandedMs": 578.8,
+      "touchUpToFittedRunStartMs": 109.8,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 207046.67,
+        "touchUpMs": 207041.2
+      }
+    },
+    {
+      "variant": "st-tp",
+      "index": 8,
+      "warmUp": false,
+      "mountMs": 154.4,
+      "touchUpToMarkerMs": 7.7,
+      "markerToFirstMotionMs": 146.7,
+      "touchUpToLandedMs": 577.7,
+      "touchUpToFittedRunStartMs": 106.7,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 210051.67,
+        "touchUpMs": 210044
+      }
+    },
+    {
+      "variant": "st-tp",
+      "index": 9,
+      "warmUp": false,
+      "mountMs": 134,
+      "touchUpToMarkerMs": 17.3,
+      "markerToFirstMotionMs": 116.7,
+      "touchUpToLandedMs": 555.6,
+      "touchUpToFittedRunStartMs": 86.3,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 213065,
+        "touchUpMs": 213047.7
+      }
+    },
+    {
+      "variant": "choreo",
+      "index": 0,
+      "warmUp": true,
+      "mountMs": 61.9,
+      "touchUpToMarkerMs": 6.9,
+      "markerToFirstMotionMs": 55,
+      "touchUpToLandedMs": 461.9,
+      "touchUpToFittedRunStartMs": 69,
+      "framesShown": 24,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 218745,
+        "touchUpMs": 218738.1
+      }
+    },
+    {
+      "variant": "choreo",
+      "index": 1,
+      "warmUp": true,
+      "mountMs": 61.7,
+      "touchUpToMarkerMs": 15,
+      "markerToFirstMotionMs": 46.7,
+      "touchUpToLandedMs": 463.3,
+      "touchUpToFittedRunStartMs": 64.6,
+      "framesShown": 24,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 221368.33,
+        "touchUpMs": 221353.3
+      }
+    },
+    {
+      "variant": "choreo",
+      "index": 2,
+      "warmUp": true,
+      "mountMs": 51.3,
+      "touchUpToMarkerMs": 6.3,
+      "markerToFirstMotionMs": 45,
+      "touchUpToLandedMs": 454.6,
+      "touchUpToFittedRunStartMs": 54.3,
+      "framesShown": 24,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 223970,
+        "touchUpMs": 223963.7
+      }
+    },
+    {
+      "variant": "choreo",
+      "index": 0,
+      "warmUp": false,
+      "mountMs": 36.5,
+      "touchUpToMarkerMs": 3.2,
+      "markerToFirstMotionMs": 33.3,
+      "touchUpToLandedMs": 439.9,
+      "touchUpToFittedRunStartMs": 47.9,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 226598.33,
+        "touchUpMs": 226595.1
+      }
+    },
+    {
+      "variant": "choreo",
+      "index": 1,
+      "warmUp": false,
+      "mountMs": 70.1,
+      "touchUpToMarkerMs": 23.4,
+      "markerToFirstMotionMs": 46.7,
+      "touchUpToLandedMs": 473.4,
+      "touchUpToFittedRunStartMs": 76,
+      "framesShown": 24,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 229218.33,
+        "touchUpMs": 229194.9
+      }
+    },
+    {
+      "variant": "choreo",
+      "index": 2,
+      "warmUp": false,
+      "mountMs": 62.5,
+      "touchUpToMarkerMs": 12.5,
+      "markerToFirstMotionMs": 50,
+      "touchUpToLandedMs": 450.8,
+      "touchUpToFittedRunStartMs": 61.6,
+      "framesShown": 23,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 231815,
+        "touchUpMs": 231802.5
+      }
+    },
+    {
+      "variant": "choreo",
+      "index": 3,
+      "warmUp": false,
+      "mountMs": 43,
+      "touchUpToMarkerMs": 6.3,
+      "markerToFirstMotionMs": 36.7,
+      "touchUpToLandedMs": 441.3,
+      "touchUpToFittedRunStartMs": 51.5,
+      "framesShown": 24,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 234415,
+        "touchUpMs": 234408.7
+      }
+    },
+    {
+      "variant": "choreo",
+      "index": 4,
+      "warmUp": false,
+      "mountMs": 59.6,
+      "touchUpToMarkerMs": 11.3,
+      "markerToFirstMotionMs": 48.3,
+      "touchUpToLandedMs": 461.3,
+      "touchUpToFittedRunStartMs": 62.7,
+      "framesShown": 24,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 236983.33,
+        "touchUpMs": 236972
+      }
+    },
+    {
+      "variant": "choreo",
+      "index": 5,
+      "warmUp": false,
+      "mountMs": 59.9,
+      "touchUpToMarkerMs": 11.6,
+      "markerToFirstMotionMs": 48.3,
+      "touchUpToLandedMs": 461.6,
+      "touchUpToFittedRunStartMs": 63,
+      "framesShown": 24,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 239616.67,
+        "touchUpMs": 239605.1
+      }
+    },
+    {
+      "variant": "choreo",
+      "index": 6,
+      "warmUp": false,
+      "mountMs": 38.3,
+      "touchUpToMarkerMs": 3.3,
+      "markerToFirstMotionMs": 35,
+      "touchUpToLandedMs": 440,
+      "touchUpToFittedRunStartMs": 40.5,
+      "framesShown": 24,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 242263.33,
+        "touchUpMs": 242260
+      }
+    },
+    {
+      "variant": "choreo",
+      "index": 7,
+      "warmUp": false,
+      "mountMs": 49.9,
+      "touchUpToMarkerMs": 16.6,
+      "markerToFirstMotionMs": 33.3,
+      "touchUpToLandedMs": 453.3,
+      "touchUpToFittedRunStartMs": 60.3,
+      "framesShown": 25,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 244881.67,
+        "touchUpMs": 244865
+      }
+    },
+    {
+      "variant": "choreo",
+      "index": 8,
+      "warmUp": false,
+      "mountMs": 68.1,
+      "touchUpToMarkerMs": 21.4,
+      "markerToFirstMotionMs": 46.7,
+      "touchUpToLandedMs": 469.7,
+      "touchUpToFittedRunStartMs": 70.9,
+      "framesShown": 24,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 247501.67,
+        "touchUpMs": 247480.3
+      }
+    },
+    {
+      "variant": "choreo",
+      "index": 9,
+      "warmUp": false,
+      "mountMs": 66.8,
+      "touchUpToMarkerMs": 18.5,
+      "markerToFirstMotionMs": 48.3,
+      "touchUpToLandedMs": 470.2,
+      "touchUpToFittedRunStartMs": 70.3,
+      "framesShown": 24,
+      "missedFrames": 0,
+      "blankFrames": 0,
+      "recording": {
+        "markerMs": 250100,
+        "touchUpMs": 250081.5
+      }
+    }
+  ]
+}
