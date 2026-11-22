@@ -14,7 +14,16 @@
 //   moving  - anything else
 //
 // Per opening:
+//   firstChangeMs   t of the first frame whose box differs from the resting
+//                   box (the frame before the marker) by more than
+//                   HERO_CHANGE_TOL on any edge (default 1 pt): the frame in
+//                   which the run has begun, whatever its curve
+//   firstChange     that frame's box, its largest edge change (pt) and its
+//                   progress from the box's height and from its top edge
+//   restNoise       the largest edge change of the resting frames in the
+//                   300 ms before the marker: what a still tile shows
 //   firstMotionMs   t of the first frame with the hero between card and detail
+//                   (more than HERO_NEAR_TOL, default 4 pt, from both)
 //   landMs          t of the first frame at the detail rect
 //   frames          frames the screen showed from first motion to landing
 //   fps             those frames per second of that span
@@ -28,6 +37,8 @@
 //                   ease-in-out-quad curve to the time the run must have
 //                   started, and the median is taken. timing.mjs calibrates
 //                   the recording clock with it.
+//   epochTopMs      the same fit from the box's top edge (its position): a
+//                   teleported photo's size can trail its host by a frame.
 //
 // With `cells`, the openings are split in order into named cells and each
 // cell's median and range are printed (to stderr; stdout stays JSON). A cell
@@ -80,9 +91,21 @@ const frames = readFileSync(file, 'utf8')
   .split('\n')
   .map((line) => JSON.parse(line));
 
-const near = (box, rect, tolerance = 4) =>
+// Card / detail classification (and the old 4 pt first motion).
+const NEAR_TOL = Number(process.env.HERO_NEAR_TOL ?? 4);
+// The first changed frame: any edge more than this from the resting box.
+const CHANGE_TOL = Number(process.env.HERO_CHANGE_TOL ?? 1);
+const near = (box, rect, tolerance = NEAR_TOL) =>
   box !== undefined &&
   box.every((value, index) => Math.abs(value - rect[index]) <= tolerance);
+// The largest change of one edge (left, top, right, bottom) between boxes.
+const edgeChange = (box, rest) =>
+  Math.max(
+    Math.abs(box[0] - rest[0]),
+    Math.abs(box[1] - rest[1]),
+    Math.abs(box[0] + box[2] - rest[0] - rest[2]),
+    Math.abs(box[1] + box[3] - rest[1] - rest[3])
+  );
 
 const cardFrames = frames.filter((frame) => near(frame.box, card));
 const cardCoverage =
@@ -114,6 +137,23 @@ for (let index = 1; index < states.length; index++) {
   const firstMotion = states
     .slice(index, land + 1)
     .find((frame) => frame.state === 'moving');
+  // The resting box: the frame before the marker shows the still tile.
+  const rest = states[index - 1].box;
+  const firstChange = states
+    .slice(index, land + 1)
+    .find(
+      (frame) =>
+        frame.state !== 'blank' &&
+        frame.box &&
+        edgeChange(frame.box, rest) > CHANGE_TOL
+    );
+  // The still tile's jitter: its frames in the 300 ms before the marker (the
+  // flows wait 400 ms after a close settles, so none of them moves).
+  let restNoise = 0;
+  for (let at = index - 1; at >= 1 && states[at].t >= t0 - 300; at--) {
+    if (states[at].state !== 'card' || !states[at].box) break;
+    restNoise = Math.max(restNoise, edgeChange(states[at].box, rest));
+  }
   let blankFrames = 0;
   for (let at = index; at <= land; at++) {
     if (states[at].state === 'blank') blankFrames++;
@@ -130,18 +170,40 @@ for (let index = 1; index < states.length; index++) {
     }
   }
   const spanMs = firstMotion ? states[land].t - firstMotion.t : 0;
-  const epochs = [];
-  for (let at = index; at <= land; at++) {
-    const box = states[at].box;
-    if (states[at].state !== 'moving' || !box) continue;
-    const progress = (box[3] - card[3]) / (detail[3] - card[3]);
-    if (progress < 0.1 || progress > 0.9) continue;
-    epochs.push(states[at].t - curveOf(openings.length)(progress) * runDurationMs);
-  }
-  epochs.sort((a, b) => a - b);
-  const epoch = epochs.length ? epochs[Math.floor(epochs.length / 2)] : null;
+  // Progress from the box's height and from its top edge (its position).
+  const heightProgress = (box) => (box[3] - card[3]) / (detail[3] - card[3]);
+  const topProgress = (box) => (card[1] - box[1]) / (card[1] - detail[1]);
+  const fitEpoch = (progressOf) => {
+    const epochs = [];
+    for (let at = index; at <= land; at++) {
+      const box = states[at].box;
+      if (states[at].state !== 'moving' || !box) continue;
+      const progress = progressOf(box);
+      if (progress < 0.1 || progress > 0.9) continue;
+      epochs.push(
+        states[at].t - curveOf(openings.length)(progress) * runDurationMs
+      );
+    }
+    epochs.sort((a, b) => a - b);
+    return epochs.length ? epochs[Math.floor(epochs.length / 2)] : null;
+  };
+  const epoch = fitEpoch(heightProgress);
+  const epochTop = fitEpoch(topProgress);
   openings.push({
     t0Ms: t0,
+    firstChangeMs: round(firstChange ? firstChange.t - t0 : null),
+    firstChange: firstChange
+      ? {
+          box: firstChange.box,
+          edgeChange: round(edgeChange(firstChange.box, rest)),
+          heightProgress: Number(heightProgress(firstChange.box).toFixed(4)),
+          topProgress: Number(topProgress(firstChange.box).toFixed(4)),
+          // Recorded frames from the marker frame (0) to the changed one.
+          framesAfterMarker: firstChange.frame - states[index].frame,
+        }
+      : null,
+    rest,
+    restNoise: round(restNoise),
     firstMotionMs: round(firstMotion ? firstMotion.t - t0 : null),
     landMs: round(states[land].t - t0),
     frames: shown,
@@ -150,6 +212,7 @@ for (let index = 1; index < states.length; index++) {
     longestFrameMs: round(longestFrameMs),
     blankFrames,
     epochMs: round(epoch === null ? null : epoch - t0),
+    epochTopMs: round(epochTop === null ? null : epochTop - t0),
   });
   index = land;
 }
@@ -175,11 +238,15 @@ if (cellsArg) {
     at += size;
     const pick = (key) => group.map((opening) => opening[key]);
     console.error(
-      `${name} n=${group.length} | first motion after marker ${stats(pick('firstMotionMs'))} ms` +
+      `${name} n=${group.length} | first change after marker ${stats(pick('firstChangeMs'))} ms` +
+        ` | first motion > ${NEAR_TOL} ${stats(pick('firstMotionMs'))} ms` +
         ` | landed ${stats(pick('landMs'))} ms | fps ${stats(pick('fps'))}` +
         ` | missed ${stats(pick('missedFrames'))} (total ${pick('missedFrames').reduce((a, b) => a + b, 0)})` +
         ` | longest frame ${stats(pick('longestFrameMs'))} ms` +
-        ` | blank ${pick('blankFrames').reduce((a, b) => a + b, 0)}`
+        ` | blank ${pick('blankFrames').reduce((a, b) => a + b, 0)}` +
+        ` | rest noise max ${Math.max(...pick('restNoise'))}` +
+        // How much the resting tile's box differs between the cell's openings.
+        ` | rest box spread ${Math.max(...group.map((o) => edgeChange(o.rest, group[0].rest)))}`
     );
   }
   if (at !== openings.length) {

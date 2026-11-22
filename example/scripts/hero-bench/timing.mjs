@@ -16,6 +16,12 @@
 //
 // Per opening: the first frame that showed the hero moving and the first at
 // the detail rect, in ms after the last touch-up before it.
+//
+// When the app logs its tap handler's time (`[gallery-tap] <ms>`: the gallery
+// bench's start-latency switch; `performance.now()` in the UI-thread handler,
+// the same uptime clock in ms), each opening is also timed from its handler:
+// the start latency is the handler to the first frame that showed the photo
+// changed (summarize.mjs `firstChangeMs`).
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -31,6 +37,14 @@ const events = readFileSync(join(dir, 'trace.log'), 'utf8')
   })
   .filter(Boolean)
   .sort((a, b) => a.t - b.t);
+// Tap handler times (s, uptime clock), from the app's JS log.
+const handlers = readFileSync(join(dir, 'trace.log'), 'utf8')
+  .split('\n')
+  .map((line) => /\[gallery-tap\] ([\d.]+)/.exec(line))
+  .filter(Boolean)
+  .map((match) => Number(match[1]) / 1000)
+  .sort((a, b) => a - b);
+const HANDLER_SLACK_S = 0.01;
 const { openings } = JSON.parse(
   readFileSync(join(dir, 'summary.json'), 'utf8')
 );
@@ -78,25 +92,51 @@ console.log(
 const rows = openings.map((opening) => {
   const uptime = (recMs) => recMs / 1000 - offset;
   const marker = uptime(opening.t0Ms);
-  // The touch-up that lit the marker: the last one before its frame.
-  const touchUp = touchUps.filter((t) => t < marker).at(-1);
+  // The handler that lit the marker: the last one before its frame. The
+  // simulator stamps that frame about 2 ms after the handler, and the
+  // calibration places frames to about 2 ms, so allow 10 ms.
+  const handler = handlers.filter((t) => t < marker + HANDLER_SLACK_S).at(-1);
+  // The touch-up that lit the marker: the last one before its handler (or,
+  // without a handler log, before its frame).
+  const touchUp = touchUps
+    .filter((t) => (handler === undefined ? t < marker : t <= handler))
+    .at(-1);
   const after = (ms) =>
     ms === null || touchUp === undefined
       ? null
       : Number(((uptime(opening.t0Ms + ms) - touchUp) * 1000).toFixed(1));
+  const fromHandler = (ms) =>
+    ms === null || handler === undefined
+      ? null
+      : Number(((uptime(opening.t0Ms + ms) - handler) * 1000).toFixed(1));
+  const recordingMs = (t) =>
+    t === undefined ? null : Number(((t + offset) * 1000).toFixed(1));
   return {
     marker: after(0),
     firstMotion: after(opening.firstMotionMs),
+    firstChange: after(opening.firstChangeMs ?? null),
     landed: after(opening.landMs),
     // The run's start fitted from its frames (summarize.mjs `epochMs`).
     runStart: after(opening.epochMs),
+    runStartTop: after(opening.epochTopMs ?? null),
     markerToFirstMotion: opening.firstMotionMs,
+    markerToFirstChange: opening.firstChangeMs ?? null,
+    handler:
+      handler === undefined || touchUp === undefined
+        ? null
+        : Number(((handler - touchUp) * 1000).toFixed(2)),
+    fromHandler: {
+      marker: fromHandler(0),
+      firstChange: fromHandler(opening.firstChangeMs ?? null),
+      firstMotion: fromHandler(opening.firstMotionMs),
+      runStart: fromHandler(opening.epochMs),
+      runStartTop: fromHandler(opening.epochTopMs ?? null),
+      landed: fromHandler(opening.landMs),
+    },
     recording: {
       markerMs: opening.t0Ms,
-      touchUpMs:
-        touchUp === undefined
-          ? null
-          : Number(((touchUp + offset) * 1000).toFixed(1)),
+      touchUpMs: recordingMs(touchUp),
+      handlerMs: recordingMs(handler),
     },
   };
 });
@@ -121,6 +161,15 @@ for (const [name, size] of cells) {
       ` | touch-up -> landed ${stats(group.map((row) => row.landed))} ms` +
       ` | touch-up -> fitted run start ${stats(group.map((row) => row.runStart))} ms`
   );
+  if (group.some((row) => row.handler !== null)) {
+    const h = (key) => stats(group.map((row) => row.fromHandler[key]));
+    console.log(
+      `${name} | touch-up -> handler ${stats(group.map((row) => row.handler))} ms` +
+        ` | handler -> first change (start latency) ${h('firstChange')} ms` +
+        ` | handler -> first motion > 4 ${h('firstMotion')} ms` +
+        ` | handler -> run start (size) ${h('runStart')} (position) ${h('runStartTop')} ms`
+    );
+  }
 }
 writeFileSync(
   join(dir, 'timing.json'),

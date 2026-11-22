@@ -19,8 +19,10 @@
 # A device that `adb devices` lists is recorded with `screenrecord` at
 # HERO_RECORD_SIZE (default 640x1428, half the Pixel 10 Pro emulator's
 # 1280x2856: at its native size the encoder falls back to a distorted
-# 720x1280). The emulator's frame rate is not trustworthy, and Android has no
-# native trace: there, times run from the tap marker only.
+# 720x1280). Run the emulator with `-gpu host`: its `auto` mode renders an
+# API 37 image in software (lavapipe) at about 35 fps. Android has no native
+# trace: there, frames are timed from the tap marker; input-clock.mjs times
+# the handler from the touch-up separately.
 set -eu
 
 device=$1
@@ -40,6 +42,14 @@ fi
 status=0
 if [ "$platform" = android ]; then
   remote=/sdcard/hero-bench-recording.mp4
+  # The kernel's touch events (getevent, uptime clock) and the app's log
+  # (`[gallery-tap]` handler times, the same clock in ms): input-clock.mjs
+  # times each tap's handler from its touch-up.
+  adb -s "$device" shell getevent -lt > "$out/getevent.log" 2>/dev/null &
+  getevent=$!
+  adb -s "$device" logcat -c || true
+  adb -s "$device" logcat -v monotonic -s ReactNativeJS:I > "$out/logcat.log" 2>/dev/null &
+  logcat=$!
   adb -s "$device" shell screenrecord --size "${HERO_RECORD_SIZE:-640x1428}" \
     --bit-rate 8000000 --time-limit 0 "$remote" &
   recorder=$!
@@ -49,6 +59,7 @@ if [ "$platform" = android ]; then
   # SIGINT lets screenrecord finish the file; killing adb would not.
   adb -s "$device" shell pkill -INT screenrecord || true
   wait "$recorder" || true
+  kill "$getevent" "$logcat" 2>/dev/null || true
   sleep 1
   adb -s "$device" pull "$remote" "$video" >/dev/null
   adb -s "$device" shell rm -f "$remote"
@@ -88,6 +99,12 @@ marker=$(field '[l.marker.x,l.marker.y,l.marker.width,l.marker.height].join(" ")
 if [ "$platform" = android ]; then mask_pad=${HERO_MASK_PAD:-1}; else mask_pad=${HERO_MASK_PAD:-0}; fi
 HERO_MASK=$(field "(l.mask||[]).map(r=>[r.x-$mask_pad,r.y-$mask_pad,r.width+2*$mask_pad,r.height+2*$mask_pad].join(',')).join(';')")
 export HERO_MASK
+# A run's first changed frame: any edge of the photo's box more than
+# HERO_CHANGE_TOL from the resting tile's (summarize.mjs). Default 1 pt on iOS
+# and 2 dp on Android, where the encoder jitters a still tile's edges by up to
+# 2 dp.
+if [ "$platform" = android ]; then HERO_CHANGE_TOL=${HERO_CHANGE_TOL:-2}; else HERO_CHANGE_TOL=${HERO_CHANGE_TOL:-1}; fi
+export HERO_CHANGE_TOL
 
 # Compiled: a five-minute recording is about 15,000 frames.
 swiftc -O "$here/analyze-frames.swift" -o "$out/analyze-frames" 2>/dev/null
