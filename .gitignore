@@ -85,6 +85,7 @@ nitrogen/
 .argent/flows/*
 !.argent/flows/qa-gallery-adjacent-dismiss.yaml
 !.argent/flows/qa-gallery-drag-dismiss.yaml
+!.argent/flows/hero-bench/
 
 # demo recordings staged for README upload (hosted on GitHub, never committed)
 /*.mp4

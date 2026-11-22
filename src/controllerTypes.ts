@@ -25,11 +25,17 @@ export type SpringClipAnimation = SmoothClipAnimationBase &
     stiffness?: number;
     damping?: number;
     /**
-     * Initial progress velocity in inverse seconds; defaults to 0, with no
-     * automatic gesture-velocity inheritance. Each changing channel, including
-     * rotation and opacity, starts at velocity * (target - start).
+     * Initial progress velocity in inverse seconds; defaults to 0. Each
+     * changing channel, including rotation and opacity, starts at
+     * velocity * (target - start).
+     *
+     * `'inherit'` takes the velocity the host is moving with when this run
+     * replaces it: the replaced run's analytic velocity (timing or spring),
+     * or the velocity of the frames an interaction streamed through
+     * `setFrame`, projected onto this run's displacement. A host at rest
+     * inherits 0. Use it to retarget a flight mid-air or to release a drag.
      */
-    velocity?: number;
+    velocity?: number | 'inherit';
     /** Relative mechanical energy used to determine settlement. */
     energyThreshold?: number;
   }>;

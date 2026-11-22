@@ -5,7 +5,6 @@
 #include "SmoothClipRegistrySnapshot.h"
 
 #include <cmath>
-#include <limits>
 #include <utility>
 
 namespace facebook::react {
@@ -278,24 +277,31 @@ bool fixedGroupEntriesAt(
   result.reserve(count / stride);
   for (size_t offset = 0; offset < count; offset += stride) {
     double rawDriverId = 0;
-    double rawHasFrom = 0;
+    // Bit 0 has-from, bit 1 target in window space, bit 2 from in window
+    // space (src/NativeSmoothClipModule.ts).
+    double rawFlags = 0;
     smoothclip::Presentation from;
     smoothclip::Presentation target;
     if (!numberAt(runtime, array, offset, rawDriverId) ||
         !validDriverId(rawDriverId) ||
-        !numberAt(runtime, array, offset + 1, rawHasFrom) ||
-        (rawHasFrom != 0 && rawHasFrom != 1) ||
+        !numberAt(runtime, array, offset + 1, rawFlags) ||
+        !(rawFlags >= 0 && rawFlags <= 7) ||
+        std::floor(rawFlags) != rawFlags ||
         !presentationAt(runtime, array, offset + 2, from) ||
         !presentationAt(
             runtime, array, offset + 2 + kPresentationStride, target)) {
       return false;
     }
-    result.push_back({
+    const int flags = static_cast<int>(rawFlags);
+    smoothclip::GroupMotionEntry entry{
         static_cast<uint64_t>(rawDriverId),
-        rawHasFrom == 1,
+        (flags & 1) != 0,
         from,
         target,
-    });
+    };
+    entry.targetInWindow = (flags & 2) != 0;
+    entry.fromInWindow = (flags & 4) != 0;
+    result.push_back(entry);
   }
   return true;
 }
@@ -388,27 +394,22 @@ bool SmoothClipTurboModule::setClipPresentationBatch(
   for (size_t offset = 0; offset < count; offset += stride) {
     double driverId = 0;
     smoothclip::Presentation presentation;
+    // A negative id marks a window-space presentation for driver -id.
     if (!numberAt(runtime, entries, offset, driverId) ||
-        !validDriverId(driverId) ||
+        !validDriverId(std::abs(driverId)) ||
         !presentationAt(runtime, entries, offset + 1, presentation)) {
       return false;
     }
-    parsed.push_back(
-        {static_cast<uint64_t>(driverId), presentation});
+    smoothclip::BatchEntry entry{
+        static_cast<uint64_t>(std::abs(driverId)), presentation};
+    entry.inWindow = driverId < 0;
+    parsed.push_back(entry);
   }
   return smoothclip::setPresentationBatch(parsed);
 }
 
-// JS stamps a run with Reanimated's frame timestamp in milliseconds on the
-// CACurrentMediaTime base; the registry takes seconds. Anything else means
-// "start now".
-static double startedAtHintSeconds(double startTimestampMs) {
-  if (!std::isfinite(startTimestampMs) || startTimestampMs <= 0) {
-    return std::numeric_limits<double>::quiet_NaN();
-  }
-  return startTimestampMs / 1000.0;
-}
-
+// `startTimestamp` (Reanimated's frame stamp) is Android's: there the frame
+// loop advances from it. A group run here begins at its install.
 int32_t SmoothClipTurboModule::animateTimingGroup(
     jsi::Runtime &runtime,
     double controllerId,
@@ -420,7 +421,7 @@ int32_t SmoothClipTurboModule::animateTimingGroup(
     double controlPoint2Y,
     int32_t reduceMotion,
     int32_t completionTag,
-    double startTimestamp) {
+    double /* startTimestamp */) {
   std::vector<smoothclip::GroupMotionEntry> parsed;
   if (!validDriverId(controllerId) ||
       !fixedGroupEntriesAt(runtime, entries, parsed) ||
@@ -438,8 +439,7 @@ int32_t SmoothClipTurboModule::animateTimingGroup(
        controlPoint2X,
        controlPoint2Y,
        reduceMotion},
-      completionTag,
-      startedAtHintSeconds(startTimestamp));
+      completionTag);
 }
 
 int32_t SmoothClipTurboModule::animateSpringGroup(
@@ -453,28 +453,29 @@ int32_t SmoothClipTurboModule::animateSpringGroup(
     double energyThreshold,
     int32_t reduceMotion,
     int32_t completionTag,
-    double startTimestamp) {
+    double /* startTimestamp */) {
   std::vector<smoothclip::GroupMotionEntry> parsed;
   if (!validDriverId(controllerId) ||
       !fixedGroupEntriesAt(runtime, entries, parsed) ||
       !std::isfinite(mass) || !std::isfinite(stiffness) ||
-      !std::isfinite(damping) || !std::isfinite(velocity) ||
+      !std::isfinite(damping) || std::isinf(velocity) ||
       !std::isfinite(energyThreshold) || mass <= 0 || stiffness <= 0 ||
       damping < 0 || energyThreshold <= 0) {
     return 0;
   }
+  // NaN asks for `velocity: 'inherit'`, resolved per driver by the registry.
+  const bool inherit = std::isnan(velocity);
   return smoothclip::animateSpringGroup(
       static_cast<uint64_t>(controllerId),
       std::move(parsed),
       {mass,
        stiffness,
        damping,
-       velocity,
-       false,
+       inherit ? 0.0 : velocity,
+       inherit,
        reduceMotion,
        energyThreshold},
-      completionTag,
-      startedAtHintSeconds(startTimestamp));
+      completionTag);
 }
 
 jsi::Array SmoothClipTurboModule::cancelAnimationGroup(

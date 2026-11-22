@@ -77,6 +77,20 @@ export type SmoothClipPresentation = Readonly<{
   boxShadow?: ClipBoxShadow;
   /** Defaults to no translation when omitted. */
   backdrop?: ClipBackdrop;
+  /**
+   * The coordinate space of `clip`, `contentTranslateX/Y` and the shadow.
+   *
+   * - `'host'` (default): the host's own coordinates.
+   * - `'window'`: window coordinates, as if the host sat unscaled at the
+   *   window origin. Native converts them through the host's current
+   *   transform to the window when the run starts (or the frame is set), so
+   *   a flight can target a window rect without measuring the host, and a
+   *   host under a scaled or translated ancestor still lands exactly on it.
+   *   Accepted by `animateTo` targets and `setFrame`; an initial frame is
+   *   always host space. A host whose transform to the window rotates,
+   *   skews or scales unevenly rejects window-space input.
+   */
+  space?: 'host' | 'window';
 }>;
 
 export type CanonicalSmoothClipPresentation = Readonly<{

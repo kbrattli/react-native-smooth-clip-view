@@ -1,0 +1,51 @@
+# Parity check: Back pressed 1.5 s into a slow (4 s) flight, for all four
+# variants. The taps are by coordinate (Back is at 9 % x, 68 % y on the iPhone
+# 18 Pro), so nothing waits on the accessibility tree mid-flight.
+steps:
+  - run: open
+  - tap: { id: hero-bench-slow }
+  - tap: { id: hero-bench-variant-flight-push }
+  - tap: { id: hero-bench-card }
+  - tool: gesture-custom
+    args:
+      events:
+        - { type: Down, x: 0.95, y: 0.9 }
+        - { type: Up, x: 0.95, y: 0.9, delayMs: 1500 }
+        - { type: Down, x: 0.092, y: 0.682, delayMs: 30 }
+        - { type: Up, x: 0.092, y: 0.682, delayMs: 60 }
+  - await: { visible: { id: hero-bench-card }, timeout: 15000 }
+  - await: { idle: true, stableFor: 1500, timeout: 15000 }
+  - tap: { id: hero-bench-variant-set-push }
+  - tap: { id: hero-bench-card }
+  - tool: gesture-custom
+    args:
+      events:
+        - { type: Down, x: 0.95, y: 0.9 }
+        - { type: Up, x: 0.95, y: 0.9, delayMs: 1500 }
+        - { type: Down, x: 0.092, y: 0.682, delayMs: 30 }
+        - { type: Up, x: 0.092, y: 0.682, delayMs: 60 }
+  - await: { visible: { id: hero-bench-card }, timeout: 15000 }
+  - await: { idle: true, stableFor: 1500, timeout: 15000 }
+  - tap: { id: hero-bench-variant-flight-sheet }
+  - tap: { id: hero-bench-card }
+  - tool: gesture-custom
+    args:
+      events:
+        - { type: Down, x: 0.95, y: 0.9 }
+        - { type: Up, x: 0.95, y: 0.9, delayMs: 1500 }
+        - { type: Down, x: 0.092, y: 0.682, delayMs: 30 }
+        - { type: Up, x: 0.092, y: 0.682, delayMs: 60 }
+  - await: { visible: { id: hero-bench-card }, timeout: 15000 }
+  - await: { idle: true, stableFor: 1500, timeout: 15000 }
+  - tap: { id: hero-bench-variant-set-sheet }
+  - tap: { id: hero-bench-card }
+  - tool: gesture-custom
+    args:
+      events:
+        - { type: Down, x: 0.95, y: 0.9 }
+        - { type: Up, x: 0.95, y: 0.9, delayMs: 1500 }
+        - { type: Down, x: 0.092, y: 0.682, delayMs: 30 }
+        - { type: Up, x: 0.092, y: 0.682, delayMs: 60 }
+  - await: { visible: { id: hero-bench-card }, timeout: 15000 }
+  - await: { idle: true, stableFor: 1500, timeout: 15000 }
+  - tap: { id: hero-bench-slow }

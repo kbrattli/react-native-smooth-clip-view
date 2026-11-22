@@ -4,6 +4,8 @@ export type {
   SmoothClipViewProps,
 } from './SmoothClipView';
 export { SmoothClipBackdropView } from './SmoothClipBackdropView';
+export { SmoothClipFlightTarget } from './SmoothClipFlightTarget';
+export type { SmoothClipFlightTargetProps } from './SmoothClipFlightTarget';
 export type { SmoothClipBackdropViewProps } from './SmoothClipBackdropView';
 export { useSmoothClipController } from './controllers';
 export { useSmoothClipGroup } from './groups';

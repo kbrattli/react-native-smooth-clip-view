@@ -1,0 +1,34 @@
+# Parity check, push (docs/hero-flight-results.md): for the flight, then for
+# SET: open and swipe back; open, cancel a swipe at 30 %, then Back.
+steps:
+  - run: open
+  - tap: { id: hero-bench-variant-flight-push }
+  - run: open-card
+  - run: close-swipe
+  - run: open-card
+  - tool: gesture-custom
+    args:
+      events:
+        - { type: Down, x: 0, y: 0.6 }
+        - { type: Move, x: 0.3, y: 0.6, delayMs: 800 }
+        - { type: Move, x: 0.3, y: 0.6, delayMs: 300 }
+        - { type: Up, x: 0.3, y: 0.6, delayMs: 16 }
+      interpolate: 48
+  - await: { idle: true, stableFor: 800, timeout: 9000 }
+  - await: { visible: { id: hero-bench-back }, timeout: 5000 }
+  - run: back
+  - tap: { id: hero-bench-variant-set-push }
+  - run: open-card
+  - run: close-swipe
+  - run: open-card
+  - tool: gesture-custom
+    args:
+      events:
+        - { type: Down, x: 0, y: 0.6 }
+        - { type: Move, x: 0.3, y: 0.6, delayMs: 800 }
+        - { type: Move, x: 0.3, y: 0.6, delayMs: 300 }
+        - { type: Up, x: 0.3, y: 0.6, delayMs: 16 }
+      interpolate: 48
+  - await: { idle: true, stableFor: 800, timeout: 9000 }
+  - await: { visible: { id: hero-bench-back }, timeout: 5000 }
+  - run: back

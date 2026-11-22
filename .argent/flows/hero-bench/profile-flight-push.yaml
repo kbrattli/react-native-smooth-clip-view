@@ -1,0 +1,5 @@
+# CPU and memory, push scenario, flight: 10 open/close cycles with no load.
+steps:
+  - run: open
+  - tap: { id: hero-bench-variant-flight-push }
+  - run: cycles-push

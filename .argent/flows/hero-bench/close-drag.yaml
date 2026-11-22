@@ -1,0 +1,12 @@
+# Fragment: close a sheet by dragging it down from 20 % to 80 % of the height
+# and releasing.
+steps:
+  - tool: gesture-custom
+    args:
+      events:
+        - { type: Down, x: 0.5, y: 0.2 }
+        - { type: Move, x: 0.5, y: 0.8, delayMs: 600 }
+        - { type: Up, x: 0.5, y: 0.8, delayMs: 16 }
+      interpolate: 36
+  - await: { visible: { id: hero-bench-card }, timeout: 10000 }
+  - await: { idle: true, stableFor: 400, timeout: 9000 }

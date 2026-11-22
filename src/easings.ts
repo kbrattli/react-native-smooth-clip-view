@@ -4,7 +4,9 @@
  *
  * Native transitions and a parallel Reanimated animation (content driven by
  * `withTiming` alongside a native `animateTo`) only stay in sync when both
- * sides run the identical curve. Each entry below is the exact single-Bézier
+ * sides run the identical curve. (On iOS the native run begins at its
+ * install, so the two can still be up to a frame apart: continue from a run
+ * with the frame `beginInteraction()` returns.) Each entry below is the exact single-Bézier
  * form of the matching Reanimated easing — not an approximation — so pairing
  * e.g. `Easing.out(Easing.cubic)` with `ClipEasings.easeOutCubic` is
  * mathematically lossless:

@@ -4,10 +4,17 @@ import {
   useEffect,
   type ComponentRef,
   type ForwardedRef,
+  type ForwardRefExoticComponent,
   type ReactElement,
   type ReactNode,
+  type RefAttributes,
 } from 'react';
-import { StyleSheet, type ViewProps, type ViewStyle } from 'react-native';
+import {
+  StyleSheet,
+  type HostInstance,
+  type ViewProps,
+  type ViewStyle,
+} from 'react-native';
 import type { SmoothClipController } from './controllerTypes';
 import { getControllerRef, unwrapSmoothClipRef } from './controllerInternals';
 import { rotationRadians } from './geometry';
@@ -31,6 +38,18 @@ export type SmoothClipShadowRendering = 'blur' | 'baked';
 export type SmoothClipViewProps = ViewProps & {
   controller: SmoothClipController;
   shadowRendering?: SmoothClipShadowRendering;
+  /**
+   * Opt in to flights. Every run on this host leaves its screen and flies in
+   * the window's flight layer, above navigation transitions and sheets, and
+   * comes back when it lands.
+   *
+   * A string pairs the host with the `<SmoothClipFlightTarget>` of the same
+   * tag: the target is hidden while the flight is airborne, and revealed in
+   * the frame the flight lands on it, with this host back at the frame it
+   * started from. A later run on this host, while that target is still on
+   * screen, starts from the target (the way back).
+   */
+  flight?: string | true;
   children?: ReactNode;
 };
 
@@ -131,6 +150,7 @@ export function renderSmoothClipView(
     children,
     style,
     shadowRendering,
+    flight,
     ...viewProps
   }: SmoothClipViewProps,
   forwardedRef: ForwardedRef<ComponentRef<typeof NativeSmoothClipView>>
@@ -170,6 +190,8 @@ export function renderSmoothClipView(
     shadowRendering: shadowRendering === 'baked' ? 1 : 0,
     initialBackdropTranslateX: canonical.backdrop.translateX,
     initialBackdropTranslateY: canonical.backdrop.translateY,
+    flightEnabled: flight !== undefined && flight !== '',
+    flightTag: typeof flight === 'string' ? flight : '',
   };
 
   return (
@@ -179,10 +201,11 @@ export function renderSmoothClipView(
   );
 }
 
-export const SmoothClipView = forwardRef<
-  ComponentRef<typeof NativeSmoothClipView>,
-  SmoothClipViewProps
->(function SmoothClipViewComponent(props, forwardedRef) {
-  useSingleControllerHost(props.controller);
-  return renderSmoothClipView(props, forwardedRef);
-});
+export const SmoothClipView: ForwardRefExoticComponent<
+  SmoothClipViewProps & RefAttributes<HostInstance>
+> = forwardRef<ComponentRef<typeof NativeSmoothClipView>, SmoothClipViewProps>(
+  function SmoothClipViewComponent(props, forwardedRef) {
+    useSingleControllerHost(props.controller);
+    return renderSmoothClipView(props, forwardedRef);
+  }
+);

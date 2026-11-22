@@ -117,6 +117,34 @@ Presentation presentationWithScale(double scale) {
   XCTAssertFalse(future.frameClockAnchored);
 }
 
+- (void)testAStampAheadOfTheCallStartsAtTheCall {
+  // No run begins later than its call: every frame before a stamp ahead
+  // would show the run's start. Fresh starts and replacements alike start at
+  // the call, unanchored, as an unstamped call does.
+  for (const double ahead : {1000.0 + 1e-6, 1000.016, 1000.9}) {
+    const smoothclip::StartStamp stamp =
+        smoothclip::resolveStartStamp(ahead, 1000.0);
+    XCTAssertEqual(stamp.startedAtS, 1000.0);
+    XCTAssertFalse(stamp.frameClockAnchored);
+  }
+  // A stamp at the call is kept.
+  const smoothclip::StartStamp now = smoothclip::resolveStartStamp(1000.0, 1000.0);
+  XCTAssertEqual(now.startedAtS, 1000.0);
+  XCTAssertTrue(now.frameClockAnchored);
+}
+
+#pragma mark - Replacing a moving run (Android frame clock)
+
+- (void)testReplacementHandsOverAtItsEpochUnlessALaterFrameWasDrawn {
+  // The frame callbacks of one doFrame run in posting order: the replaced
+  // run may or may not have been advanced to the stamp's frame yet. Either
+  // way it is sampled at the epoch.
+  XCTAssertEqual(smoothclip::replacementHandoverS(1000.0, 999.984), 1000.0);
+  XCTAssertEqual(smoothclip::replacementHandoverS(1000.0, 1000.0), 1000.0);
+  // A stale stamp (C5): from the frame on screen.
+  XCTAssertEqual(smoothclip::replacementHandoverS(999.9, 1000.0), 1000.0);
+}
+
 #pragma mark - Timing fraction
 
 - (void)testTimingFractionClampsAndCompletesDegenerateDurations {
@@ -233,6 +261,33 @@ Presentation presentationWithScale(double scale) {
       smoothclip::isAutonomousUniformPair(continuous, grownContinuous));
   XCTAssertFalse(smoothclip::isAutonomousUniformPair(uniform, grownContinuous));
   XCTAssertFalse(smoothclip::isAutonomousUniformPair(continuous, grown));
+}
+
+#pragma mark - Mid-run frames carry every channel
+
+// Android's freeze and snapshot read the run's `current`, which its frame
+// loop builds with these helpers: interpolate() for timing runs and group
+// springs, and fromChannels() over the integrated channels for a single
+// spring. Mid-run, the content channels must be where the run is, as the clip
+// is (iOS once read the target's there).
+- (void)testMidRunFrameCarriesTheContentChannels {
+  Presentation card{{20, 250, 360, 100, 20}, -12, 30, 0.6};
+  const Presentation detail{{0, 0, 400, 400, 0}, 0, 0, 1};
+  const Presentation frame = smoothclip::interpolate(card, detail, 0.25);
+  XCTAssertEqualWithAccuracy(frame.clip.height, 175, 1e-12);
+  XCTAssertEqualWithAccuracy(frame.contentTranslateX, -9, 1e-12);
+  XCTAssertEqualWithAccuracy(frame.contentTranslateY, 22.5, 1e-12);
+  XCTAssertEqualWithAccuracy(frame.contentScale, 0.7, 1e-12);
+
+  const Presentation integrated =
+      smoothclip::fromChannels(smoothclip::toChannels(frame));
+  XCTAssertEqualWithAccuracy(integrated.contentTranslateX, -9, 1e-12);
+  XCTAssertEqualWithAccuracy(integrated.contentTranslateY, 22.5, 1e-12);
+  XCTAssertEqualWithAccuracy(integrated.contentScale, 0.7, 1e-12);
+  // The single-spring integrator steps the first kBaseChannelCount channels;
+  // the content channels are among them.
+  XCTAssertLessThan(static_cast<std::size_t>(10), smoothclip::kBaseChannelCount);
+  XCTAssertEqualWithAccuracy(smoothclip::toChannels(frame)[10], 0.7, 1e-12);
 }
 
 #pragma mark - Shadow endpoint normalization

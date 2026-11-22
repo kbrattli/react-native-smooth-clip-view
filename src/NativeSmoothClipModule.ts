@@ -26,9 +26,17 @@ export interface Spec extends TurboModule {
   snapshotGroup(
     driverIds: ReadonlyArray<CodegenTypes.Double>
   ): ReadonlyArray<CodegenTypes.Double>;
+  /**
+   * Entries of [driverId, presentation…]. A negative driverId marks a
+   * window-space presentation for driver -driverId.
+   */
   setClipPresentationBatch(
     entries: ReadonlyArray<CodegenTypes.Double>
   ): boolean;
+  /**
+   * Entries of [driverId, flags, from…, target…]. Flags: bit 0 has-from,
+   * bit 1 target in window space, bit 2 from in window space.
+   */
   animateTimingGroup(
     controllerId: CodegenTypes.Double,
     entries: ReadonlyArray<CodegenTypes.Double>,
@@ -41,6 +49,7 @@ export interface Spec extends TurboModule {
     completionTag: CodegenTypes.Int32,
     startTimestamp: CodegenTypes.Double
   ): CodegenTypes.Int32;
+  /** Entries as animateTimingGroup. A NaN velocity inherits (see SpringClipAnimation). */
   animateSpringGroup(
     controllerId: CodegenTypes.Double,
     entries: ReadonlyArray<CodegenTypes.Double>,

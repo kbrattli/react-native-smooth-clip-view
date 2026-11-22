@@ -123,6 +123,15 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     /** Set once a command arrives; later initial presentation props are ignored. */
     internal var commandIsAuthoritative = false
 
+    /** `flightEnabled` / `flightTag` and the lift/land state they drive. */
+    internal val flight = SmoothClipHostFlight(this).also { flight ->
+        flight.onAsyncHandoff = {
+            if (boundDriverId != 0.0) {
+                SmoothClipBindings.nativeFlightHandedOff(boundDriverId, this)
+            }
+        }
+    }
+
     private val clipOutlineProvider = object : ViewOutlineProvider() {
         override fun getOutline(view: View, outline: Outline) {
             if (clipIsEmpty) {
@@ -671,7 +680,13 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
         if (presentationContainer.pivotX != cx) presentationContainer.pivotX = cx
         if (presentationContainer.pivotY != cy) presentationContainer.pivotY = cy
         if (presentationContainer.rotation != degrees) presentationContainer.rotation = degrees
-        if (presentationContainer.alpha != requestedOpacity) presentationContainer.alpha = requestedOpacity
+        // Airborne, the layer-sized carrier takes the opacity: alpha on the
+        // host-sized container would composite through an offscreen layer
+        // clipped to the container's bounds, cutting the flying content.
+        val carrier = flight.carrierView
+        val containerAlpha = if (carrier != null) 1f else requestedOpacity
+        if (presentationContainer.alpha != containerAlpha) presentationContainer.alpha = containerAlpha
+        if (carrier != null && carrier.alpha != requestedOpacity) carrier.alpha = requestedOpacity
     }
 
     private fun applyContentTransform() {
@@ -689,7 +704,9 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        // Host-sized either way: in the host, or in a host-sized carrier.
         presentationContainer.layout(0, 0, w, h)
+        flight.hostSizeChanged(w, h)
         clipContainer.layout(0, 0, w, h)
         contentContainer.layout(0, 0, w, h)
         updateOverflowInsets()
@@ -724,7 +741,8 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
             SmoothClipBindings.nativeSetViewLifecycleVisibility(
                 boundDriverId,
                 this,
-                false,
+                // Airborne: still displayable through the carrier.
+                flight.isLifted && isHostLifecycleVisible(),
             )
         }
         clearTouchState()
@@ -753,8 +771,16 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
 
     internal fun densityScale(): Double = PixelUtil.toPixelFromDIP(1f).toDouble()
 
-    internal fun isHostLifecycleVisible(): Boolean =
-        isAttachedToWindow && windowVisibility == VISIBLE
+    internal fun isHostLifecycleVisible(): Boolean {
+        // An airborne host stays displayable when its own screen detaches
+        // (a covered route): that detach is not host loss, and the registry
+        // must keep running the flight drawn by the carrier.
+        val carrier = flight.carrierView
+        if (carrier != null) {
+            return carrier.isAttachedToWindow && carrier.windowVisibility == VISIBLE
+        }
+        return isAttachedToWindow && windowVisibility == VISIBLE
+    }
 
     private fun pushLifecycleVisibility() {
         if (boundDriverId == 0.0) return
@@ -779,6 +805,11 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        // Airborne content lives in the flight layer, which takes no touches.
+        if (flight.isLifted) {
+            clearTouchState()
+            return false
+        }
         val action = event.actionMasked
         if (action == MotionEvent.ACTION_DOWN) {
             // The aperture gates admission only. Once accepted, the stream
@@ -826,6 +857,117 @@ class SmoothClipView(context: ThemedReactContext) : ReactViewGroup(context) {
     private fun clearTouchState() {
         acceptingTouchStream = false
         forwardingOverflowTouchStream = false
+    }
+
+    // --- Flight (registry -> view, see SmoothClipRegistry.cpp kFlight*) -----
+
+    /** Registry: a run started, or an [interaction] began, on this host. */
+    @DoNotStrip
+    fun flightLift(interaction: Boolean = false): Int = flight.lift(interaction)
+
+    /**
+     * Registry: the run driving this host ended. [finished] is false for a
+     * cancelled run, which never hands off.
+     */
+    @DoNotStrip
+    fun flightRunEnded(finished: Boolean): Int = flight.runEnded(finished)
+
+    /** Registry: a new run may start from the landed presentation. */
+    @DoNotStrip
+    fun flightWayBackAvailable(): Boolean = flight.wayBackAvailable()
+
+    /**
+     * Registry: the host's transform to its window for window-space input,
+     * as `[a, b, c, d, tx, ty, width, height]` with the translation and the
+     * host size in DIP. Window space is the React root's (see
+     * [viewToWindowAffine]). Airborne hosts report the transform captured at
+     * lift. Null when the hierarchy has a 3D transform.
+     */
+    @DoNotStrip
+    fun flightWindowTransform(): DoubleArray? {
+        val density = densityScale()
+        if (!(density > 0.0)) return null
+        if (flight.isLifted) {
+            return doubleArrayOf(
+                flight.scale, 0.0, 0.0, flight.scale,
+                flight.translateX / density, flight.translateY / density,
+                width / density, height / density,
+            )
+        }
+        val windowSpace = DoubleArray(6)
+        if (!viewToWindowAffine(this, DoubleArray(6), windowSpace)) return null
+        return doubleArrayOf(
+            windowSpace[0], windowSpace[1], windowSpace[2], windowSpace[3],
+            windowSpace[4] / density, windowSpace[5] / density,
+            width / density, height / density,
+        )
+    }
+
+    /**
+     * Lift: the presentation container moves into [carrier]. Within one
+     * window it is detached and re-attached without leaving the window, so
+     * no child sees a detach and no display list is dropped. A container not
+     * in a window yet (a pending run that starts from this host's own attach
+     * callback, before ViewGroup attaches the children) is re-added instead.
+     */
+    internal fun liftPresentationInto(carrier: SmoothClipFlightCarrier) {
+        val container = presentationContainer
+        clearTouchState()
+        // react-native-screens starts view transitions recursively on a
+        // removed screen; a transitioning child would keep its parent.
+        endViewTransition(container)
+        container.clearAnimation()
+        if (container.isAttachedToWindow && carrier.isAttachedToWindow &&
+            container.rootView === carrier.rootView
+        ) {
+            detachViewFromParent(container)
+            carrier.adopt(container)
+        } else {
+            removeView(container)
+            carrier.addFlying(container)
+        }
+        invalidate()
+    }
+
+    /** Landing: the presentation container comes back from [carrier]. */
+    internal fun returnPresentationFromFlight(carrier: SmoothClipFlightCarrier) {
+        val container = presentationContainer
+        if (carrier.holds(container)) {
+            if (isAttachedToWindow && carrier.isAttachedToWindow &&
+                container.isAttachedToWindow && rootView === carrier.rootView
+            ) {
+                // Same window: no detach, no display-list loss.
+                carrier.release(container)
+                attachViewToParent(
+                    container,
+                    0,
+                    container.layoutParams ?: generateDefaultLayoutParams(),
+                )
+            } else {
+                // The host is detached (a covered route) or in another window.
+                carrier.removeFlying(container)
+                super.addView(container, 0)
+            }
+        }
+        container.layout(0, 0, width, height)
+        invalidate()
+        applyPresentationTransform()
+        reapplyClipPresentation()
+    }
+
+    /**
+     * Lifted or landed. The opacity moves between container and carrier; a
+     * landing also pushes the host's own displayability (a lift keeps it
+     * true, so it is not pushed from inside the registry's lift call).
+     */
+    internal fun flightStateChanged() {
+        applyPresentationTransform()
+        if (!flight.isLifted) pushLifecycleVisibility()
+    }
+
+    /** Fabric dropped the host: an airborne flight lands at once. */
+    internal fun flightHostLost() {
+        flight.hostLost()
     }
 
     fun setRequestedImportantForAccessibility(value: Int) {

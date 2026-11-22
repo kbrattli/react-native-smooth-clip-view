@@ -22,6 +22,7 @@
 
 #include "SmoothClipAnimationId.h"
 #include "SmoothClipAnimationCurve.h"
+#include "SmoothClipFlightGeometry.h"
 #include "SmoothClipSharedGeometry.h"
 
 @interface SmoothClipView (Registry)
@@ -53,6 +54,17 @@
 - (BOOL)smoothClipHasInstalledAnimation:(int32_t)animationId;
 - (BOOL)smoothClipIsJoinable;
 - (BOOL)smoothClipCanDisplay;
+// Flights (SmoothClipView.mm, "Flights").
+- (BOOL)smoothClipFlightWantsLift;
+- (BOOL)smoothClipFlightLifted;
+- (void)smoothClipLiftForFlightWithRest:(smoothclip::Presentation)rest
+                            interaction:(BOOL)interaction;
+- (void)smoothClipFlightRunDidEnd:(BOOL)finished;
+- (BOOL)smoothClipFlightWayBackFrom:(smoothclip::Presentation *)from;
+- (void)smoothClipFlightForgetLanding;
+- (BOOL)smoothClipWindowTransform:(smoothclip::HostWindowTransform *)transform;
+- (void)smoothClipDetachFlightForHostLoss;
+- (CALayer *)smoothClipRenderLayer;
 - (double)smoothClipInheritedVelocityToPresentation:
     (smoothclip::Presentation)presentation;
 - (void)smoothClipClearVelocitySamples;
@@ -98,6 +110,14 @@ struct ActiveAnimation {
   // False while a pre-ready run waits for its first displayable host. Host
   // loss after the run starts finishes it at the target.
   bool started = false;
+  // The run's epoch (media time): the `beginTime` its layers were installed
+  // with, which is the install. A run that replaces it reads its motion
+  // (`velocity: 'inherit'`) at `now - beginTime`, the call, and starts where
+  // this run's layers show it then.
+  // A spring paused for inactivity holds its motion at `pausedAt`, and its
+  // epoch moves forward when it resumes, as its layers' does.
+  CFTimeInterval beginTime = 0;
+  CFTimeInterval pausedAt = 0;
   bool exposedToInactivity = false;
   bool needsForegroundReconciliation = false;
 };
@@ -135,18 +155,7 @@ struct GroupState {
   std::unordered_set<uint64_t> remainingDriverIds;
   bool finished = true;
   bool mutating = false;
-  // Media time the caller's UI frame was stamped with; 0 when none was given.
-  CFTimeInterval beginTimeHint = 0;
 };
-
-// A frame stamp sits at most one frame ahead of the commit that carries it.
-// Anything further ahead is not a frame stamp and must not hold the run.
-// Behind the commit it is trusted only within the same window the Android
-// frame loop uses (kStartStampSanityWindowS): a group held pending longer than
-// that (a host that could not display, the app inactive) or a stamp from a
-// rescaled clock (Slow Animations) would otherwise begin fully elapsed and
-// snap to its target.
-constexpr CFTimeInterval kMaxBeginTimeLeadS = 0.25;
 
 std::unordered_map<uint64_t, DriverState> &registry() {
   static std::unordered_map<uint64_t, DriverState> value;
@@ -282,6 +291,7 @@ bool pauseSpringForInactivity(
   for (const ViewKey key : state.backdrops) {
     [backdropForKey(key) smoothClipPauseBackdropAtMediaTime:mediaTime];
   }
+  if (paused) animation.pausedAt = mediaTime;
   if (!paused) animation.needsForegroundReconciliation = true;
   return paused;
 }
@@ -305,6 +315,12 @@ bool resumeSpringAfterInactivity(
   for (const ViewKey key : state.backdrops) {
     [backdropForKey(key) smoothClipResumeBackdropAtMediaTime:mediaTime
                                                    catchUpBy:catchUp];
+  }
+  if (animation.pausedAt > 0) {
+    // The layers resume `catchUp` past where they paused (beginTime =
+    // now - (pausedElapsed + catchUp)); the epoch follows them.
+    animation.beginTime += mediaTime - animation.pausedAt - catchUp;
+    animation.pausedAt = 0;
   }
   if (!resumed) animation.needsForegroundReconciliation = true;
   return resumed;
@@ -421,8 +437,8 @@ void freezeBackdropsInto(const DriverState &state, Presentation &presentation) {
 
 // Runs the pending animation's backdrop channel on every bound backdrop, on
 // the same epoch as the clip's group. An inherited spring velocity was
-// resolved once by the registry before dispatch (resolvedSpringVelocity), so
-// `active.spring` carries the same trajectory the clip host runs.
+// resolved once by the registry before dispatch (inheritedVelocityFor, per
+// driver), so `active.spring` carries the same trajectory the clip host runs.
 void installBackdropAnimations(
     const DriverState &state,
     CFTimeInterval sharedBeginTime) {
@@ -460,6 +476,16 @@ void emitCompletion(
       ? state.animation->completionTag
       : 0;
   state.animation.reset();
+  // A flying host lands once the run is gone. A finished run is never being
+  // replaced, so its host lands here, before the completion below reads the
+  // registry: a handoff resets the driver to rest through settleFlightHost
+  // (no other registry call), and JS receives the frame the host shows, as
+  // on Android. Any other end defers the landing to the main queue, so that
+  // a replacement run that follows in this same call continues the lift.
+  const std::vector<ViewKey> views = state.views;
+  for (const ViewKey key : views) {
+    [viewForKey(key) smoothClipFlightRunDidEnd:finished];
+  }
   if (groupId != 0) {
     groupMemberCompleted(groupId, driverId, finished);
     return;
@@ -611,18 +637,49 @@ bool driverReady(const DriverState &state) {
   if (state.destroyed) return false;
   for (const ViewKey key : state.views) {
     SmoothClipView *view = viewForKey(key);
-    if ([view smoothClipCanDisplay] && view.layer.presentationLayer != nil) {
+    if ([view smoothClipCanDisplay] &&
+        [view smoothClipRenderLayer].presentationLayer != nil) {
       return true;
     }
   }
   return false;
 }
 
-double resolvedSpringVelocity(
+// A started run's progress along its own curve at media time `at`: read at
+// `at - beginTime`, or at `pausedAt` while a spring is paused for inactivity
+// (its layers hold that frame). Springs use what Core Animation runs.
+RunProgress startedRunProgressAt(
+    const ActiveAnimation &run,
+    CFTimeInterval at) {
+  const double elapsedS =
+      (run.pausedAt > 0 ? run.pausedAt : at) - run.beginTime;
+  return run.kind == AnimationKind::Spring
+      ? coreAnimationSpringRunProgress(run.spring, elapsedS)
+      : timingRunProgress(run.timing, elapsedS);
+}
+
+// `velocity: 'inherit'` for one driver (flight-spec.md), resolved before the
+// call changes anything, against the start the new run begins at and its
+// target:
+//   1. a started run that the call replaces hands over its own velocity at
+//      `at`, the call: its curve read at `at - beginTime`, projected onto
+//      the new run's displacement (start -> target);
+//   2. otherwise the motion of the frames an interaction wrote;
+//   3. otherwise 0.
+// Same units as an explicit velocity: 1 covers the remaining distance in one
+// second. The math is shared with Android (cpp/SmoothClipFlightGeometry.h).
+double inheritedVelocityFor(
     const DriverState &state,
+    const Presentation &start,
     const Presentation &target,
-    const SpringAnimation &spring) {
-  if (!spring.inheritVelocity) return spring.initialVelocity;
+    CFTimeInterval at) {
+  if (state.animation.has_value() && state.animation->started) {
+    const ActiveAnimation &run = *state.animation;
+    // A started run's target is the driver's latest presentation.
+    return inheritedRunVelocityFrom(
+        run.start, state.latest, startedRunProgressAt(run, at), start,
+        target);
+  }
   for (const ViewKey key : state.views) {
     SmoothClipView *view = viewForKey(key);
     if ([view smoothClipIsJoinable]) {
@@ -630,6 +687,85 @@ double resolvedSpringVelocity(
     }
   }
   return 0;
+}
+
+double resolvedSpringVelocity(
+    const DriverState &state,
+    const Presentation &start,
+    const Presentation &target,
+    const SpringAnimation &spring) {
+  if (!spring.inheritVelocity) return spring.initialVelocity;
+  return inheritedVelocityFor(state, start, target, CACurrentMediaTime());
+}
+
+// What a flight host shows right now, with the driver's backdrop channel: a
+// handoff puts the host back there. Read before a pending run is marked
+// started, so a run's own start never counts as the rest.
+Presentation flightRestPresentation(
+    const DriverState &state,
+    SmoothClipView *view) {
+  Presentation rest = [view smoothClipCurrentPresentation];
+  overlayBackdrop(state, rest);
+  return rest;
+}
+
+bool flightWayBackStart(const DriverState &state, Presentation &start);
+void applyPresentation(
+    DriverState &state,
+    Presentation presentation,
+    bool recordVelocitySample);
+
+// Lifts the driver's flight hosts into the window's flight layer: before a
+// run's start applies, or when an interaction begins (spec: Lift). An
+// interaction on a host whose flight handed off to a target that is still
+// attached and visible starts where that flight landed, as a run on the way
+// back does: the lift hides the target, so the content must not jump back to
+// the rest frame.
+void liftFlightHosts(DriverState &state, bool interaction) {
+  Presentation landed;
+  const bool wayBack = interaction && flightWayBackStart(state, landed);
+  for (const ViewKey key : state.views) {
+    SmoothClipView *view = viewForKey(key);
+    if (![view smoothClipFlightWantsLift]) continue;
+    const Presentation rest = [view smoothClipFlightLifted]
+        ? state.latest
+        : flightRestPresentation(state, view);
+    [view smoothClipLiftForFlightWithRest:rest interaction:interaction];
+  }
+  if (wayBack) applyPresentation(state, landed, false);
+}
+
+// Window-space input (SmoothClipPresentation.space = 'window') in host space,
+// through the driver's host transform to its window: the one captured at
+// lift while the host flies, the model one otherwise. False without a host,
+// or when the transform rotates, skews or scales unevenly.
+bool resolveWindowSpace(uint64_t driverId, Presentation &presentation) {
+  const auto iterator = registry().find(driverId);
+  if (iterator == registry().end() || iterator->second.views.empty()) {
+    return false;
+  }
+  SmoothClipView *host = viewForKey(iterator->second.views.front());
+  HostWindowTransform transform;
+  if (![host smoothClipWindowTransform:&transform]) return false;
+  const CGSize size = host.bounds.size;
+  presentation = presentationFromWindowSpace(
+      presentation, transform, size.width, size.height);
+  return true;
+}
+
+// The way back (spec: The way back): where the host's last flight landed,
+// while the target it handed off to is attached and visible.
+bool flightWayBackStart(const DriverState &state, Presentation &start) {
+  if (state.animation.has_value()) return false;
+  for (const ViewKey key : state.views) {
+    Presentation landed;
+    if ([viewForKey(key) smoothClipFlightWayBackFrom:&landed] &&
+        canonicalizePresentation(landed)) {
+      start = landed;
+      return true;
+    }
+  }
+  return false;
 }
 
 DriverSnapshot snapshotForDriver(uint64_t driverId) {
@@ -697,7 +833,8 @@ std::vector<DriverSnapshot> cancelGroupInternal(
     const bool ready = driverReady(state);
     emitCompletion(
         driverId, state, animationId, completionFinished);
-    snapshots.push_back({driverId, resolved, ready});
+    // A finished flight that handed off is back at rest now.
+    snapshots.push_back({driverId, state.latest, ready});
   }
 
   groupIterator = groupRegistry().find(groupId);
@@ -876,6 +1013,8 @@ void startPendingAnimation(DriverState &state) {
     return;
   }
   state.animation->started = true;
+  // The views install with no shared epoch: they begin now.
+  state.animation->beginTime = CACurrentMediaTime();
   // Participants describe live CA delegates, not registered views. Anything
   // left from the frozen run can only produce a stale callback for that run.
   state.animation->participants.clear();
@@ -907,24 +1046,24 @@ void tryStartGroup(int32_t groupId) {
     }
   }
 
-  // Anchor the run to the UI frame that started it when JS stamped one
-  // (Reanimated's target vsync): a `withTiming` begun in that same frame and
-  // this Core Animation run then trace one epoch, instead of the run leading
-  // by the rest of the frame. A recent stale stamp (a run held pending until
-  // its host could display) starts partway through, as that JS clock did; one
-  // outside the sanity window starts now.
-  const CFTimeInterval now = CACurrentMediaTime();
-  const CFTimeInterval hint = groupIterator->second.beginTimeHint;
-  const CFTimeInterval sharedBeginTime =
-      hint > 0 && hint <= now + kMaxBeginTimeLeadS &&
-          hint >= now - kStartStampSanityWindowS
-      ? hint : now;
+  // Every participant begins at this install, on one epoch, as a Core
+  // Animation run committed now would: its first frame drawn already moves,
+  // and no frame skips ahead. The caller's frame stamp is not used. It names
+  // the display link's target vsync, which can lie a frame on either side of
+  // the install, so a `withTiming` begun in the same UI frame can lead or
+  // trail this run by up to a frame. Code that continues from the run reads
+  // the frame `beginInteraction()` returns, not a model of it.
+  const CFTimeInterval sharedBeginTime = CACurrentMediaTime();
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   for (const uint64_t driverId : driverIds) {
     DriverState &state = registry().find(driverId)->second;
+    // Flight hosts leave their screen in the run's own transaction, from
+    // what they show now, before the start applies.
+    liftFlightHosts(state, false);
     ActiveAnimation &active = *state.animation;
     active.started = true;
+    active.beginTime = sharedBeginTime;
     active.participants.clear();
     const Presentation start = active.start;
     for (const ViewKey key : state.views) {
@@ -1277,6 +1416,7 @@ Presentation beginInteraction(uint64_t driverId) {
   state.destroyed = false;
   if (!state.animation.has_value()) {
     state.ownership = Ownership::Interactive;
+    liftFlightHosts(state, true);
     return state.latest;
   }
 
@@ -1285,9 +1425,9 @@ Presentation beginInteraction(uint64_t driverId) {
     cancelGroupInternal(
         groupId, GroupCancelBehavior::Freeze, false);
     const auto current = registry().find(driverId);
-    return current == registry().end()
-        ? unavailablePresentation()
-        : current->second.latest;
+    if (current == registry().end()) return unavailablePresentation();
+    liftFlightHosts(current->second, true);
+    return current->second.latest;
   }
 
   const int32_t animationId = state.animation->animationId;
@@ -1296,7 +1436,8 @@ Presentation beginInteraction(uint64_t driverId) {
   state.hasLatest = true;
   state.ownership = Ownership::Interactive;
   emitCompletion(driverId, state, animationId, false);
-  return canonical;
+  liftFlightHosts(state, true);
+  return state.latest;
 }
 
 Presentation snapshotCurrent(uint64_t driverId) {
@@ -1363,6 +1504,9 @@ std::vector<DriverSnapshot> beginGroupInteraction(
     DriverState &state = registry().find(driverId)->second;
     state.destroyed = false;
     state.ownership = Ownership::Interactive;
+    // A flight host follows the interaction in the flight layer; the next
+    // run continues in the same lift.
+    liftFlightHosts(state, true);
     snapshots.push_back(
         {driverId, state.latest, driverReady(state)});
   }
@@ -1373,6 +1517,13 @@ bool setPresentationBatch(const std::vector<BatchEntry> &entries) {
   if (!NSThread.isMainThread) return false;
   std::vector<BatchEntry> canonicalEntries = entries;
   for (BatchEntry &entry : canonicalEntries) {
+    // Window-space frames resolve before anything else; one that cannot
+    // (no host, or a rotated one) rejects the whole batch.
+    if (entry.inWindow &&
+        !resolveWindowSpace(entry.driverId, entry.presentation)) {
+      return false;
+    }
+    entry.inWindow = false;
     if (!canonicalizePresentation(entry.presentation)) return false;
   }
   std::unordered_set<uint64_t> unique;
@@ -1408,8 +1559,11 @@ bool setPresentationBatch(const std::vector<BatchEntry> &entries) {
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   for (const BatchEntry &entry : canonicalEntries) {
-    applyPresentation(
-        registry().find(entry.driverId)->second, entry.presentation, true);
+    DriverState &state = registry().find(entry.driverId)->second;
+    applyPresentation(state, entry.presentation, true);
+    for (const ViewKey key : state.views) {
+      [viewForKey(key) smoothClipFlightForgetLanding];
+    }
   }
   [CATransaction commit];
   return true;
@@ -1425,7 +1579,8 @@ bool preflightGroupEntries(
     double durationMs,
     int32_t reduceMotion,
     bool &reduced,
-    std::vector<Presentation> &resolvedStarts) {
+    std::vector<Presentation> &resolvedStarts,
+    std::vector<double> &velocities) {
   if (entries.empty()) return false;
   for (GroupMotionEntry &entry : entries) {
     if ((entry.hasFrom && !canonicalizePresentation(entry.from)) ||
@@ -1437,8 +1592,7 @@ bool preflightGroupEntries(
       !isValidTiming(timing)) {
     return false;
   }
-  if (kind == AnimationKind::Spring &&
-      (!isValidSpring(spring) || spring.inheritVelocity)) {
+  if (kind == AnimationKind::Spring && !isValidSpring(spring)) {
     return false;
   }
   reduced = shouldReduceMotion(reduceMotion) ||
@@ -1446,31 +1600,54 @@ bool preflightGroupEntries(
   std::unordered_set<uint64_t> unique;
   resolvedStarts.clear();
   resolvedStarts.reserve(entries.size());
+  velocities.clear();
+  velocities.reserve(entries.size());
+  // One clock reading for the whole call: every replaced run hands over its
+  // motion at the same instant, now, and the new run begins at its install
+  // from what the host shows then.
+  const CFTimeInterval now = CACurrentMediaTime();
   for (const GroupMotionEntry &entry : entries) {
     if (entry.driverId == 0 || !unique.insert(entry.driverId).second) {
       return false;
     }
     const auto iterator = registry().find(entry.driverId);
-    if ((iterator == registry().end() || iterator->second.destroyed ||
-         !iterator->second.hasLatest) && !entry.hasFrom) {
+    const bool hasState = iterator != registry().end() &&
+        !iterator->second.destroyed && iterator->second.hasLatest;
+    if (!hasState && !entry.hasFrom) {
       return false;
     }
-    const Presentation resolvedStart = entry.hasFrom
-        ? entry.from
-        : canonicalVisiblePresentation(iterator->second);
+    Presentation resolvedStart;
+    bool wayBack = false;
+    if (entry.hasFrom) {
+      resolvedStart = entry.from;
+    } else if (flightWayBackStart(iterator->second, resolvedStart)) {
+      wayBack = true;
+    } else {
+      resolvedStart = canonicalVisiblePresentation(iterator->second);
+    }
     if (!isFinitePresentation(resolvedStart) ||
         !isFinitePresentation(entry.target) ||
         !isAutonomousUniformPair(resolvedStart, entry.target)) {
       return false;
     }
+    double velocity = 0;
     if (kind == AnimationKind::Spring) {
-      const double velocity = spring.initialVelocity;
-      if (!springScaleStaysPositive(
+      // `velocity: 'inherit'`, per driver. The way back starts on the target
+      // where the flight landed, a frame nothing moved to: it inherits 0, as
+      // a driver with no state does.
+      velocity = !spring.inheritVelocity ? spring.initialVelocity
+          : hasState && !wayBack
+          ? inheritedVelocityFor(
+                iterator->second, resolvedStart, entry.target, now)
+          : 0.0;
+      if (!std::isfinite(velocity) ||
+          !springScaleStaysPositive(
               resolvedStart, entry.target, spring, velocity)) {
         return false;
       }
     }
     resolvedStarts.push_back(resolvedStart);
+    velocities.push_back(velocity);
   }
   return true;
 }
@@ -1510,12 +1687,26 @@ int32_t createGroupAnimation(
     SpringAnimation spring,
     double durationMs,
     int32_t reduceMotion,
-    int32_t completionTag,
-    double startedAtHintS) {
+    int32_t completionTag) {
   std::vector<Presentation> resolvedStarts;
+  std::vector<double> velocities;
   bool reduced = false;
-  if (!NSThread.isMainThread || controllerId == 0 ||
-      !preflightGroupEntries(
+  if (!NSThread.isMainThread || controllerId == 0) return 0;
+  // Window-space endpoints resolve before preflight and canonicalization,
+  // through each driver's host; one that cannot rejects the whole call.
+  for (GroupMotionEntry &entry : entries) {
+    if (entry.targetInWindow &&
+        !resolveWindowSpace(entry.driverId, entry.target)) {
+      return 0;
+    }
+    if (entry.hasFrom && entry.fromInWindow &&
+        !resolveWindowSpace(entry.driverId, entry.from)) {
+      return 0;
+    }
+    entry.targetInWindow = false;
+    entry.fromInWindow = false;
+  }
+  if (!preflightGroupEntries(
           entries,
           kind,
           timing,
@@ -1523,7 +1714,8 @@ int32_t createGroupAnimation(
           durationMs,
           reduceMotion,
           reduced,
-          resolvedStarts)) {
+          resolvedStarts,
+          velocities)) {
     return 0;
   }
 
@@ -1563,9 +1755,6 @@ int32_t createGroupAnimation(
       driverIds,
       std::unordered_set<uint64_t>(driverIds.begin(), driverIds.end()),
   };
-  if (std::isfinite(startedAtHintS) && startedAtHintS > 0) {
-    group.beginTimeHint = startedAtHintS;
-  }
   groupRegistry().emplace(groupId, std::move(group));
 
   for (std::size_t entryIndex = 0; entryIndex < entries.size(); entryIndex += 1) {
@@ -1591,7 +1780,9 @@ int32_t createGroupAnimation(
     active.timing = timing;
     active.spring = spring;
     if (kind == AnimationKind::Spring) {
-      active.spring.initialVelocity = spring.initialVelocity;
+      // Each driver runs with its own resolved velocity; the backdrop
+      // channel follows the same trajectory.
+      active.spring.initialVelocity = velocities[entryIndex];
       active.spring.inheritVelocity = false;
     }
     active.started = false;
@@ -1603,12 +1794,14 @@ int32_t createGroupAnimation(
 
 } // namespace
 
+// The frame stamp is Android's (its frame loop advances from it); a run here
+// begins at its install (tryStartGroup).
 int32_t animateTimingGroup(
     uint64_t controllerId,
     std::vector<GroupMotionEntry> entries,
     TimingAnimation animation,
     int32_t completionTag,
-    double startedAtHintS) {
+    double /* startedAtHintS */) {
   return createGroupAnimation(
       controllerId,
       std::move(entries),
@@ -1617,8 +1810,7 @@ int32_t animateTimingGroup(
       {},
       animation.durationMs,
       animation.reduceMotion,
-      completionTag,
-      startedAtHintS);
+      completionTag);
 }
 
 int32_t animateSpringGroup(
@@ -1626,7 +1818,7 @@ int32_t animateSpringGroup(
     std::vector<GroupMotionEntry> entries,
     SpringAnimation animation,
     int32_t completionTag,
-    double startedAtHintS) {
+    double /* startedAtHintS */) {
   return createGroupAnimation(
       controllerId,
       std::move(entries),
@@ -1635,8 +1827,7 @@ int32_t animateSpringGroup(
       animation,
       0,
       animation.reduceMotion,
-      completionTag,
-      startedAtHintS);
+      completionTag);
 }
 
 std::vector<DriverSnapshot> cancelAnimationGroup(
@@ -1712,6 +1903,7 @@ int32_t animateTiming(
   active.start = resolvedStart;
   active.timing = animation;
   active.started = anyDisplayableView(state);
+  if (active.started) active.beginTime = CACurrentMediaTime();
   state.animation = std::move(active);
   if (!state.animation->started) {
     // No host can display yet. Ownership stays Native and the first
@@ -1771,7 +1963,8 @@ int32_t animateSpring(
   }
   const double velocity = iterator == registry().end()
       ? animation.initialVelocity
-      : resolvedSpringVelocity(iterator->second, presentation, animation);
+      : resolvedSpringVelocity(
+            iterator->second, preflightStart, presentation, animation);
   if (!isFinitePresentation(preflightStart) ||
       preflightStart.clip.curve != presentation.clip.curve ||
       !springScaleStaysPositive(
@@ -1804,6 +1997,7 @@ int32_t animateSpring(
   active.spring.initialVelocity = velocity;
   active.spring.inheritVelocity = false;
   active.started = anyDisplayableView(state);
+  if (active.started) active.beginTime = CACurrentMediaTime();
   state.animation = std::move(active);
   if (!state.animation->started) {
     // Pending until the first displayable view — see animateTiming.
@@ -1918,6 +2112,11 @@ void destroyDriver(uint64_t driverId) {
   }  auto iterator = registry().find(driverId);
   if (iterator == registry().end()) return;
   auto &state = iterator->second;
+  // A route unmount destroys the controller while its hero flies back in
+  // the flight layer: that flight lands on its own (host loss).
+  for (const ViewKey key : state.views) {
+    [viewForKey(key) smoothClipDetachFlightForHostLoss];
+  }
   cancelActive(driverId, state, false);
   // A destroyed driver's interaction history must not seed a revived
   // incarnation: the revival seed would otherwise pair with these samples and
@@ -1935,6 +2134,28 @@ void destroyDriver(uint64_t driverId) {
     state.destroyed = true;
     state.ownership = Ownership::Interactive;
   }
+}
+
+bool settleFlightHost(
+    uint64_t driverId,
+    Presentation rest,
+    Presentation &landed) {
+  NSCAssert(NSThread.isMainThread, @"SmoothClip registry is main-thread only");
+  if (!canonicalizePresentation(rest)) return false;
+  auto iterator = registry().find(driverId);
+  if (iterator == registry().end() || iterator->second.destroyed ||
+      iterator->second.animation.has_value()) {
+    return false;
+  }
+  DriverState &state = iterator->second;
+  landed = state.latest;
+  applyPresentation(state, rest, false);
+  // No finger made this jump, and the frames before the flight no longer
+  // describe the host: a later 'inherit' starts from nothing (as Android).
+  for (const ViewKey key : state.views) {
+    [viewForKey(key) smoothClipClearVelocitySamples];
+  }
+  return true;
 }
 
 void viewAnimationDidStop(

@@ -24,6 +24,19 @@ struct JSmoothClipView : facebook::jni::JavaClass<JSmoothClipView> {
       double contentScale,
       const Shadow &shadowPx, double rotation, double opacity) const;
   void setAutonomousMotion(bool active) const;
+
+  // Flights (android/.../SmoothClipFlight.kt). Codes match the Kotlin
+  // FLIGHT_LIFT_* / FLIGHT_LAND_* constants.
+  // `interaction`: beginInteraction lifts it, and no run drives it.
+  int32_t flightLift(bool interaction) const;
+  // `finished`: the run reached its end (or a cancel finished it there); a
+  // cancelled run never hands off.
+  int32_t flightRunEnded(bool finished) const;
+  bool flightWayBackAvailable() const;
+  // The host's transform to its window as [a, b, c, d, tx, ty, width,
+  // height], translation and size in DIP (the transform captured at lift for
+  // an airborne host). False when the hierarchy cannot be expressed in 2D.
+  bool flightWindowTransform(double (&values)[8]) const;
 };
 
 // fbjni wrapper around com.smoothclipview.SmoothClipBackdropView: a view the
@@ -77,6 +90,12 @@ void setViewLifecycleVisibilityAndroid(
     facebook::jni::alias_ref<JSmoothClipView> view,
     bool lifecycleVisible);
 void setApplicationActiveAndroid(bool active);
+
+// A held flight landing handed off outside a registry call: resets the host
+// to the rest presentation captured at lift and remembers the landed one.
+void flightHandedOffAndroid(
+    uint64_t driverId,
+    facebook::jni::alias_ref<JSmoothClipView> view);
 
 // Advances the registry frame loop. Called from Kotlin (SmoothClipBindings)
 // inside Choreographer#doFrame with the frame's vsync timestamp converted to

@@ -1,14 +1,20 @@
 #import <XCTest/XCTest.h>
 
 #import "SmoothClipBackdropView.h"
+#import "SmoothClipFlight.h"
+#import "SmoothClipFlightTargetView.h"
 #import "SmoothClipView.h"
 #import "SmoothClipViewRegistry.h"
 
 #import <QuartzCore/QuartzCore.h>
+#import <React/RCTMountingTransactionObserving.h>
 #import <react/renderer/components/SmoothClipViewSpec/Props.h>
 #import <react/renderer/core/LayoutMetrics.h>
+#import <react/renderer/mounting/MountingTransaction.h>
+#import <react/renderer/telemetry/SurfaceTelemetry.h>
 
 #include "SmoothClipAnimationCurve.h"
+#include "SmoothClipFlightGeometry.h"
 
 #include <cmath>
 #include <unistd.h>
@@ -21,6 +27,10 @@
 - (BOOL)smoothClipAnimateSpring:(smoothclip::Presentation)presentation
                      animation:(smoothclip::SpringAnimation)animation
                    animationId:(int32_t)animationId;
+- (BOOL)smoothClipAnimateSpring:(smoothclip::Presentation)presentation
+                     animation:(smoothclip::SpringAnimation)animation
+                   animationId:(int32_t)animationId
+               sharedBeginTime:(CFTimeInterval)beginTime;
 - (BOOL)smoothClipPauseSpringAnimation:(int32_t)animationId atMediaTime:(CFTimeInterval)mediaTime;
 - (BOOL)smoothClipResumeSpringAnimation:(int32_t)animationId atMediaTime:(CFTimeInterval)mediaTime
                             catchUpBy:(CFTimeInterval)catchUp;
@@ -3320,24 +3330,34 @@ static CGFloat TileAlphaOutsideShape(
   XCTAssertEqualWithAccuracy(content.transform.m42, -6, 1e-6);
   XCTAssertNil([content animationForKey:@"smoothClip.backdrop"]);
 
-  // A run adds a translation group on the clip's stamped epoch, backwards
-  // filled, with the model already at the target.
+  // A run adds a translation group on the clip's epoch, its install, with the
+  // model already at the target.
   smoothclip::Presentation target = PresentationValue(
       0, 0, 400, 400, 20, 20, 20, 20,
       smoothclip::ClipCurve::Continuous, 0, 0, 1);
   target.backdropTranslateX = 0;
   target.backdropTranslateY = 0;
   const smoothclip::TimingAnimation timing{400, 1.0 / 3.0, 1, 2.0 / 3.0, 1, 2};
-  const CFTimeInterval stamped = CACurrentMediaTime() + 1.0 / 60.0;
+  const CFTimeInterval before = CACurrentMediaTime();
   int32_t groupId = smoothclip::animateTimingGroup(
-      7100, {GroupEntry(driverId, true, frame, target)}, timing, 0, stamped);
+      7100, {GroupEntry(driverId, true, frame, target)}, timing);
+  const CFTimeInterval after = CACurrentMediaTime();
   XCTAssertGreaterThan(groupId, 0);
   CAAnimationGroup *group =
       (CAAnimationGroup *)[content animationForKey:@"smoothClip.backdrop"];
   XCTAssertNotNil(group);
+  const CFTimeInterval backdropBegin =
+      [content convertTime:group.beginTime toLayer:nil];
+  XCTAssertGreaterThanOrEqual(backdropBegin, before);
+  XCTAssertLessThanOrEqual(backdropBegin, after);
+  CALayer *clipLayer = ((UIView *)[host valueForKey:@"clipContainer"]).layer;
   XCTAssertEqualWithAccuracy(
-      [content convertTime:group.beginTime toLayer:nil], stamped, 1e-6);
-  XCTAssertEqualObjects(group.fillMode, kCAFillModeBackwards);
+      backdropBegin,
+      [clipLayer
+          convertTime:[clipLayer animationForKey:@"smoothClip.geometry"]
+                          .beginTime
+              toLayer:nil],
+      1e-9);
   XCTAssertEqualWithAccuracy(group.duration, 0.4, 1e-9);
   NSMutableSet<NSString *> *keyPaths = [NSMutableSet set];
   for (CAPropertyAnimation *animation in group.animations) {
@@ -3383,7 +3403,41 @@ static CGFloat TileAlphaOutsideShape(
   smoothclip::destroyDriver(driverId);
 }
 
-- (void)testStampedEpochBecomesTheSharedBeginTime {
+// The media time the host's installed run begins at.
+static CFTimeInterval InstalledBeginTime(SmoothClipView *host) {
+  CALayer *layer = ((UIView *)[host valueForKey:@"clipContainer"]).layer;
+  CAAnimation *geometry = [layer animationForKey:@"smoothClip.geometry"];
+  return geometry == nil ? NAN
+                         : [layer convertTime:geometry.beginTime toLayer:nil];
+}
+
+// Lets `seconds` of media time pass with what was installed committed. A
+// group run begins at its install, so a run partway through takes real time.
+static void Elapse(double seconds) {
+  [CATransaction flush];
+  usleep(static_cast<useconds_t>(seconds * 1e6));
+}
+
+// The media time every layer of the host's run begins at: the clip's and the
+// content's, which must agree.
+- (CFTimeInterval)sharedBeginTimeOf:(SmoothClipView *)host {
+  CALayer *clip = ((UIView *)[host valueForKey:@"clipContainer"]).layer;
+  CALayer *content = ((UIView *)[host valueForKey:@"contentContainer"]).layer;
+  CAAnimation *geometry = [clip animationForKey:@"smoothClip.geometry"];
+  CAAnimation *contentGroup = [content animationForKey:@"smoothClip.content"];
+  XCTAssertNotNil(geometry);
+  XCTAssertNotNil(contentGroup);
+  const CFTimeInterval begin = [clip convertTime:geometry.beginTime toLayer:nil];
+  XCTAssertEqualWithAccuracy(
+      [content convertTime:contentGroup.beginTime toLayer:nil], begin, 1e-9);
+  return begin;
+}
+
+// A group run begins at its install, whatever frame stamp the caller passed:
+// none, the vsync just passed or still to come, far ahead, stale. Begun at a
+// stamp ahead, the first frame drawn would repeat the start; at one behind,
+// it would skip ahead of the frame on screen.
+- (void)testAGroupBeginsAtItsInstallWhateverItsStamp {
   constexpr uint64_t driverId = 99081;
   UIWindow *window = TestWindow();
   SmoothClipView *host =
@@ -3396,96 +3450,1794 @@ static CGFloat TileAlphaOutsideShape(
       20, 30, 140, 100, 20, 20, 20, 20,
       smoothclip::ClipCurve::Continuous, 8, -6, 0.7);
   smoothclip::registerView(driverId, host, initial);
-  CALayer *layer = ((UIView *)[host valueForKey:@"clipContainer"]).layer;
   const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
 
-  // A frame stamp from the UI frame that started the run, one frame ahead of
-  // this commit the way Reanimated's target-vsync stamp is.
-  const CFTimeInterval stamped = CACurrentMediaTime() + 1.0 / 60.0;
-  int32_t groupId = smoothclip::animateTimingGroup(
-      7091, {GroupEntry(driverId, true, initial, target)}, timing, 0,
-      stamped);
-  XCTAssertGreaterThan(groupId, 0);
-  CAAnimationGroup *geometry = (CAAnimationGroup *)[layer
-      animationForKey:@"smoothClip.geometry"];
-  XCTAssertNotNil(geometry);
-  XCTAssertEqualWithAccuracy(
-      [layer convertTime:geometry.beginTime toLayer:nil], stamped, 1e-6);
-  // Until that epoch the run presents its first frame, not the target model.
-  XCTAssertEqualObjects(geometry.fillMode, kCAFillModeBackwards);
-  CAAnimationGroup *content = (CAAnimationGroup *)[((UIView *)[host
-      valueForKey:@"contentContainer"]).layer
-      animationForKey:@"smoothClip.content"];
-  XCTAssertNotNil(content);
-  XCTAssertEqualWithAccuracy(
-      [((UIView *)[host valueForKey:@"contentContainer"]).layer
-          convertTime:content.beginTime
-              toLayer:nil],
-      stamped, 1e-6);
-  smoothclip::cancelAnimationGroup(
-      groupId, smoothclip::GroupCancelBehavior::Freeze);
-
-  // A value far ahead of the commit is not a frame stamp: start now.
-  const CFTimeInterval before = CACurrentMediaTime();
-  groupId = smoothclip::animateTimingGroup(
-      7092, {GroupEntry(driverId, true, initial, target)}, timing, 0,
-      before + 5);
-  XCTAssertGreaterThan(groupId, 0);
-  geometry = (CAAnimationGroup *)[layer animationForKey:@"smoothClip.geometry"];
-  XCTAssertNotNil(geometry);
-  const CFTimeInterval begin =
-      [layer convertTime:geometry.beginTime toLayer:nil];
-  XCTAssertGreaterThanOrEqual(begin, before);
-  XCTAssertLessThan(begin, before + 1);
-  smoothclip::cancelAnimationGroup(
-      groupId, smoothclip::GroupCancelBehavior::Freeze);
-
-  // A recent stale stamp (a run held pending until its host could display)
-  // starts partway through, as the Reanimated clock it mirrors did.
-  const CFTimeInterval recent = CACurrentMediaTime() - 0.5;
-  groupId = smoothclip::animateTimingGroup(
-      7096, {GroupEntry(driverId, true, initial, target)}, timing, 0,
-      recent);
-  XCTAssertGreaterThan(groupId, 0);
-  geometry = (CAAnimationGroup *)[layer animationForKey:@"smoothClip.geometry"];
-  XCTAssertNotNil(geometry);
-  XCTAssertEqualWithAccuracy(
-      [layer convertTime:geometry.beginTime toLayer:nil], recent, 1e-6);
-  smoothclip::cancelAnimationGroup(
-      groupId, smoothclip::GroupCancelBehavior::Freeze);
-
-  // A stamp behind the sanity window (a group held across an inactive app,
-  // a rescaled clock) would begin fully elapsed and snap: start now instead.
-  const CFTimeInterval staleBefore = CACurrentMediaTime();
-  groupId = smoothclip::animateTimingGroup(
-      7097, {GroupEntry(driverId, true, initial, target)}, timing, 0,
-      staleBefore - 5);
-  XCTAssertGreaterThan(groupId, 0);
-  geometry = (CAAnimationGroup *)[layer animationForKey:@"smoothClip.geometry"];
-  XCTAssertNotNil(geometry);
-  const CFTimeInterval staleBegin =
-      [layer convertTime:geometry.beginTime toLayer:nil];
-  XCTAssertGreaterThanOrEqual(staleBegin, staleBefore);
-  XCTAssertLessThan(staleBegin, staleBefore + 1);
-  smoothclip::cancelAnimationGroup(
-      groupId, smoothclip::GroupCancelBehavior::Freeze);
-
-  // No stamp keeps the install-time epoch.
-  const CFTimeInterval unstampedBefore = CACurrentMediaTime();
-  groupId = smoothclip::animateTimingGroup(
-      7093, {GroupEntry(driverId, true, initial, target)}, timing);
-  XCTAssertGreaterThan(groupId, 0);
-  geometry = (CAAnimationGroup *)[layer animationForKey:@"smoothClip.geometry"];
-  const CFTimeInterval unstamped =
-      [layer convertTime:geometry.beginTime toLayer:nil];
-  XCTAssertGreaterThanOrEqual(unstamped, unstampedBefore);
-  XCTAssertLessThan(unstamped, unstampedBefore + 1);
-  smoothclip::cancelAnimationGroup(
-      groupId, smoothclip::GroupCancelBehavior::Freeze);
+  for (const double offset :
+       {static_cast<double>(NAN), -1.0 / 60.0, 1.0 / 60.0, 5.0, -0.5, -5.0}) {
+    const CFTimeInterval before = CACurrentMediaTime();
+    const int32_t groupId = smoothclip::animateTimingGroup(
+        7091, {GroupEntry(driverId, true, initial, target)}, timing, 0,
+        before + offset);
+    const CFTimeInterval after = CACurrentMediaTime();
+    XCTAssertGreaterThan(groupId, 0);
+    const CFTimeInterval begin = [self sharedBeginTimeOf:host];
+    XCTAssertGreaterThanOrEqual(begin, before, @"offset %f", offset);
+    XCTAssertLessThanOrEqual(begin, after, @"offset %f", offset);
+    smoothclip::cancelAnimationGroup(
+        groupId, smoothclip::GroupCancelBehavior::Freeze);
+  }
 
   smoothclip::unregisterView(driverId, host);
   [host setValue:@0 forKey:@"driverId"];
   smoothclip::destroyDriver(driverId);
+}
+
+// A group that waits for its host (laid out, not yet in a window) begins at
+// the install that host's attach makes, not at the call's stamp: it starts
+// from its start, with its whole duration ahead.
+- (void)testAPendingGroupBeginsAtTheInstallItWaitedFor {
+  constexpr uint64_t driverId = 99082;
+  SmoothClipView *host =
+      [[SmoothClipView alloc] initWithFrame:CGRectMake(0, 0, 120, 120)];
+  facebook::react::LayoutMetrics metrics;
+  metrics.frame = facebook::react::Rect{
+      facebook::react::Point{0, 0}, facebook::react::Size{120, 120}};
+  [host updateLayoutMetrics:metrics
+           oldLayoutMetrics:facebook::react::LayoutMetrics{}];
+  [host setValue:@(driverId) forKey:@"driverId"];
+  const smoothclip::Presentation initial = Presentation(0, 0, 40, 40, 20, 5, 6);
+  const smoothclip::Presentation target =
+      Presentation(0, 0, 100, 100, 12, -20, -30);
+  smoothclip::registerView(driverId, host, initial);
+  const smoothclip::TimingAnimation timing{250, 0.42, 0, 0.58, 1, 2};
+
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7094, {GroupEntry(driverId, true, initial, target)}, timing, 0,
+      CACurrentMediaTime() - 1.0 / 60.0);
+  XCTAssertGreaterThan(groupId, 0);
+  XCTAssertTrue(isnan(InstalledBeginTime(host)));
+  usleep(50000);
+
+  UIWindow *window = TestWindow();
+  const CFTimeInterval before = CACurrentMediaTime();
+  [window addSubview:host];
+  const CFTimeInterval after = CACurrentMediaTime();
+  const CFTimeInterval begin = [self sharedBeginTimeOf:host];
+  XCTAssertGreaterThanOrEqual(begin, before);
+  XCTAssertLessThanOrEqual(begin, after);
+
+  smoothclip::cancelAnimationGroup(
+      groupId, smoothclip::GroupCancelBehavior::Freeze);
+  smoothclip::unregisterView(driverId, host);
+  [host setValue:@0 forKey:@"driverId"];
+  smoothclip::destroyDriver(driverId);
+}
+
+#pragma mark - Flights (docs/flight-spec.md)
+
+// A flight host as Fabric mounts it: laid out at `frame` in `parent`, with
+// the codegen props for its driver, its initial presentation and `flight`.
+static SmoothClipView *FlightHost(
+    UIView *parent,
+    CGRect frame,
+    uint64_t driverId,
+    const char *tag,
+    const smoothclip::Presentation &initial) {
+  SmoothClipView *view = [[SmoothClipView alloc] initWithFrame:frame];
+  facebook::react::LayoutMetrics metrics;
+  metrics.frame = facebook::react::Rect{
+      facebook::react::Point{frame.origin.x, frame.origin.y},
+      facebook::react::Size{frame.size.width, frame.size.height}};
+  [view updateLayoutMetrics:metrics
+           oldLayoutMetrics:facebook::react::LayoutMetrics{}];
+  [parent addSubview:view];
+  auto props = std::make_shared<facebook::react::SmoothClipViewProps>();
+  props->driverId = driverId;
+  props->initialClipX = initial.clip.x;
+  props->initialClipY = initial.clip.y;
+  props->initialClipWidth = initial.clip.width;
+  props->initialClipHeight = initial.clip.height;
+  props->initialClipTopLeftRadius = initial.clip.radius;
+  props->initialClipTopRightRadius = initial.clip.radius;
+  props->initialClipBottomRightRadius = initial.clip.radius;
+  props->initialClipBottomLeftRadius = initial.clip.radius;
+  props->initialClipCurve = 0;
+  props->initialContentTranslateX = initial.contentTranslateX;
+  props->initialContentTranslateY = initial.contentTranslateY;
+  props->initialContentScale = initial.contentScale;
+  props->flightEnabled = true;
+  props->flightTag = tag;
+  [view updateProps:props oldProps:facebook::react::Props::Shared{}];
+  return view;
+}
+
+static void SetFlightTargetProps(
+    SmoothClipFlightTargetView *target,
+    const char *tag,
+    bool ready) {
+  auto props =
+      std::make_shared<facebook::react::SmoothClipFlightTargetProps>();
+  props->flightTag = tag;
+  props->ready = ready;
+  [target updateProps:props oldProps:facebook::react::Props::Shared{}];
+}
+
+// `<SmoothClipFlightTarget tag ready>`, attached to `parent` when given.
+static SmoothClipFlightTargetView *FlightTarget(
+    UIView *parent,
+    CGRect frame,
+    const char *tag,
+    bool ready = true) {
+  SmoothClipFlightTargetView *target =
+      [[SmoothClipFlightTargetView alloc] initWithFrame:frame];
+  SetFlightTargetProps(target, tag, ready);
+  if (parent != nil) [parent addSubview:target];
+  return target;
+}
+
+// The target's inner container: the only view the flight hides.
+static UIView *TargetContent(SmoothClipFlightTargetView *target) {
+  return target.subviews.firstObject;
+}
+
+static UIView *PresentationContainer(SmoothClipView *host) {
+  return (UIView *)[host valueForKey:@"presentationContainer"];
+}
+
+// Lets landings scheduled after a run ends (dispatch to main) run.
+static void DrainMainQueue(void) {
+  [[NSRunLoop mainRunLoop]
+      runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+}
+
+static const smoothclip::TimingAnimation kFlightTiming{
+    5000, 0.42, 0, 0.58, 1, 2};
+
+- (void)testFlightLiftDrawsTheCarrierThroughTheHostTransform {
+  constexpr uint64_t driverId = 99201;
+  UIWindow *window = TestWindow();
+  // A press-scale or a scaled presenter: every point of the host shows at
+  // 0.9 about the container's centre.
+  UIView *scaled = [[UIView alloc] initWithFrame:window.bounds];
+  scaled.transform = CGAffineTransformMakeScale(0.9, 0.9);
+  [window addSubview:scaled];
+  const smoothclip::Presentation rest = Presentation(0, 0, 200, 150, 12);
+  SmoothClipView *host = FlightHost(
+      scaled, CGRectMake(30, 60, 200, 150), driverId, "", rest);
+  const smoothclip::Presentation target = Presentation(-10, -20, 300, 260, 0);
+
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7201, {GroupEntry(driverId, false, rest, target)}, kFlightTiming);
+  XCTAssertGreaterThan(groupId, 0);
+
+  UIView *presentation = PresentationContainer(host);
+  UIView *carrier = presentation.superview;
+  XCTAssertNotEqual(carrier, host);
+  UIView *flightLayer = carrier.superview;
+  XCTAssertEqual(flightLayer.superview, window);
+  XCTAssertEqual(flightLayer.layer.zPosition, 1000);
+  XCTAssertTrue(flightLayer.accessibilityElementsHidden);
+  XCTAssertFalse(flightLayer.userInteractionEnabled);
+
+  const CGAffineTransform transform = carrier.layer.affineTransform;
+  const CGPoint origin = [host convertPoint:CGPointZero toView:window];
+  XCTAssertEqualWithAccuracy(origin.x, 47, 1e-9);
+  XCTAssertEqualWithAccuracy(origin.y, 94, 1e-9);
+  XCTAssertEqualWithAccuracy(transform.a, 0.9, 1e-9);
+  XCTAssertEqualWithAccuracy(transform.d, 0.9, 1e-9);
+  XCTAssertEqualWithAccuracy(transform.b, 0, 1e-9);
+  XCTAssertEqualWithAccuracy(transform.c, 0, 1e-9);
+  XCTAssertEqualWithAccuracy(transform.tx, origin.x, 1e-9);
+  XCTAssertEqualWithAccuracy(transform.ty, origin.y, 1e-9);
+  // Every host point draws where it drew in the host: no jump at the lift.
+  for (const CGPoint point :
+       {CGPointMake(0, 0), CGPointMake(17, 23), CGPointMake(200, 150)}) {
+    const CGPoint flying = [carrier convertPoint:point toView:window];
+    const CGPoint resting = [host convertPoint:point toView:window];
+    XCTAssertEqualWithAccuracy(flying.x, resting.x, 1e-9);
+    XCTAssertEqualWithAccuracy(flying.y, resting.y, 1e-9);
+  }
+
+  smoothclip::cancelAnimationGroup(
+      groupId, smoothclip::GroupCancelBehavior::Freeze);
+  DrainMainQueue();
+  XCTAssertEqual(presentation.superview, host);
+  XCTAssertNil(carrier.superview);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testWindowSpaceTargetLandsOnTheWindowRect {
+  constexpr uint64_t driverId = 99202;
+  UIWindow *window = TestWindow();
+  UIView *scaled = [[UIView alloc] initWithFrame:window.bounds];
+  scaled.transform = CGAffineTransformMakeScale(0.9, 0.9);
+  [window addSubview:scaled];
+  const smoothclip::Presentation rest = Presentation(0, 0, 200, 150, 12);
+  SmoothClipView *host = FlightHost(
+      scaled, CGRectMake(30, 60, 200, 150), driverId, "", rest);
+  const CGRect windowRect = CGRectMake(40, 100, 240, 180);
+  smoothclip::Presentation windowTarget = Presentation(
+      windowRect.origin.x, windowRect.origin.y, windowRect.size.width,
+      windowRect.size.height, 18, windowRect.origin.x, windowRect.origin.y);
+  smoothclip::GroupMotionEntry entry =
+      GroupEntry(driverId, false, rest, windowTarget);
+  entry.targetInWindow = true;
+
+  const int32_t groupId =
+      smoothclip::animateTimingGroup(7202, {entry}, kFlightTiming);
+  XCTAssertGreaterThan(groupId, 0);
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  // No target: the flight returns into the host, which keeps where it landed.
+  XCTAssertEqual(PresentationContainer(host).superview, host);
+  const smoothclip::Presentation landed = smoothclip::snapshotCurrent(driverId);
+  const CGRect onScreen = [host
+      convertRect:CGRectMake(landed.clip.x, landed.clip.y, landed.clip.width,
+                             landed.clip.height)
+           toView:window];
+  XCTAssertEqualWithAccuracy(onScreen.origin.x, windowRect.origin.x, 1e-6);
+  XCTAssertEqualWithAccuracy(onScreen.origin.y, windowRect.origin.y, 1e-6);
+  XCTAssertEqualWithAccuracy(onScreen.size.width, windowRect.size.width, 1e-6);
+  XCTAssertEqualWithAccuracy(onScreen.size.height, windowRect.size.height, 1e-6);
+  XCTAssertEqualWithAccuracy(landed.clip.radius, 18 / 0.9, 1e-6);
+  XCTAssertEqualWithAccuracy(landed.contentScale, 1 / 0.9, 1e-6);
+
+  // A window-space frame (setFrame) resolves the same way.
+  smoothclip::BatchEntry frame{driverId, windowTarget};
+  frame.inWindow = true;
+  XCTAssertTrue(smoothclip::setPresentationBatch({frame}));
+  const smoothclip::Presentation set = smoothclip::snapshotCurrent(driverId);
+  XCTAssertEqualWithAccuracy(set.clip.x, landed.clip.x, 1e-6);
+  XCTAssertEqualWithAccuracy(set.clip.y, landed.clip.y, 1e-6);
+
+  // A rotated host cannot express a window rect: the whole call rejects.
+  scaled.transform = CGAffineTransformMakeRotation(0.2);
+  XCTAssertEqual(smoothclip::animateTimingGroup(7203, {entry}, kFlightTiming), 0);
+  XCTAssertFalse(smoothclip::setPresentationBatch({frame}));
+  // So does a driver with no host.
+  smoothclip::GroupMotionEntry orphan =
+      GroupEntry(99299, true, rest, windowTarget);
+  orphan.targetInWindow = true;
+  XCTAssertEqual(smoothclip::animateTimingGroup(7204, {orphan}, kFlightTiming), 0);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testHandoffRevealsTheTargetAndRestsTheHost {
+  constexpr uint64_t driverId = 99203;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "flight-a", rest);
+  const smoothclip::Presentation landing =
+      Presentation(-20, -300, 400, 500, 0, -20, -300);
+
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7205, {GroupEntry(driverId, false, rest, landing)}, kFlightTiming);
+  XCTAssertGreaterThan(groupId, 0);
+  UIView *presentation = PresentationContainer(host);
+  UIView *carrier = presentation.superview;
+  XCTAssertNotEqual(carrier, host);
+
+  // The destination mounts while the flight is airborne: it mounts covered.
+  SmoothClipFlightTargetView *target =
+      FlightTarget(window, CGRectMake(0, 0, 400, 500), "flight-a");
+  XCTAssertTrue(target.flightCovered);
+  XCTAssertTrue(TargetContent(target).hidden);
+  XCTAssertFalse(target.hidden);
+
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  XCTAssertFalse(target.flightCovered);
+  XCTAssertFalse(TargetContent(target).hidden);
+  XCTAssertEqual(presentation.superview, host);
+  XCTAssertNil(carrier.superview);
+  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+  // The host is back at rest under its target, in the registry and on screen.
+  const smoothclip::Presentation settled = smoothclip::snapshotCurrent(driverId);
+  XCTAssertEqualWithAccuracy(settled.clip.x, rest.clip.x, 1e-9);
+  XCTAssertEqualWithAccuracy(settled.clip.y, rest.clip.y, 1e-9);
+  XCTAssertEqualWithAccuracy(settled.clip.width, rest.clip.width, 1e-9);
+  XCTAssertEqualWithAccuracy(settled.clip.radius, rest.clip.radius, 1e-9);
+  const smoothclip::Presentation shown = [host smoothClipCurrentPresentation];
+  XCTAssertEqualWithAccuracy(shown.clip.width, rest.clip.width, 1e-9);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testTheWayBackStartsFromTheLandedPresentation {
+  constexpr uint64_t driverId = 99204;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "flight-b", rest);
+  const smoothclip::Presentation landing =
+      Presentation(-20, -300, 400, 500, 0, -20, -300);
+  int32_t groupId = smoothclip::animateTimingGroup(
+      7206, {GroupEntry(driverId, false, rest, landing)}, kFlightTiming);
+  SmoothClipFlightTargetView *target =
+      FlightTarget(window, CGRectMake(0, 0, 400, 500), "flight-b");
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  XCTAssertFalse(target.flightCovered);
+
+  // Fly home with no `from`: the run starts on the target, where the flight
+  // landed, not at the rest the host was put back at.
+  groupId = smoothclip::animateTimingGroup(
+      7207, {GroupEntry(driverId, false, rest, rest)}, kFlightTiming);
+  XCTAssertGreaterThan(groupId, 0);
+  UIView *carrier = PresentationContainer(host).superview;
+  XCTAssertNotEqual(carrier, host);
+  // It departs from the target, which hides for the flight.
+  XCTAssertTrue(target.flightCovered);
+  CALayer *clipLayer = ((UIView *)[host valueForKey:@"clipContainer"]).layer;
+  CAAnimationGroup *geometry =
+      (CAAnimationGroup *)[clipLayer animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(geometry);
+  BOOL sawPosition = NO;
+  for (CAPropertyAnimation *animation in geometry.animations) {
+    if (![animation.keyPath isEqualToString:@"position"]) continue;
+    sawPosition = YES;
+    const CGPoint from =
+        [((CABasicAnimation *)animation).fromValue CGPointValue];
+    XCTAssertEqualWithAccuracy(from.x, -20 + 200, 1e-9);
+    XCTAssertEqualWithAccuracy(from.y, -300 + 250, 1e-9);
+  }
+  XCTAssertTrue(sawPosition);
+
+  // A departing flight returns into the host and reveals the target.
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  XCTAssertEqual(PresentationContainer(host).superview, host);
+  XCTAssertFalse(target.flightCovered);
+  const smoothclip::Presentation home = smoothclip::snapshotCurrent(driverId);
+  XCTAssertEqualWithAccuracy(home.clip.width, rest.clip.width, 1e-9);
+
+  // Without its target on screen there is no way back: a run starts where
+  // the host is.
+  [target removeFromSuperview];
+  XCTAssertNil([[SmoothClipFlightCoordinator shared]
+      attachedTargetForTag:@"flight-b"]);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testTargetThatIsNotReadyHoldsTheLanding {
+  constexpr uint64_t driverId = 99205;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "flight-c", rest);
+  const smoothclip::Presentation landing =
+      Presentation(-20, -300, 400, 500, 0, -20, -300);
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7208, {GroupEntry(driverId, false, rest, landing)}, kFlightTiming);
+  SmoothClipFlightTargetView *target =
+      FlightTarget(window, CGRectMake(0, 0, 400, 500), "flight-c", false);
+  UIView *presentation = PresentationContainer(host);
+  UIView *carrier = presentation.superview;
+
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  DrainMainQueue();
+  // The flight keeps its last frame in the layer; the target stays hidden.
+  XCTAssertEqual(presentation.superview, carrier);
+  XCTAssertNotNil(carrier.superview);
+  XCTAssertTrue(target.flightCovered);
+
+  SetFlightTargetProps(target, "flight-c", true);
+  XCTAssertFalse(target.flightCovered);
+  XCTAssertEqual(presentation.superview, host);
+  XCTAssertNil(carrier.superview);
+  const smoothclip::Presentation settled = smoothclip::snapshotCurrent(driverId);
+  XCTAssertEqualWithAccuracy(settled.clip.width, rest.clip.width, 1e-9);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testTargetRegisteredWhileAirborneIsCovered {
+  constexpr uint64_t driverId = 99206;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "flight-d", rest);
+  // A target off screen (an unattached route) is not where the flight
+  // departs from: the flight lands on it.
+  SmoothClipFlightTargetView *early =
+      FlightTarget(nil, CGRectMake(0, 0, 400, 500), "flight-d");
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7209,
+      {GroupEntry(driverId, false, rest, Presentation(0, 0, 400, 500, 0))},
+      kFlightTiming);
+  XCTAssertGreaterThan(groupId, 0);
+  XCTAssertTrue(early.flightCovered);
+  // Attaching it, or registering one, while airborne keeps it hidden.
+  [window addSubview:early];
+  XCTAssertTrue(early.flightCovered);
+  SmoothClipFlightTargetView *late =
+      FlightTarget(window, CGRectMake(0, 0, 400, 500), "flight-d");
+  XCTAssertTrue(late.flightCovered);
+  XCTAssertTrue(TargetContent(late).hidden);
+  // A target under another tag is untouched.
+  SmoothClipFlightTargetView *other =
+      FlightTarget(window, CGRectMake(0, 0, 400, 500), "flight-other");
+  XCTAssertFalse(other.flightCovered);
+
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  XCTAssertFalse(early.flightCovered);
+  XCTAssertFalse(late.flightCovered);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testCancelledRunDoesNotHandOff {
+  constexpr uint64_t driverId = 99207;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "flight-e", rest);
+  const smoothclip::Presentation landing =
+      Presentation(-20, -300, 400, 500, 0, -20, -300);
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7210, {GroupEntry(driverId, false, rest, landing)}, kFlightTiming);
+  SmoothClipFlightTargetView *target =
+      FlightTarget(window, CGRectMake(0, 0, 400, 500), "flight-e");
+  UIView *presentation = PresentationContainer(host);
+  XCTAssertTrue(target.flightCovered);
+
+  const std::vector<smoothclip::DriverSnapshot> frozen =
+      smoothclip::cancelAnimationGroup(
+          groupId, smoothclip::GroupCancelBehavior::Freeze);
+  XCTAssertEqual(frozen.size(), 1u);
+  DrainMainQueue();
+  // It lands in place: back in the host where it stopped, target revealed,
+  // no reset to rest and no way back.
+  XCTAssertEqual(presentation.superview, host);
+  XCTAssertFalse(target.flightCovered);
+  const smoothclip::Presentation stopped = smoothclip::snapshotCurrent(driverId);
+  XCTAssertEqualWithAccuracy(stopped.clip.x, frozen[0].presentation.clip.x, 1e-9);
+  XCTAssertEqualWithAccuracy(
+      stopped.clip.width, frozen[0].presentation.clip.width, 1e-9);
+  XCTAssertFalse([[host valueForKey:@"flightHasLanded"] boolValue]);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testReplacingAFlyingRunContinuesTheSameLift {
+  constexpr uint64_t driverId = 99208;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "flight-f", rest);
+  int32_t groupId = smoothclip::animateTimingGroup(
+      7211,
+      {GroupEntry(driverId, false, rest, Presentation(0, 0, 300, 300, 0))},
+      kFlightTiming);
+  UIView *carrier = PresentationContainer(host).superview;
+  // A retarget mid-flight, then an interaction, keep the same carrier.
+  groupId = smoothclip::animateTimingGroup(
+      7212,
+      {GroupEntry(driverId, false, rest, Presentation(0, 0, 320, 320, 0))},
+      kFlightTiming);
+  XCTAssertGreaterThan(groupId, 0);
+  DrainMainQueue();
+  XCTAssertEqual(PresentationContainer(host).superview, carrier);
+  smoothclip::beginGroupInteraction({driverId});
+  DrainMainQueue();
+  XCTAssertEqual(PresentationContainer(host).superview, carrier);
+  // setFrame during the interaction writes to the lifted container.
+  XCTAssertTrue(smoothclip::setPresentationBatch(
+      {{driverId, Presentation(5, 5, 200, 200, 0)}}));
+  DrainMainQueue();
+  XCTAssertEqual(PresentationContainer(host).superview, carrier);
+  // The next run continues in the same lift and lands it.
+  groupId = smoothclip::animateTimingGroup(
+      7213, {GroupEntry(driverId, false, rest, rest)}, kFlightTiming);
+  XCTAssertEqual(PresentationContainer(host).superview, carrier);
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  XCTAssertEqual(PresentationContainer(host).superview, host);
+  XCTAssertNil(carrier.superview);
+
+  // An interaction lifts a host at rest too.
+  smoothclip::beginGroupInteraction({driverId});
+  XCTAssertNotEqual(PresentationContainer(host).superview, host);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testHostLossMidFlightLandsWithoutTheHost {
+  constexpr uint64_t driverId = 99209;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "flight-g", rest);
+  UIView *child = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 40, 40)];
+  [host mountChildComponentView:(UIView<RCTComponentViewProtocol> *)child
+                          index:0];
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7214,
+      {GroupEntry(driverId, false, rest, Presentation(-20, -300, 400, 500, 0))},
+      kFlightTiming);
+  XCTAssertGreaterThan(groupId, 0);
+  SmoothClipFlightTargetView *target =
+      FlightTarget(window, CGRectMake(0, 0, 400, 500), "flight-g");
+  UIView *presentation = PresentationContainer(host);
+  UIView *carrier = presentation.superview;
+  XCTAssertTrue(target.flightCovered);
+
+  // The route unmounts: its controller is destroyed mid-flight.
+  smoothclip::destroyDriver(driverId);
+  DrainMainQueue();
+  // The flight flies on without the host, which has fresh containers.
+  XCTAssertEqual(presentation.superview, carrier);
+  XCTAssertNotNil(carrier.superview);
+  XCTAssertNotEqual(PresentationContainer(host), presentation);
+  XCTAssertEqual(PresentationContainer(host).superview, host);
+  XCTAssertTrue(target.flightCovered);
+  CAAnimation *keeper =
+      [carrier.layer animationForKey:@"smoothClip.flightKeeper"];
+  XCTAssertNotNil(keeper);
+  XCTAssertGreaterThan(keeper.duration, 4);
+  XCTAssertLessThanOrEqual(keeper.duration, 5);
+  // Fabric unmounting a child that left with the flight does not assert.
+  [host unmountChildComponentView:(UIView<RCTComponentViewProtocol> *)child
+                            index:0];
+  XCTAssertNil(child.superview);
+  // A new child mounts into the fresh content.
+  UIView *next = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 40, 40)];
+  [host mountChildComponentView:(UIView<RCTComponentViewProtocol> *)next
+                          index:0];
+  XCTAssertEqual(next.superview, [host valueForKey:@"contentContainer"]);
+
+  // When the run would have ended, the keeper removes the carrier and
+  // reveals the target; it never leaves anything behind.
+  [keeper.delegate animationDidStop:keeper finished:YES];
+  XCTAssertNil(carrier.superview);
+  XCTAssertFalse(target.flightCovered);
+  smoothclip::unregisterView(driverId, host);
+  [host setValue:@0 forKey:@"driverId"];
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testHostDeallocatedMidFlightLandsWithoutTheHost {
+  constexpr uint64_t driverId = 99210;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipFlightTargetView *target = nil;
+  UIView *carrier = nil;
+  __weak SmoothClipView *weakHost = nil;
+  @autoreleasepool {
+    SmoothClipView *host = FlightHost(
+        window, CGRectMake(20, 300, 160, 120), driverId, "flight-h", rest);
+    weakHost = host;
+    smoothclip::animateTimingGroup(
+        7215,
+        {GroupEntry(driverId, false, rest, Presentation(0, 0, 400, 500, 0))},
+        kFlightTiming);
+    target = FlightTarget(window, CGRectMake(0, 0, 400, 500), "flight-h");
+    carrier = PresentationContainer(host).superview;
+    // Its screen detaches: a lifted host still displays, so this is no host
+    // loss and the run keeps going.
+    [host removeFromSuperview];
+    XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+    XCTAssertNotNil(carrier.superview);
+  }
+  // The view is gone (dealloc is the host loss here)...
+  XCTAssertNil(weakHost);
+  // ...and the flight flies on without it.
+  XCTAssertNotNil(carrier.superview);
+  XCTAssertTrue(target.flightCovered);
+  CAAnimation *keeper =
+      [carrier.layer animationForKey:@"smoothClip.flightKeeper"];
+  XCTAssertNotNil(keeper);
+  [keeper.delegate animationDidStop:keeper finished:NO];
+  XCTAssertNil(carrier.superview);
+  XCTAssertFalse(target.flightCovered);
+  XCTAssertFalse(smoothclip::hasActiveAnimation(driverId));
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testMountedTargetCountsAsArrivingForTheGracePeriod {
+  constexpr uint64_t driverId = 99211;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "flight-i", rest);
+  const smoothclip::Presentation landing =
+      Presentation(-20, -300, 400, 500, 0, -20, -300);
+  int32_t groupId = smoothclip::animateTimingGroup(
+      7216, {GroupEntry(driverId, false, rest, landing)}, kFlightTiming);
+  // A pushed route's target is mounted, but react-native-screens attaches
+  // its screen a message later: the flight waits instead of returning.
+  SmoothClipFlightTargetView *arriving =
+      FlightTarget(nil, CGRectMake(0, 0, 400, 500), "flight-i");
+  UIView *presentation = PresentationContainer(host);
+  UIView *carrier = presentation.superview;
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  DrainMainQueue();
+  XCTAssertEqual(presentation.superview, carrier);
+  XCTAssertTrue(arriving.flightCovered);
+  [window addSubview:arriving];
+  XCTAssertEqual(presentation.superview, host);
+  XCTAssertFalse(arriving.flightCovered);
+  XCTAssertEqualWithAccuracy(
+      smoothclip::snapshotCurrent(driverId).clip.width, rest.clip.width, 1e-9);
+  [arriving removeFromSuperview];
+
+  // One that never attaches stops counting after 300 ms. The flight saw its
+  // target and has none to land on: it lands as a handoff with nothing to
+  // reveal, so the host is back at rest (not left at the destination frame).
+  groupId = smoothclip::animateTimingGroup(
+      7217, {GroupEntry(driverId, false, rest, landing)}, kFlightTiming);
+  carrier = presentation.superview;
+  XCTAssertNotEqual(carrier, host);
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  DrainMainQueue();
+  XCTAssertEqual(presentation.superview, carrier);
+  [[NSRunLoop mainRunLoop]
+      runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.4]];
+  XCTAssertEqual(presentation.superview, host);
+  XCTAssertNil(carrier.superview);
+  XCTAssertFalse(arriving.flightCovered);
+  XCTAssertEqualWithAccuracy(
+      smoothclip::snapshotCurrent(driverId).clip.width, rest.clip.width,
+      1e-9);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testInteractionOnALandedHostStartsFromTheLandedPresentation {
+  constexpr uint64_t driverId = 99212;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "flight-j", rest);
+  const smoothclip::Presentation landing =
+      Presentation(-20, -300, 400, 500, 0, -20, -300);
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7218, {GroupEntry(driverId, false, rest, landing)}, kFlightTiming);
+  SmoothClipFlightTargetView *target =
+      FlightTarget(window, CGRectMake(0, 0, 400, 500), "flight-j");
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  XCTAssertFalse(target.flightCovered);
+
+  // A drag-to-dismiss on the target's content: the lift hides the target, so
+  // the host takes over from where the flight landed, not from its rest.
+  const std::vector<smoothclip::DriverSnapshot> began =
+      smoothclip::beginGroupInteraction({driverId});
+  XCTAssertEqual(began.size(), 1u);
+  XCTAssertEqualWithAccuracy(began[0].presentation.clip.x, landing.clip.x, 1e-9);
+  XCTAssertEqualWithAccuracy(
+      began[0].presentation.clip.width, landing.clip.width, 1e-9);
+  XCTAssertTrue(target.flightCovered);
+  XCTAssertNotEqual(PresentationContainer(host).superview, host);
+  const smoothclip::Presentation shown = [host smoothClipCurrentPresentation];
+  XCTAssertEqualWithAccuracy(shown.clip.width, landing.clip.width, 1e-9);
+  smoothclip::destroyDriver(driverId);
+}
+
+// Finding 2. The detail route drives an interaction on the card's way back
+// (it follows its own dismissal) and is popped from JS before any run starts:
+// its target unmounts, and nothing is left to start the run that would end
+// the interaction. The flight must land with the card at rest. Held, it
+// stayed above every screen with the target hidden for good.
+- (void)testInteractionWhoseDepartedTargetUnmountsLandsTheHostAtRest {
+  constexpr uint64_t driverId = 99213;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "flight-o", rest);
+  const smoothclip::Presentation landing =
+      Presentation(-20, -300, 400, 500, 0, -20, -300);
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7219, {GroupEntry(driverId, false, rest, landing)}, kFlightTiming);
+  XCTAssertGreaterThan(groupId, 0);
+  SmoothClipFlightTargetView *target =
+      FlightTarget(window, CGRectMake(0, 0, 400, 500), "flight-o");
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  XCTAssertFalse(target.flightCovered);
+
+  XCTAssertEqual(smoothclip::beginGroupInteraction({driverId}).size(), 1u);
+  UIView *presentation = PresentationContainer(host);
+  UIView *carrier = presentation.superview;
+  XCTAssertNotEqual(carrier, host);
+  XCTAssertTrue(target.flightCovered);
+  // The dismissal moves the card part of the way home.
+  XCTAssertTrue(smoothclip::setPresentationBatch(
+      {{driverId, Presentation(-10, -150, 280, 310, 8)}}));
+  // An attach change alone does not end the interaction.
+  [target removeFromSuperview];
+  XCTAssertEqual(presentation.superview, carrier);
+
+  // Fabric recycles the popped route's target.
+  [target prepareForRecycle];
+  XCTAssertEqual(presentation.superview, host);
+  XCTAssertNil(carrier.superview);
+  const smoothclip::Presentation settled = smoothclip::snapshotCurrent(driverId);
+  XCTAssertEqualWithAccuracy(settled.clip.x, rest.clip.x, 1e-9);
+  XCTAssertEqualWithAccuracy(settled.clip.y, rest.clip.y, 1e-9);
+  XCTAssertEqualWithAccuracy(settled.clip.width, rest.clip.width, 1e-9);
+  XCTAssertEqualWithAccuracy(settled.clip.height, rest.clip.height, 1e-9);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testTheWayBackOfAScaledHostStartsWhereItsWindowSpaceFlightLanded {
+  constexpr uint64_t driverId = 99213;
+  UIWindow *window = TestWindow();
+  UIView *scaled = [[UIView alloc] initWithFrame:window.bounds];
+  scaled.transform = CGAffineTransformMakeScale(0.9, 0.9);
+  [window addSubview:scaled];
+  const smoothclip::Presentation rest = Presentation(30, 60, 200, 150, 24);
+  SmoothClipView *host = FlightHost(
+      scaled, window.bounds, driverId, "flight-k", rest);
+  smoothclip::GroupMotionEntry open = GroupEntry(
+      driverId, false, rest, Presentation(0, 62, 400, 500, 0));
+  open.targetInWindow = true;
+  int32_t groupId = smoothclip::animateTimingGroup(7219, {open}, kFlightTiming);
+  XCTAssertGreaterThan(groupId, 0);
+  SmoothClipFlightTargetView *target =
+      FlightTarget(window, CGRectMake(0, 62, 400, 500), "flight-k");
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  XCTAssertFalse(target.flightCovered);
+  XCTAssertTrue([[host valueForKey:@"flightHasLanded"] boolValue]);
+
+  groupId = smoothclip::animateTimingGroup(
+      7220, {GroupEntry(driverId, false, rest, rest)}, kFlightTiming);
+  XCTAssertGreaterThan(groupId, 0);
+  XCTAssertTrue(target.flightCovered);
+  CALayer *clipLayer = ((UIView *)[host valueForKey:@"clipContainer"]).layer;
+  CAAnimationGroup *geometry =
+      (CAAnimationGroup *)[clipLayer animationForKey:@"smoothClip.geometry"];
+  XCTAssertNotNil(geometry);
+  BOOL sawBounds = NO;
+  for (CAPropertyAnimation *animation in geometry.animations) {
+    if (![animation.keyPath isEqualToString:@"bounds"]) continue;
+    sawBounds = YES;
+    const CGRect from = [((CABasicAnimation *)animation).fromValue CGRectValue];
+    XCTAssertEqualWithAccuracy(from.size.width, 400 / 0.9, 1e-6);
+    XCTAssertEqualWithAccuracy(from.size.height, 500 / 0.9, 1e-6);
+  }
+  XCTAssertTrue(sawBounds);
+  smoothclip::destroyDriver(driverId);
+}
+
+#pragma mark - Flight teardown and waits (final review)
+
+// A landing that waits on its target (`ready` false) has no timer: only a
+// change of the target wakes it. A target that leaves the flight's tag must
+// wake it too, or the content stays in the flight layer for good.
+- (void)testTargetThatLeavesItsTagReleasesTheFlightWaitingOnIt {
+  constexpr uint64_t driverId = 99230;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "flight-r", rest);
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7230,
+      {GroupEntry(
+          driverId, false, rest, Presentation(-20, -300, 400, 500, 0))},
+      kFlightTiming);
+  XCTAssertGreaterThan(groupId, 0);
+  SmoothClipFlightTargetView *target =
+      FlightTarget(window, CGRectMake(0, 0, 400, 500), "flight-r", false);
+  UIView *presentation = PresentationContainer(host);
+  UIView *carrier = presentation.superview;
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  DrainMainQueue();
+  XCTAssertEqual(presentation.superview, carrier);
+  XCTAssertTrue(target.flightCovered);
+
+  // React gives the view another tag: nothing is left to wait for.
+  SetFlightTargetProps(target, "flight-r-other", false);
+  XCTAssertEqual(presentation.superview, host);
+  XCTAssertNil(carrier.superview);
+  XCTAssertFalse(target.flightCovered);
+  smoothclip::destroyDriver(driverId);
+}
+
+// The detail route is popped while the card still flies to it, and nothing
+// flies the card home. The flight saw its target and lost it: it must land
+// with the host back at rest, as a handoff does. Left where it landed, the
+// card would stay at the destination frame over the list for good.
+- (void)testLandingFlightThatLostItsTargetRestsTheHost {
+  constexpr uint64_t driverId = 99232;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "flight-lost", rest);
+  const smoothclip::Presentation landing =
+      Presentation(-20, -300, 400, 500, 0, -20, -300);
+  int32_t groupId = smoothclip::animateTimingGroup(
+      7232, {GroupEntry(driverId, false, rest, landing)}, kFlightTiming);
+  XCTAssertGreaterThan(groupId, 0);
+  UIView *presentation = PresentationContainer(host);
+  UIView *carrier = presentation.superview;
+  // The route mounts mid-flight: its target registers and attaches, covered.
+  SmoothClipFlightTargetView *target =
+      FlightTarget(window, CGRectMake(0, 0, 400, 500), "flight-lost");
+  XCTAssertTrue(target.flightCovered);
+  // The route is popped: the target leaves the window and Fabric recycles it.
+  [target removeFromSuperview];
+  [target prepareForRecycle];
+  XCTAssertEqual(presentation.superview, carrier);
+
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  DrainMainQueue();
+  XCTAssertEqual(presentation.superview, host);
+  XCTAssertNil(carrier.superview);
+  smoothclip::Presentation settled = smoothclip::snapshotCurrent(driverId);
+  XCTAssertEqualWithAccuracy(settled.clip.x, rest.clip.x, 1e-9);
+  XCTAssertEqualWithAccuracy(settled.clip.y, rest.clip.y, 1e-9);
+  XCTAssertEqualWithAccuracy(settled.clip.width, rest.clip.width, 1e-9);
+  XCTAssertEqualWithAccuracy(settled.clip.height, rest.clip.height, 1e-9);
+
+  // A flight whose target never mounted is not a lost target: it returns
+  // where it landed (flight-spec.md, Return).
+  groupId = smoothclip::animateTimingGroup(
+      7233, {GroupEntry(driverId, false, rest, landing)}, kFlightTiming);
+  XCTAssertGreaterThan(groupId, 0);
+  XCTAssertNotEqual(presentation.superview, host);
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  DrainMainQueue();
+  XCTAssertEqual(presentation.superview, host);
+  settled = smoothclip::snapshotCurrent(driverId);
+  XCTAssertEqualWithAccuracy(settled.clip.width, landing.clip.width, 1e-9);
+  smoothclip::destroyDriver(driverId);
+}
+
+// A target that deallocates with its tag still set (Fabric drops a view it
+// does not recycle) must not leave its tag's list behind.
+- (void)testDeallocatedTargetLeavesNoRegistryEntry {
+  NSDictionary *targets =
+      [[SmoothClipFlightCoordinator shared] valueForKey:@"targets"];
+  @autoreleasepool {
+    SmoothClipFlightTargetView *target =
+        FlightTarget(nil, CGRectMake(0, 0, 10, 10), "flight-gone");
+    XCTAssertNotNil(targets[@"flight-gone"]);
+    target = nil;
+  }
+  XCTAssertNil(targets[@"flight-gone"]);
+}
+
+static facebook::react::MountingTransaction Transaction(
+    facebook::react::ShadowViewMutationList mutations) {
+  return facebook::react::MountingTransaction(
+      1, 1, std::move(mutations), facebook::react::TransactionTelemetry{});
+}
+
+// The content of a flying host stays live. A transaction that only removes
+// one of its children is an ordinary update; the snapshot that preserves the
+// content is for a host that is deleted mid-flight.
+- (void)testOnlyHostLossSnapshotsTheFlyingContent {
+  constexpr uint64_t driverId = 99231;
+  constexpr facebook::react::Tag hostTag = 4242;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "", rest);
+  host.tag = hostTag;
+  UIView *image = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 160, 120)];
+  UIView *spinner = [[UIView alloc] initWithFrame:CGRectMake(60, 40, 40, 40)];
+  [host mountChildComponentView:(UIView<RCTComponentViewProtocol> *)image
+                          index:0];
+  [host mountChildComponentView:(UIView<RCTComponentViewProtocol> *)spinner
+                          index:1];
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7231,
+      {GroupEntry(
+          driverId, false, rest, Presentation(-20, -300, 400, 500, 0))},
+      kFlightTiming);
+  XCTAssertGreaterThan(groupId, 0);
+  UIView *presentation = PresentationContainer(host);
+  UIView *carrier = presentation.superview;
+  XCTAssertNotEqual(carrier, host);
+  UIView *content = (UIView *)[host valueForKey:@"contentContainer"];
+  id<RCTMountingTransactionObserving> observer =
+      (id<RCTMountingTransactionObserving>)host;
+  facebook::react::ShadowView spinnerShadow{};
+  spinnerShadow.tag = hostTag + 2;
+
+  // The spinner unmounts when the image has loaded.
+  const auto update = Transaction(
+      {facebook::react::ShadowViewMutation::RemoveMutation(
+          hostTag, spinnerShadow, 1)});
+  [observer mountingTransactionWillMount:update withSurfaceTelemetry:{}];
+  [host unmountChildComponentView:(UIView<RCTComponentViewProtocol> *)spinner
+                            index:1];
+  XCTAssertFalse([[host valueForKey:@"flightSnapshotTaken"] boolValue]);
+  XCTAssertEqualObjects(content.subviews, @[ image ]);
+  XCTAssertEqual(presentation.superview, carrier);
+
+  // The route unmounts: Fabric removes the child, then deletes the host.
+  facebook::react::ShadowView imageShadow{};
+  imageShadow.tag = hostTag + 1;
+  facebook::react::ShadowView hostShadow{};
+  hostShadow.tag = hostTag;
+  const auto unmount = Transaction(
+      {facebook::react::ShadowViewMutation::RemoveMutation(
+           hostTag, imageShadow, 0),
+       facebook::react::ShadowViewMutation::DeleteMutation(hostShadow)});
+  [observer mountingTransactionWillMount:unmount withSurfaceTelemetry:{}];
+  XCTAssertTrue([[host valueForKey:@"flightSnapshotTaken"] boolValue]);
+  // The flight left with a keeper; the host has fresh containers.
+  XCTAssertEqual(presentation.superview, carrier);
+  XCTAssertNotEqual(PresentationContainer(host), presentation);
+  CAAnimation *keeper =
+      [carrier.layer animationForKey:@"smoothClip.flightKeeper"];
+  XCTAssertNotNil(keeper);
+  [keeper.delegate animationDidStop:keeper finished:YES];
+  XCTAssertNil(carrier.superview);
+  smoothclip::unregisterView(driverId, host);
+  [host setValue:@0 forKey:@"driverId"];
+  smoothclip::destroyDriver(driverId);
+}
+
+#pragma mark - Flight completions (flight-spec.md, Landing)
+
+- (void)testCompletionReportsTheRestFrameWhenTheHandoffHappensAtCompletion {
+  constexpr uint64_t driverId = 99214;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "flight-l", rest);
+  const smoothclip::Presentation landing =
+      Presentation(-20, -300, 400, 500, 0, -20, -300);
+  std::vector<smoothclip::DriverSnapshot> completed;
+  int completions = 0;
+  bool allFinished = true;
+  smoothclip::setGroupCompletionCallback(
+      (__bridge const void *)self,
+      [&](uint64_t, int32_t, int32_t, bool finished,
+          std::vector<smoothclip::DriverSnapshot> snapshots) {
+        allFinished = allFinished && finished;
+        completions += 1;
+        completed = std::move(snapshots);
+      });
+
+  // The run finishes on its own.
+  int32_t groupId = smoothclip::animateTimingGroup(
+      7221, {GroupEntry(driverId, false, rest, landing)}, kFlightTiming);
+  SmoothClipFlightTargetView *target =
+      FlightTarget(window, CGRectMake(0, 0, 400, 500), "flight-l");
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  XCTAssertEqual(completions, 1);
+  XCTAssertFalse(target.flightCovered);
+  XCTAssertEqual(completed.size(), 1u);
+  XCTAssertEqualWithAccuracy(completed[0].presentation.clip.x, rest.clip.x, 1e-9);
+  XCTAssertEqualWithAccuracy(
+      completed[0].presentation.clip.width, rest.clip.width, 1e-9);
+  XCTAssertEqualWithAccuracy(
+      completed[0].presentation.clip.radius, rest.clip.radius, 1e-9);
+
+  // `finish` (cancel to the target) hands off too: the cancel's result and the
+  // completion both report the rest frame the host shows.
+  [target removeFromSuperview];
+  groupId = smoothclip::animateTimingGroup(
+      7222, {GroupEntry(driverId, false, rest, landing)}, kFlightTiming);
+  XCTAssertGreaterThan(groupId, 0);
+  [window addSubview:target];
+  XCTAssertTrue(target.flightCovered);
+  const std::vector<smoothclip::DriverSnapshot> finished =
+      smoothclip::cancelAnimationGroup(
+          groupId, smoothclip::GroupCancelBehavior::Finish);
+  XCTAssertEqual(completions, 2);
+  XCTAssertFalse(target.flightCovered);
+  XCTAssertEqual(PresentationContainer(host).superview, host);
+  XCTAssertEqual(finished.size(), 1u);
+  XCTAssertEqualWithAccuracy(finished[0].presentation.clip.width, rest.clip.width, 1e-9);
+  XCTAssertEqual(completed.size(), 1u);
+  XCTAssertEqualWithAccuracy(completed[0].presentation.clip.width, rest.clip.width, 1e-9);
+  XCTAssertEqualWithAccuracy(completed[0].presentation.clip.y, rest.clip.y, 1e-9);
+  XCTAssertTrue(allFinished);
+
+  smoothclip::clearGroupCompletionCallback((__bridge const void *)self);
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testCompletionReportsTheLandedFrameWhileTheHandoffWaits {
+  constexpr uint64_t driverId = 99215;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "flight-m", rest);
+  const smoothclip::Presentation landing =
+      Presentation(-20, -300, 400, 500, 0, -20, -300);
+  std::vector<smoothclip::DriverSnapshot> completed;
+  int completions = 0;
+  smoothclip::setGroupCompletionCallback(
+      (__bridge const void *)self,
+      [&](uint64_t, int32_t, int32_t, bool,
+          std::vector<smoothclip::DriverSnapshot> snapshots) {
+        completions += 1;
+        completed = std::move(snapshots);
+      });
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7223, {GroupEntry(driverId, false, rest, landing)}, kFlightTiming);
+  SmoothClipFlightTargetView *target =
+      FlightTarget(window, CGRectMake(0, 0, 400, 500), "flight-m", false);
+  UIView *carrier = PresentationContainer(host).superview;
+
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  // The target is not ready: the flight holds its last frame, and the
+  // completion reports that frame.
+  XCTAssertEqual(completions, 1);
+  XCTAssertEqual(PresentationContainer(host).superview, carrier);
+  XCTAssertEqual(completed.size(), 1u);
+  XCTAssertEqualWithAccuracy(completed[0].presentation.clip.x, landing.clip.x, 1e-9);
+  XCTAssertEqualWithAccuracy(
+      completed[0].presentation.clip.width, landing.clip.width, 1e-9);
+
+  // The handoff, later, resets the host without another completion.
+  SetFlightTargetProps(target, "flight-m", true);
+  XCTAssertFalse(target.flightCovered);
+  XCTAssertEqual(PresentationContainer(host).superview, host);
+  XCTAssertEqual(completions, 1);
+  const smoothclip::Presentation settled = smoothclip::snapshotCurrent(driverId);
+  XCTAssertEqualWithAccuracy(settled.clip.width, rest.clip.width, 1e-9);
+
+  smoothclip::clearGroupCompletionCallback((__bridge const void *)self);
+  smoothclip::destroyDriver(driverId);
+}
+
+#pragma mark - velocity: 'inherit' (flight-spec.md)
+
+// `{ type: 'spring', velocity: 'inherit' }` as the TurboModule passes it.
+static smoothclip::SpringAnimation InheritSpring(
+    double stiffness = 300,
+    double damping = 30) {
+  return {1, stiffness, damping, 0, true, 2};
+}
+
+// The initial velocity of every CASpringAnimation the host's run installed,
+// on the clip and on the content.
+static std::vector<double> InstalledSpringVelocities(SmoothClipView *host) {
+  std::vector<double> result;
+  for (NSString *name in @[ @"clipContainer", @"contentContainer" ]) {
+    CALayer *layer = ((UIView *)[host valueForKey:name]).layer;
+    for (NSString *key in layer.animationKeys) {
+      CAAnimation *animation = [layer animationForKey:key];
+      if (![animation isKindOfClass:CAAnimationGroup.class]) continue;
+      for (CAAnimation *child in ((CAAnimationGroup *)animation).animations) {
+        if ([child isKindOfClass:CASpringAnimation.class]) {
+          result.push_back(((CASpringAnimation *)child).initialVelocity);
+        }
+      }
+    }
+  }
+  return result;
+}
+
+// Every spring the host's run installed starts with one velocity in
+// [low, high].
+- (void)assertSpringVelocitiesOf:(SmoothClipView *)host
+                          within:(double)low
+                             and:(double)high {
+  const std::vector<double> velocities = InstalledSpringVelocities(host);
+  XCTAssertGreaterThan(velocities.size(), 1u);
+  for (const double velocity : velocities) {
+    XCTAssertGreaterThanOrEqual(velocity, low);
+    XCTAssertLessThanOrEqual(velocity, high);
+    XCTAssertEqualWithAccuracy(velocity, velocities.front(), 1e-12);
+  }
+}
+
+- (void)testInheritAfterATimingRunReplacedHalfway {
+  constexpr uint64_t driverId = 99301;
+  UIWindow *window = TestWindow();
+  SmoothClipView *host = DisplayableView(window, CGRectMake(0, 0, 400, 400));
+  [host setValue:@(driverId) forKey:@"driverId"];
+  const smoothclip::Presentation a = Presentation(0, 0, 100, 100, 0);
+  const smoothclip::Presentation b = Presentation(200, 0, 100, 100, 0);
+  smoothclip::registerView(driverId, host, a);
+  // Ease-in-out over 400 ms, 200 ms in: it is halfway, at x = 100, moving at
+  // its fastest. At the curve's midpoint dy/dx is 1.5 / 0.87, so the run
+  // moves 200 * 1.5 / 0.87 / 0.4 pt/s.
+  const smoothclip::TimingAnimation easeInOut{400, 0.42, 0, 0.58, 1, 2};
+  XCTAssertGreaterThan(
+      smoothclip::animateTimingGroup(
+          7301, {GroupEntry(driverId, true, a, b)}, easeInOut),
+      0);
+  const CFTimeInterval epoch = InstalledBeginTime(host);
+  Elapse(0.2);
+
+  // Retarget from where it is to x = 300, 200 pt ahead: the spring covers
+  // the remaining distance 1.5 / 0.87 / 0.4 = 4.31 times per second.
+  const CFTimeInterval before = CACurrentMediaTime();
+  const int32_t groupId = smoothclip::animateSpringGroup(
+      7302,
+      {GroupEntry(driverId, true, Presentation(100, 0, 100, 100, 0),
+                  Presentation(300, 0, 100, 100, 0))},
+      InheritSpring());
+  const CFTimeInterval after = CACurrentMediaTime();
+  XCTAssertGreaterThan(groupId, 0);
+    const double low =
+      smoothclip::timingRunProgress(easeInOut, after - epoch).velocity;
+  const double high =
+      smoothclip::timingRunProgress(easeInOut, before - epoch).velocity;
+  XCTAssertEqualWithAccuracy(low, 1.5 / 0.87 / 0.4, 0.1);
+  XCTAssertEqualWithAccuracy(high, 1.5 / 0.87 / 0.4, 0.1);
+  [self assertSpringVelocitiesOf:host
+                          within:std::min(low, high) - 1e-3
+                             and:std::max(low, high) + 1e-3];
+
+  smoothclip::cancelAnimationGroup(groupId, smoothclip::GroupCancelBehavior::Freeze);
+  smoothclip::unregisterView(driverId, host);
+  [host setValue:@0 forKey:@"driverId"];
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testInheritAfterASpringRunReplaced {
+  constexpr uint64_t driverId = 99302;
+  UIWindow *window = TestWindow();
+  SmoothClipView *host = DisplayableView(window, CGRectMake(0, 0, 400, 400));
+  [host setValue:@(driverId) forKey:@"driverId"];
+  const smoothclip::Presentation a = Presentation(0, 0, 100, 100, 0);
+  const smoothclip::Presentation b = Presentation(200, 0, 100, 100, 0);
+  smoothclip::registerView(driverId, host, a);
+  // An underdamped spring, 80 ms in, with a velocity of its own.
+  smoothclip::SpringAnimation moving{1, 300, 20, 2, false, 2};
+  XCTAssertGreaterThan(
+      smoothclip::animateSpringGroup(
+          7303, {GroupEntry(driverId, true, a, b)}, moving),
+      0);
+  const CFTimeInterval epoch = InstalledBeginTime(host);
+  Elapse(0.08);
+
+  // Retarget to x = 450 from x = 50: 400 pt ahead, while the run moves at
+  // 200 * v(t) pt/s.
+  const CFTimeInterval before = CACurrentMediaTime();
+  const int32_t groupId = smoothclip::animateSpringGroup(
+      7304,
+      {GroupEntry(driverId, true, Presentation(50, 0, 100, 100, 0),
+                  Presentation(450, 0, 100, 100, 0))},
+      InheritSpring());
+  const CFTimeInterval after = CACurrentMediaTime();
+  XCTAssertGreaterThan(groupId, 0);
+  const double first =
+      smoothclip::springRunProgress(moving, before - epoch).velocity * 200 / 400;
+  const double last =
+      smoothclip::springRunProgress(moving, after - epoch).velocity * 200 / 400;
+  XCTAssertGreaterThan(std::min(first, last), 0.5);
+  [self assertSpringVelocitiesOf:host
+                          within:std::min(first, last) - 1e-3
+                             and:std::max(first, last) + 1e-3];
+
+  smoothclip::cancelAnimationGroup(groupId, smoothclip::GroupCancelBehavior::Freeze);
+  smoothclip::unregisterView(driverId, host);
+  [host setValue:@0 forKey:@"driverId"];
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testInheritAfterAnInteraction {
+  constexpr uint64_t driverId = 99303;
+  UIWindow *window = TestWindow();
+  SmoothClipView *host = DisplayableView(window, CGRectMake(0, 0, 400, 400));
+  [host setValue:@(driverId) forKey:@"driverId"];
+  smoothclip::registerView(driverId, host, Presentation(0, 0, 100, 100, 0));
+  XCTAssertEqual(smoothclip::beginGroupInteraction({driverId}).size(), 1u);
+
+  // Two drag frames 10 pt apart, then a release toward x = 110, 100 pt on.
+  const CFTimeInterval firstBefore = CACurrentMediaTime();
+  XCTAssertTrue(smoothclip::setPresentationBatch(
+      {{driverId, Presentation(0, 0, 100, 100, 0)}}));
+  const CFTimeInterval firstAfter = CACurrentMediaTime();
+  usleep(12000);
+  const CFTimeInterval secondBefore = CACurrentMediaTime();
+  XCTAssertTrue(smoothclip::setPresentationBatch(
+      {{driverId, Presentation(10, 0, 100, 100, 0)}}));
+  const CFTimeInterval secondAfter = CACurrentMediaTime();
+  const int32_t groupId = smoothclip::animateSpringGroup(
+      7305,
+      {GroupEntry(driverId, false, {}, Presentation(110, 0, 100, 100, 0))},
+      InheritSpring());
+  XCTAssertGreaterThan(groupId, 0);
+  // 10 pt over the time between the two writes, per 100 pt left.
+  const double low = 10 / (secondAfter - firstBefore) / 100;
+  const double high = 10 / (secondBefore - firstAfter) / 100;
+  XCTAssertGreaterThan(low, 1);
+  [self assertSpringVelocitiesOf:host
+                          within:low - 1e-6
+                             and:high + 1e-6];
+
+  smoothclip::cancelAnimationGroup(groupId, smoothclip::GroupCancelBehavior::Freeze);
+  smoothclip::unregisterView(driverId, host);
+  [host setValue:@0 forKey:@"driverId"];
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testInheritResolvesPerDriverAndIsZeroAtRest {
+  constexpr uint64_t movingId = 99304;
+  constexpr uint64_t restingId = 99305;
+  UIWindow *window = TestWindow();
+  SmoothClipView *moving = DisplayableView(window, CGRectMake(0, 0, 400, 400));
+  SmoothClipView *resting = DisplayableView(window, CGRectMake(0, 0, 400, 400));
+  [moving setValue:@(movingId) forKey:@"driverId"];
+  [resting setValue:@(restingId) forKey:@"driverId"];
+  const smoothclip::Presentation a = Presentation(0, 0, 100, 100, 0);
+  smoothclip::registerView(movingId, moving, a);
+  smoothclip::registerView(restingId, resting, a);
+  // One driver moves at a constant 1000 pt/s (linear, 2000 pt in 2 s,
+  // 100 ms in); the other has never moved.
+  const smoothclip::TimingAnimation linear{2000, 0, 0, 1, 1, 2};
+  XCTAssertGreaterThan(
+      smoothclip::animateTimingGroup(
+          7306, {GroupEntry(movingId, true, a, Presentation(2000, 0, 100, 100, 0))},
+          linear),
+      0);
+  Elapse(0.1);
+
+  const int32_t groupId = smoothclip::animateSpringGroup(
+      7307,
+      {
+          GroupEntry(movingId, true, Presentation(100, 0, 100, 100, 0),
+                     Presentation(300, 0, 100, 100, 0)),
+          GroupEntry(restingId, false, {}, Presentation(0, 200, 100, 100, 0)),
+      },
+      InheritSpring());
+  XCTAssertGreaterThan(groupId, 0);
+  // 1000 pt/s over 200 pt left: 5 per second. At rest: 0.
+  [self assertSpringVelocitiesOf:moving
+                          within:5 - 1e-3
+                             and:5 + 1e-3];
+  [self assertSpringVelocitiesOf:resting
+                          within:0
+                             and:0];
+
+  smoothclip::cancelAnimationGroup(groupId, smoothclip::GroupCancelBehavior::Freeze);
+  for (SmoothClipView *view in @[ moving, resting ]) {
+    const uint64_t driverId = [[view valueForKey:@"driverId"] unsignedLongLongValue];
+    smoothclip::unregisterView(driverId, view);
+    [view setValue:@0 forKey:@"driverId"];
+    smoothclip::destroyDriver(driverId);
+  }
+}
+
+- (void)testInheritedVelocityMustKeepTheContentScalePositive {
+  constexpr uint64_t driverId = 99306;
+  UIWindow *window = TestWindow();
+  SmoothClipView *host = DisplayableView(window, CGRectMake(0, 0, 400, 400));
+  [host setValue:@(driverId) forKey:@"driverId"];
+  const smoothclip::Presentation a = Presentation(0, 0, 100, 100, 0);
+  smoothclip::registerView(driverId, host, a);
+  // 5000 pt/s (10000 pt in 2 s, linear), retargeted 100 pt ahead while the
+  // content shrinks to 0.3: an inherited 50 per second overshoots the target
+  // by almost its whole distance, and the scale would cross zero. From rest
+  // the same spring overshoots by about a tenth.
+  const smoothclip::TimingAnimation linear{2000, 0, 0, 1, 1, 2};
+  const int32_t runId = smoothclip::animateTimingGroup(
+      7308, {GroupEntry(driverId, true, a, Presentation(10000, 0, 100, 100, 0))},
+      linear);
+  XCTAssertGreaterThan(runId, 0);
+  Elapse(0.1);
+  smoothclip::Presentation shrink = Presentation(600, 0, 100, 100, 0);
+  shrink.contentScale = 0.3;
+  const smoothclip::GroupMotionEntry retarget =
+      GroupEntry(driverId, true, Presentation(500, 0, 100, 100, 0), shrink);
+  XCTAssertEqual(
+      smoothclip::animateSpringGroup(7309, {retarget}, InheritSpring(300, 20)), 0);
+  // Rejected atomically: the run keeps going.
+  XCTAssertTrue(smoothclip::hasActiveAnimation(driverId));
+  // The same spring from rest is fine.
+  smoothclip::SpringAnimation still = InheritSpring(300, 20);
+  still.inheritVelocity = false;
+  const int32_t groupId = smoothclip::animateSpringGroup(7310, {retarget}, still);
+  XCTAssertGreaterThan(groupId, 0);
+
+  smoothclip::cancelAnimationGroup(groupId, smoothclip::GroupCancelBehavior::Freeze);
+  smoothclip::unregisterView(driverId, host);
+  [host setValue:@0 forKey:@"driverId"];
+  smoothclip::destroyDriver(driverId);
+}
+
+- (void)testInheritOnTheWayBackStartsStillFromTheLandedPresentation {
+  constexpr uint64_t driverId = 99307;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest = Presentation(0, 0, 160, 120, 16);
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "flight-n", rest);
+  const smoothclip::Presentation landing =
+      Presentation(-20, -300, 400, 500, 0, -20, -300);
+  // Interactive writes just before the flight leave fresh samples behind.
+  smoothclip::setPresentation(driverId, Presentation(-10, 0, 160, 120, 16), true);
+  usleep(12000);
+  smoothclip::setPresentation(driverId, rest, true);
+  int32_t groupId = smoothclip::animateTimingGroup(
+      7311, {GroupEntry(driverId, false, rest, landing)}, kFlightTiming);
+  SmoothClipFlightTargetView *target =
+      FlightTarget(window, CGRectMake(0, 0, 400, 500), "flight-n");
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  XCTAssertFalse(target.flightCovered);
+
+  groupId = smoothclip::animateSpringGroup(
+      7312, {GroupEntry(driverId, false, {}, rest)}, InheritSpring());
+  XCTAssertGreaterThan(groupId, 0);
+  XCTAssertTrue(target.flightCovered);
+  [self assertSpringVelocitiesOf:host
+                          within:0
+                             and:0];
+  CALayer *clipLayer = ((UIView *)[host valueForKey:@"clipContainer"]).layer;
+  CAAnimationGroup *geometry =
+      (CAAnimationGroup *)[clipLayer animationForKey:@"smoothClip.geometry"];
+  // A spring animates the bounds per component.
+  BOOL sawWidth = NO;
+  for (CAPropertyAnimation *animation in geometry.animations) {
+    if (![animation.keyPath isEqualToString:@"bounds.size.width"]) continue;
+    sawWidth = YES;
+    XCTAssertEqualWithAccuracy(
+        [((CABasicAnimation *)animation).fromValue doubleValue],
+        landing.clip.width, 1e-9);
+  }
+  XCTAssertTrue(sawWidth);
+  smoothclip::destroyDriver(driverId);
+}
+
+#pragma mark - Replacing a moving run (flight-spec.md)
+
+// What the host's installed run animates from, read off its animations' from
+// values: the clip rect and corner radius, the content translation and scale.
+struct InstalledStart {
+  CGRect clip = CGRectNull;
+  double radius = NAN;
+  double translateX = NAN;
+  double translateY = NAN;
+  double scale = 1;
+};
+
+static InstalledStart InstalledRunStart(SmoothClipView *host) {
+  InstalledStart result;
+  CALayer *clipLayer = ((UIView *)[host valueForKey:@"clipContainer"]).layer;
+  CAAnimationGroup *geometry =
+      (CAAnimationGroup *)[clipLayer animationForKey:@"smoothClip.geometry"];
+  CGRect rect = CGRectZero;
+  BOOL sawRect = NO;
+  for (CAPropertyAnimation *child in geometry.animations) {
+    id from = ((CABasicAnimation *)child).fromValue;
+    NSString *keyPath = child.keyPath;
+    if ([keyPath isEqualToString:@"bounds"]) {
+      rect = [from CGRectValue];
+      sawRect = YES;
+    } else if ([keyPath isEqualToString:@"bounds.origin.x"]) {
+      rect.origin.x = [from doubleValue];
+      sawRect = YES;
+    } else if ([keyPath isEqualToString:@"bounds.origin.y"]) {
+      rect.origin.y = [from doubleValue];
+    } else if ([keyPath isEqualToString:@"bounds.size.width"]) {
+      rect.size.width = [from doubleValue];
+    } else if ([keyPath isEqualToString:@"bounds.size.height"]) {
+      rect.size.height = [from doubleValue];
+    } else if ([keyPath isEqualToString:@"cornerRadius"]) {
+      result.radius = [from doubleValue];
+    }
+  }
+  if (sawRect) result.clip = rect;
+  CALayer *contentLayer =
+      ((UIView *)[host valueForKey:@"contentContainer"]).layer;
+  CAAnimationGroup *content =
+      (CAAnimationGroup *)[contentLayer animationForKey:@"smoothClip.content"];
+  for (CAPropertyAnimation *child in content.animations) {
+    const double from = [((CABasicAnimation *)child).fromValue doubleValue];
+    if ([child.keyPath isEqualToString:@"transform.translation.x"]) {
+      result.translateX = from;
+    } else if ([child.keyPath isEqualToString:@"transform.translation.y"]) {
+      result.translateY = from;
+    } else if ([child.keyPath isEqualToString:@"transform.scale"]) {
+      result.scale = from;
+    }
+  }
+  return result;
+}
+
+- (void)assertRunOf:(SmoothClipView *)host
+           startsAt:(const smoothclip::Presentation &)expected {
+  const InstalledStart start = InstalledRunStart(host);
+  XCTAssertFalse(CGRectIsNull(start.clip));
+  XCTAssertEqualWithAccuracy(start.clip.origin.x, expected.clip.x, 1e-9);
+  XCTAssertEqualWithAccuracy(start.clip.origin.y, expected.clip.y, 1e-9);
+  XCTAssertEqualWithAccuracy(start.clip.size.width, expected.clip.width, 1e-9);
+  XCTAssertEqualWithAccuracy(start.clip.size.height, expected.clip.height, 1e-9);
+  XCTAssertEqualWithAccuracy(start.radius, expected.clip.radius, 1e-9);
+  XCTAssertEqualWithAccuracy(start.translateX, expected.contentTranslateX, 1e-9);
+  XCTAssertEqualWithAccuracy(start.translateY, expected.contentTranslateY, 1e-9);
+  XCTAssertEqualWithAccuracy(start.scale, expected.contentScale, 1e-9);
+}
+
+static smoothclip::Presentation Canonical(smoothclip::Presentation value) {
+  smoothclip::canonicalizePresentation(value);
+  return value;
+}
+
+// The default (flight-spec.md, "Replacing a moving run"): a worklet retargets
+// a timing run mid-flight. The new run begins at the call, from its start
+// (the explicit `from` here), and inherits the old run's velocity at the
+// call.
+- (void)testReplacementOfAMovingRunBeginsAtTheCall {
+  constexpr uint64_t driverId = 99408;
+  UIWindow *window = TestWindow();
+  SmoothClipView *host = DisplayableView(window, CGRectMake(0, 0, 400, 400));
+  [host setValue:@(driverId) forKey:@"driverId"];
+  const smoothclip::Presentation a = Canonical(Presentation(0, 0, 100, 100, 0));
+  const smoothclip::Presentation b =
+      Canonical(Presentation(200, 0, 100, 100, 0));
+  smoothclip::registerView(driverId, host, a);
+  // Ease-in-out over 400 ms, 150 ms in: still accelerating.
+  const smoothclip::TimingAnimation easeInOut{400, 0.42, 0, 0.58, 1, 2};
+  XCTAssertGreaterThan(
+      smoothclip::animateTimingGroup(
+          7413, {GroupEntry(driverId, true, a, b)}, easeInOut),
+      0);
+  const CFTimeInterval epoch = InstalledBeginTime(host);
+  Elapse(0.15);
+
+  const smoothclip::Presentation from =
+      Canonical(Presentation(60, 0, 100, 100, 0));
+  const smoothclip::Presentation target =
+      Canonical(Presentation(300, 0, 100, 100, 0));
+  const CFTimeInterval before = CACurrentMediaTime();
+  const int32_t groupId = smoothclip::animateSpringGroup(
+      7414, {GroupEntry(driverId, true, from, target)}, InheritSpring());
+  const CFTimeInterval after = CACurrentMediaTime();
+  XCTAssertGreaterThan(groupId, 0);
+  const CFTimeInterval begin = InstalledBeginTime(host);
+  XCTAssertGreaterThanOrEqual(begin, before);
+  XCTAssertLessThanOrEqual(begin, after);
+  [self assertRunOf:host startsAt:from];
+  const auto velocityAt = [&](CFTimeInterval time) {
+    return smoothclip::inheritedRunVelocityFrom(
+        a, b, smoothclip::timingRunProgress(easeInOut, time - epoch), from,
+        target);
+  };
+  const double low = std::min(velocityAt(before), velocityAt(after));
+  const double high = std::max(velocityAt(before), velocityAt(after));
+  XCTAssertGreaterThan(low, 1);
+  [self assertSpringVelocitiesOf:host within:low - 1e-9 and:high + 1e-9];
+
+  smoothclip::cancelAnimationGroup(groupId, smoothclip::GroupCancelBehavior::Freeze);
+  smoothclip::unregisterView(driverId, host);
+  [host setValue:@0 forKey:@"driverId"];
+  smoothclip::destroyDriver(driverId);
+}
+
+// A call that replaces a moving run and starts a fresh one shares one
+// epoch: every run in it begins at its install.
+- (void)testAGroupThatReplacesAMovingRunBeginsAsOne {
+  constexpr uint64_t movingId = 99409;
+  constexpr uint64_t freshId = 99410;
+  UIWindow *window = TestWindow();
+  SmoothClipView *moving = DisplayableView(window, CGRectMake(0, 0, 400, 400));
+  [moving setValue:@(movingId) forKey:@"driverId"];
+  SmoothClipView *fresh = DisplayableView(window, CGRectMake(0, 400, 400, 400));
+  [fresh setValue:@(freshId) forKey:@"driverId"];
+  const smoothclip::Presentation a = Presentation(0, 0, 100, 100, 0);
+  const smoothclip::Presentation b = Presentation(200, 0, 100, 100, 0);
+  smoothclip::registerView(movingId, moving, a);
+  smoothclip::registerView(freshId, fresh, a);
+  const smoothclip::TimingAnimation linear{400, 0, 0, 1, 1, 2};
+
+  XCTAssertGreaterThan(
+      smoothclip::animateTimingGroup(
+          7416, {GroupEntry(movingId, true, a, b)}, linear),
+      0);
+  Elapse(0.05);
+  const CFTimeInterval before = CACurrentMediaTime();
+  const int32_t groupId = smoothclip::animateTimingGroup(
+      7417,
+      {
+          GroupEntry(movingId, false, {}, Presentation(0, 200, 100, 100, 0)),
+          GroupEntry(freshId, true, a, b),
+      },
+      linear);
+  const CFTimeInterval after = CACurrentMediaTime();
+  XCTAssertGreaterThan(groupId, 0);
+  const CFTimeInterval begin = InstalledBeginTime(moving);
+  XCTAssertGreaterThanOrEqual(begin, before);
+  XCTAssertLessThanOrEqual(begin, after);
+  XCTAssertEqualWithAccuracy(InstalledBeginTime(fresh), begin, 1e-9);
+
+  smoothclip::cancelAnimationGroup(groupId, smoothclip::GroupCancelBehavior::Freeze);
+  for (SmoothClipView *view in @[ moving, fresh ]) {
+    const uint64_t driverId = [[view valueForKey:@"driverId"] unsignedLongLongValue];
+    smoothclip::unregisterView(driverId, view);
+    [view setValue:@0 forKey:@"driverId"];
+    smoothclip::destroyDriver(driverId);
+  }
+}
+
+// A flying host retargeted mid-flight begins the new run at the call, stays
+// in its lift, inherits the flight's motion, and lands as before.
+- (void)testRetargetOfAFlightBeginsAtTheCallAndContinuesTheLift {
+  constexpr uint64_t driverId = 99411;
+  UIWindow *window = TestWindow();
+  const smoothclip::Presentation rest =
+      Canonical(Presentation(0, 0, 160, 120, 16));
+  SmoothClipView *host = FlightHost(
+      window, CGRectMake(20, 300, 160, 120), driverId, "flight-c", rest);
+  const smoothclip::Presentation predicted =
+      Canonical(Presentation(-20, -300, 400, 460, 16));
+  XCTAssertGreaterThan(
+      smoothclip::animateTimingGroup(
+          7418, {GroupEntry(driverId, false, {}, predicted)}, kFlightTiming),
+      0);
+  Elapse(0.2);
+  UIView *carrier = PresentationContainer(host).superview;
+  XCTAssertNotEqual(carrier, host);
+
+  const smoothclip::Presentation landing =
+      Canonical(Presentation(-20, -300, 400, 500, 16));
+  const CFTimeInterval before = CACurrentMediaTime();
+  const int32_t groupId = smoothclip::animateSpringGroup(
+      7419, {GroupEntry(driverId, false, {}, landing)}, InheritSpring());
+  const CFTimeInterval after = CACurrentMediaTime();
+  XCTAssertGreaterThan(groupId, 0);
+  const CFTimeInterval begin = InstalledBeginTime(host);
+  XCTAssertGreaterThanOrEqual(begin, before);
+  XCTAssertLessThanOrEqual(begin, after);
+  DrainMainQueue();
+  XCTAssertEqual(PresentationContainer(host).superview, carrier);
+  const std::vector<double> velocities = InstalledSpringVelocities(host);
+  XCTAssertGreaterThan(velocities.size(), 1u);
+  XCTAssertGreaterThan(velocities.front(), 0);
+
+  [host smoothClipAnimationDidStopWithDriverId:driverId
+                                   animationId:groupId
+                                      finished:YES];
+  XCTAssertEqual(PresentationContainer(host).superview, host);
+  XCTAssertNil(carrier.superview);
+  smoothclip::destroyDriver(driverId);
+}
+
+#pragma mark - Mid-run reads
+
+// A window on screen: the hosts' layers reach the render server, so their
+// presentation layers carry the installed runs.
+static UIWindow *VisibleTestWindow(void) {
+  UIWindow *window = TestWindow();
+  window.rootViewController = [UIViewController new];
+  [window makeKeyAndVisible];
+  [CATransaction flush];
+  return window;
+}
+
+// Lets the render server pick up what was just installed.
+static void CommitAndWait(void) {
+  [CATransaction flush];
+  [[NSRunLoop currentRunLoop]
+      runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.03]];
+}
+
+// The content channels of a frame `progress` of the way from `from` to `to`,
+// as the run draws them (the clip's own progress).
+- (void)assertContentOf:(const smoothclip::Presentation &)frame
+                   from:(const smoothclip::Presentation &)from
+                     to:(const smoothclip::Presentation &)to
+             atProgress:(double)progress {
+  const auto mix = [progress](double start, double end) {
+    return start + (end - start) * progress;
+  };
+  XCTAssertEqualWithAccuracy(
+      frame.contentScale, mix(from.contentScale, to.contentScale), 1e-3);
+  XCTAssertEqualWithAccuracy(
+      frame.contentTranslateX,
+      mix(from.contentTranslateX, to.contentTranslateX), 1e-2);
+  XCTAssertEqualWithAccuracy(
+      frame.contentTranslateY,
+      mix(from.contentTranslateY, to.contentTranslateY), 1e-2);
+}
+
+// While a run animates `transform.scale`, a presentation
+// layer's `affineTransform` is not the animated matrix, so a mid-run read
+// reported the clip where the run was and the content at the run's target.
+- (void)testMidRunReadReportsTheVisibleContentOfATimingRun {
+  UIWindow *window = VisibleTestWindow();
+  SmoothClipView *host = DisplayableView(window, CGRectMake(0, 0, 200, 200));
+  auto from = Presentation(20, 40, 100, 60, 8, 10, 20);
+  from.contentScale = 0.5;
+  [host smoothClipApplyPresentation:from];
+  [CATransaction flush];
+  const auto target = Presentation(0, 0, 200, 200, 0);
+  // Linear over 20 s, begun 8 s ago: about 40 % of the way, however long the
+  // run loop takes.
+  const smoothclip::TimingAnimation linear{20000, 0, 0, 1, 1, 2};
+  XCTAssertTrue([host smoothClipAnimateTiming:target animation:linear
+      animationId:22346 sharedBeginTime:CACurrentMediaTime() - 8.0]);
+  CommitAndWait();
+  const auto visible = [host smoothClipCurrentPresentation];
+  const double progress = (visible.clip.width - 100) / 100;
+  XCTAssertGreaterThan(progress, 0.35);
+  XCTAssertLessThan(progress, 0.5);
+  [self assertContentOf:visible from:from to:target atProgress:progress];
+  window.hidden = YES;
+}
+
+- (void)testMidRunReadReportsTheVisibleContentOfASpringRun {
+  UIWindow *window = VisibleTestWindow();
+  SmoothClipView *host = DisplayableView(window, CGRectMake(0, 0, 200, 200));
+  auto from = Presentation(20, 40, 100, 60, 8, 10, 20);
+  from.contentScale = 0.5;
+  [host smoothClipApplyPresentation:from];
+  [CATransaction flush];
+  const auto target = Presentation(0, 0, 200, 200, 0);
+  // Critically damped, omega 2/s, begun 1 s ago: about 60 % of the way.
+  const smoothclip::SpringAnimation slow{1, 4, 4, 0, false, 2};
+  XCTAssertTrue([host smoothClipAnimateSpring:target animation:slow
+      animationId:22347 sharedBeginTime:CACurrentMediaTime() - 1.0]);
+  CommitAndWait();
+  const auto visible = [host smoothClipCurrentPresentation];
+  const double progress = (visible.clip.width - 100) / 100;
+  XCTAssertGreaterThan(progress, 0.5);
+  XCTAssertLessThan(progress, 0.8);
+  [self assertContentOf:visible from:from to:target atProgress:progress];
+  window.hidden = YES;
+}
+
+// The rotation reads the presentation matrix too (`transform`, as the
+// content does): mid-run it is the run's angle, not the target's.
+- (void)testMidRunReadReportsTheVisibleRotation {
+  UIWindow *window = VisibleTestWindow();
+  SmoothClipView *host = DisplayableView(window, CGRectMake(0, 0, 200, 200));
+  const auto from = Presentation(20, 40, 100, 60, 8);
+  [host smoothClipApplyPresentation:from];
+  [CATransaction flush];
+  auto target = Presentation(0, 0, 200, 200, 0);
+  target.rotation = M_PI_2;
+  const smoothclip::TimingAnimation linear{20000, 0, 0, 1, 1, 2};
+  XCTAssertTrue([host smoothClipAnimateTiming:target animation:linear
+      animationId:22348 sharedBeginTime:CACurrentMediaTime() - 8.0]);
+  CommitAndWait();
+  const auto visible = [host smoothClipCurrentPresentation];
+  const double progress = (visible.clip.width - 100) / 100;
+  XCTAssertGreaterThan(progress, 0.35);
+  XCTAssertEqualWithAccuracy(visible.rotation, M_PI_2 * progress, 1e-3);
+  window.hidden = YES;
+}
+
+// A baked tile has no shadow offset or spread on the layer; mid-run they
+// follow the run, as the tile layer's frame does, not the target's.
+- (void)testMidRunReadReportsTheVisibleOffsetOfABakedShadow {
+  UIWindow *window = VisibleTestWindow();
+  SmoothClipView *host = DisplayableView(window, CGRectMake(0, 0, 400, 400));
+  [host setValue:@YES forKey:@"bakedShadows"];
+  const smoothclip::Presentation card = PresentationValue(
+      20, 250, 360, 100, 20, 20, 20, 20, smoothclip::ClipCurve::Continuous,
+      0, 0, 1, BoxShadow(0.25, 0, 2, 16, 0));
+  const smoothclip::Presentation full = PresentationValue(
+      0, 0, 400, 400, 20, 20, 20, 20, smoothclip::ClipCurve::Continuous,
+      0, 0, 1, BoxShadow(0.25, 6, 20, 16, 4));
+  [host smoothClipApplyPresentation:card];
+  [CATransaction flush];
+  CALayer *shadowLayer = [host valueForKey:@"shadowLayer"];
+  XCTAssertNotNil(shadowLayer.contents);
+  const smoothclip::TimingAnimation linear{20000, 0, 0, 1, 1, 2};
+  XCTAssertTrue([host smoothClipAnimateTiming:full animation:linear
+      animationId:22349 sharedBeginTime:CACurrentMediaTime() - 8.0]);
+  CommitAndWait();
+  XCTAssertNotNil(shadowLayer.contents);
+  const auto visible = [host smoothClipCurrentPresentation];
+  const double progress = (visible.clip.height - 100) / 300;
+  XCTAssertGreaterThan(progress, 0.35);
+  XCTAssertLessThan(progress, 0.5);
+  XCTAssertEqualWithAccuracy(visible.shadow.offsetX, 6 * progress, 1e-2);
+  XCTAssertEqualWithAccuracy(visible.shadow.offsetY, 2 + 18 * progress, 1e-2);
+  XCTAssertEqualWithAccuracy(visible.shadow.spreadDistance, 4 * progress, 1e-2);
+  XCTAssertEqualWithAccuracy(visible.shadow.alpha, 0.25, 1e-6);
+  XCTAssertEqualWithAccuracy(visible.shadow.blurRadius, 16, 1e-9);
+  window.hidden = YES;
+}
+
+// Through the registry: a snapshot and beginInteraction taken
+// mid-run report the content where the run is, and the freeze holds it.
+- (void)testMidRunSnapshotAndInteractionReportTheVisibleContent {
+  constexpr uint64_t driverId = 99501;
+  UIWindow *window = VisibleTestWindow();
+  SmoothClipView *host = DisplayableView(window, CGRectMake(0, 0, 400, 400));
+  [host setValue:@(driverId) forKey:@"driverId"];
+  auto card = Presentation(20, 250, 360, 100, 20, -12, 30);
+  card.contentScale = 0.6;
+  card = Canonical(card);
+  const auto detail = Canonical(Presentation(0, 0, 400, 400, 0));
+  smoothclip::registerView(driverId, host, card);
+  [CATransaction flush];
+  // Linear over 1 s, 0.4 s in.
+  const smoothclip::TimingAnimation linear{1000, 0, 0, 1, 1, 2};
+  XCTAssertGreaterThan(
+      smoothclip::animateTimingGroup(
+          7501, {GroupEntry(driverId, false, {}, detail)}, linear),
+      0);
+  Elapse(0.4);
+  CommitAndWait();
+
+  const auto snapshot = smoothclip::snapshotGroup({driverId})[0].presentation;
+  const double atSnapshot = (snapshot.clip.height - 100) / 300;
+  XCTAssertGreaterThan(atSnapshot, 0.3);
+  XCTAssertLessThan(atSnapshot, 0.9);
+  [self assertContentOf:snapshot from:card to:detail atProgress:atSnapshot];
+
+  const auto frozen =
+      smoothclip::beginGroupInteraction({driverId})[0].presentation;
+  const double atFreeze = (frozen.clip.height - 100) / 300;
+  XCTAssertGreaterThanOrEqual(atFreeze, atSnapshot);
+  XCTAssertLessThan(atFreeze, 0.9);
+  [self assertContentOf:frozen from:card to:detail atProgress:atFreeze];
+  const auto held = [host smoothClipCurrentPresentation];
+  XCTAssertEqualWithAccuracy(held.contentScale, frozen.contentScale, 1e-9);
+  XCTAssertEqualWithAccuracy(
+      held.contentTranslateX, frozen.contentTranslateX, 1e-9);
+  XCTAssertEqualWithAccuracy(
+      held.contentTranslateY, frozen.contentTranslateY, 1e-9);
+
+  smoothclip::unregisterView(driverId, host);
+  [host setValue:@0 forKey:@"driverId"];
+  smoothclip::destroyDriver(driverId);
+  window.hidden = YES;
+}
+
+// A jump once recorded on the simulator: a retarget of a moving run starts its content
+// channels where the run is at the call, as it does the clip.
+- (void)testReplacementOfAMovingRunStartsTheContentWhereItIs {
+  constexpr uint64_t driverId = 99502;
+  UIWindow *window = VisibleTestWindow();
+  SmoothClipView *host = DisplayableView(window, CGRectMake(0, 0, 400, 400));
+  [host setValue:@(driverId) forKey:@"driverId"];
+  auto card = Presentation(20, 250, 360, 100, 20, -12, 30);
+  card.contentScale = 0.6;
+  card = Canonical(card);
+  const auto predicted = Canonical(Presentation(0, 0, 400, 360, 0));
+  const auto detail = Canonical(Presentation(0, 0, 400, 400, 0));
+  smoothclip::registerView(driverId, host, card);
+  [CATransaction flush];
+  const smoothclip::TimingAnimation linear{1500, 0, 0, 1, 1, 2};
+  XCTAssertGreaterThan(
+      smoothclip::animateTimingGroup(
+          7502, {GroupEntry(driverId, false, {}, predicted)}, linear),
+      0);
+  const CFTimeInterval epoch = InstalledBeginTime(host);
+  Elapse(0.3);
+  CommitAndWait();
+
+  const CFTimeInterval before = CACurrentMediaTime();
+  const int32_t groupId = smoothclip::animateSpringGroup(
+      7503, {GroupEntry(driverId, false, {}, detail)}, InheritSpring());
+  const CFTimeInterval after = CACurrentMediaTime();
+  XCTAssertGreaterThan(groupId, 0);
+  const InstalledStart start = InstalledRunStart(host);
+  XCTAssertFalse(CGRectIsNull(start.clip));
+  // The old run's progress at the call, from the start's clip (the
+  // presentation layers' clock may lag the call by a frame).
+  const double progress = (start.clip.size.height - 100) / 260;
+  XCTAssertGreaterThanOrEqual(progress, (before - epoch) / 1.5 - 0.03);
+  XCTAssertLessThanOrEqual(progress, (after - epoch) / 1.5 + 0.03);
+  XCTAssertEqualWithAccuracy(start.scale, 0.6 + 0.4 * progress, 1e-3);
+  XCTAssertEqualWithAccuracy(start.translateX, -12 * (1 - progress), 1e-2);
+  XCTAssertEqualWithAccuracy(start.translateY, 30 * (1 - progress), 1e-2);
+
+  smoothclip::cancelAnimationGroup(
+      groupId, smoothclip::GroupCancelBehavior::Freeze);
+  smoothclip::unregisterView(driverId, host);
+  [host setValue:@0 forKey:@"driverId"];
+  smoothclip::destroyDriver(driverId);
+  window.hidden = YES;
 }
 
 @end

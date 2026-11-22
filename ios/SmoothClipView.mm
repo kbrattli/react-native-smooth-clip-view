@@ -1,14 +1,20 @@
 #import "SmoothClipView.h"
 
+#import "SmoothClipFlight.h"
+#import "SmoothClipFlightTargetView.h"
 #import "SmoothClipGeometry.h"
 #import "SmoothClipViewRegistry.h"
 
 #include "SmoothClipAnimationCurve.h"
+#include "SmoothClipFlightGeometry.h"
 #include "SmoothClipVelocityTracker.h"
 
 #import <QuartzCore/QuartzCore.h>
 #import <React/RCTConversions.h>
 #import <React/RCTFabricComponentsPlugins.h>
+#import <React/RCTMountingTransactionObserving.h>
+#import <React/RCTUtils.h>
+#import <React/UIView+React.h>
 #if defined(SMOOTH_CLIP_ENABLE_SIGNPOSTS) && SMOOTH_CLIP_ENABLE_SIGNPOSTS
 #import <os/signpost.h>
 #endif
@@ -21,6 +27,108 @@
 #include <cmath>
 
 using namespace facebook::react;
+
+#include "SmoothClipHeroTrace.h"
+
+#if SMOOTH_CLIP_HERO_TRACE
+#import <objc/runtime.h>
+
+// Bench instrumentation (docs/hero-bench.md): logs the hardware time of every
+// touch-up, so a run can be timed from the finger lift, not from a handler.
+static void (*SmoothClipHeroTraceOriginalSendEvent)(id, SEL, UIEvent *);
+static void SmoothClipHeroTraceSendEvent(id self, SEL _cmd, UIEvent *event) {
+  if (event.type == UIEventTypeTouches) {
+    for (UITouch *touch in event.allTouches) {
+      if (touch.phase == UITouchPhaseEnded) {
+        HERO_TRACE("touch-ended at=%.6f", touch.timestamp);
+      }
+    }
+  }
+  SmoothClipHeroTraceOriginalSendEvent(self, _cmd, event);
+}
+
+@interface SmoothClipHeroTraceTouches : NSObject
+@end
+
+@implementation SmoothClipHeroTraceTouches
++ (void)load {
+  Method sendEvent = class_getInstanceMethod(UIApplication.class, @selector(sendEvent:));
+  SmoothClipHeroTraceOriginalSendEvent =
+      (void (*)(id, SEL, UIEvent *))method_setImplementation(
+          sendEvent, (IMP)SmoothClipHeroTraceSendEvent);
+}
+@end
+#endif // SMOOTH_CLIP_HERO_TRACE
+
+// The host's stand-in in the window's flight layer while it flies: the host's
+// size, drawn through the host's transform to the window, never hit-testable.
+@interface SmoothClipFlightCarrierView : UIView
+@end
+
+@implementation SmoothClipFlightCarrierView
+- (id<CAAction>)actionForLayer:(CALayer *)layer forKey:(NSString *)event {
+  return (id<CAAction>)[NSNull null];
+}
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+  return nil;
+}
+@end
+
+// Lands a flight whose host was deleted mid-run. It keeps the carrier, and the
+// containers still flying in it, until the run would have ended; then it
+// removes the carrier and reveals the targets. Core Animation retains it as
+// the delegate of a no-op animation on the carrier, so anything that removes
+// the carrier's animations (backgrounding) lands it too.
+@interface SmoothClipFlightKeeper : NSObject <CAAnimationDelegate, SmoothClipFlightHost>
+@property (nonatomic, strong) UIView *carrier;
+@property (nonatomic, copy) NSString *tag;
+@property (nonatomic, assign) BOOL landed;
+- (void)landAfter:(CFTimeInterval)remaining;
+@end
+
+static NSString *const kSmoothClipFlightKeeperKey = @"smoothClip.flightKeeper";
+
+@implementation SmoothClipFlightKeeper
+
+- (void)smoothClipFlightTargetsDidChange {
+}
+
+- (void)landAfter:(CFTimeInterval)remaining {
+  if (!(remaining > 0) || self.carrier.window == nil) {
+    [self land];
+    return;
+  }
+  CABasicAnimation *keeper = [CABasicAnimation animationWithKeyPath:@"opacity"];
+  keeper.fromValue = @1;
+  keeper.toValue = @1;
+  keeper.duration = remaining;
+  keeper.delegate = self;
+  [self.carrier.layer addAnimation:keeper forKey:kSmoothClipFlightKeeperKey];
+}
+
+- (void)animationDidStop:(CAAnimation *)animation finished:(BOOL)finished {
+  [self land];
+}
+
+- (void)land {
+  if (self.landed) return;
+  self.landed = YES;
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  [self.carrier removeFromSuperview];
+  [[SmoothClipFlightCoordinator shared] host:self didLandWithTag:self.tag ?: @""];
+  [CATransaction commit];
+  self.carrier = nil;
+}
+
+@end
+
+typedef NS_ENUM(NSInteger, SmoothClipFlightOutcome) {
+  // A run (or an interaction) owns the lifted host.
+  SmoothClipFlightOutcomeRunning = 0,
+  SmoothClipFlightOutcomeFinished,
+  SmoothClipFlightOutcomeCancelled,
+};
 
 @class SmoothClipView;
 
@@ -77,7 +185,7 @@ using namespace facebook::react;
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event { return YES; }
 @end
 
-@interface SmoothClipView () <RCTSmoothClipViewViewProtocol>
+@interface SmoothClipView () <RCTSmoothClipViewViewProtocol, RCTMountingTransactionObserving, SmoothClipFlightHost>
 - (void)smoothClipAnimationDidStopWithDriverId:(uint64_t)driverId
                                     animationId:(int32_t)animationId
                                        finished:(BOOL)finished;
@@ -359,7 +467,8 @@ static std::array<double, 11> SmoothClipVelocityChannels(
 }
 
 // Core Animation uses the overdamped physical solution as well as the critical
-// and underdamped ones. This is only a turn-count reference at snapshot time.
+// and underdamped ones. Read at snapshot time only: the rotation's turn count,
+// and a baked shadow's offset and spread (installedRunProgress:).
 static double SmoothClipCARotationProgress(double elapsed, const smoothclip::SpringAnimation &spring) {
   const double omega = std::sqrt(spring.stiffness / spring.mass);
   const double zeta = spring.damping / (2 * std::sqrt(spring.stiffness * spring.mass));
@@ -712,6 +821,12 @@ static CGRect SmoothClipBakedShadowLayerRect(
   double _canonicalOpacity;
   double _animationFromRotation;
   double _animationToRotation;
+  // The installed run's shadow endpoints, as animated (normalized). A baked
+  // tile does not carry its offset and spread as layer properties; a
+  // mid-run read takes them from the run's progress
+  // (smoothClipCurrentPresentation).
+  smoothclip::Shadow _animationFromShadow;
+  smoothclip::Shadow _animationToShadow;
   BOOL _hasAppearanceAnimation;
   BOOL _hasMaskAnimation;
   BOOL _hasShadowModel;
@@ -761,6 +876,45 @@ static CGRect SmoothClipBakedShadowLayerRect(
   // coalescing/projection live in the shared cpp/SmoothClipVelocityTracker.h
   // (behavior-paired with Android's per-driver history).
   smoothclip::VelocitySampleHistory _velocitySamples;
+
+  // Flights (`flight`, docs/flight-spec.md). The flight
+  // is the lift of _presentationContainer into _flightCarrier, in the
+  // window's flight layer; Fabric children stay in _contentContainer.
+  BOOL _flightEnabled;
+  NSString *_flightTag;
+  // A transaction mounted since this host was created: its ancestors are
+  // laid out, so an off-window host can compute its transform to the window.
+  BOOL _flightMounted;
+  UIView *_flightCarrier;
+  smoothclip::HostWindowTransform _flightTransform;
+  smoothclip::Presentation _flightRest;
+  NSString *_flightLiftTag;
+  // The target with the tag was attached and uncovered at lift: the flight
+  // leaves it rather than landing on it.
+  BOOL _flightDeparting;
+  // A target with the tag was mounted at some point of this lift. A landing
+  // flight that saw its target and has none to land on has lost it (its
+  // route was popped mid-flight).
+  BOOL _flightSawTarget;
+  BOOL _flightInteractionHeld;
+  SmoothClipFlightOutcome _flightOutcome;
+  BOOL _flightLandingScheduled;
+  NSUInteger _flightGeneration;
+  BOOL _flightGraceStarted;
+  BOOL _flightGraceExpired;
+  NSHashTable *_flightAwaitedTransitions;
+  // A departing flight returned while its target was still in a transition
+  // (a pop): the target stays covered until that transition ends.
+  BOOL _flightUncoverPending;
+  // The way back: the presentation a handoff landed at, and its tag.
+  BOOL _flightHasLanded;
+  smoothclip::Presentation _flightLanded;
+  NSString *_flightLandedTag;
+  // Host loss: content snapshots taken before Fabric removes children, and
+  // the content container that left with a deleted host's flight.
+  BOOL _flightSnapshotTaken;
+  NSMutableArray<UIView *> *_flightSnapshots;
+  __weak UIView *_flightDetachedContent;
 }
 
 + (ComponentDescriptorProvider)componentDescriptorProvider {
@@ -788,38 +942,11 @@ static CGRect SmoothClipBakedShadowLayerRect(
     // intentionally overridden again after every prop update below.
     self.clipsToBounds = YES;
 
-    _presentationContainer = [[SmoothClipPresentationContainerView alloc] initWithFrame:CGRectZero];
-    _presentationContainer.layer.anchorPoint = CGPointZero;
-    _presentationContainer.layer.allowsGroupOpacity = YES;
-    _presentationContainer.autoresizesSubviews = NO;
-    [self addSubview:_presentationContainer];
     _requestedOpacity = _canonicalOpacity = 1;
-    _clipContainer = [[SmoothClipContainerView alloc] initWithFrame:CGRectZero];
-    _clipContainer.layer.masksToBounds = YES;
-    _clipContainer.layer.needsDisplayOnBoundsChange = NO;
-    _clipContainer.autoresizesSubviews = NO;
-    _clipContainer.hidden = YES;
-    _clipContainer.accessibilityElementsHidden = YES;
-    _clipHidden = YES;
-    _contentContainer =
-        [[SmoothClipContainerView alloc] initWithFrame:CGRectZero];
-    _contentContainer.layer.needsDisplayOnBoundsChange = NO;
-    _contentContainer.autoresizesSubviews = NO;
-    [_clipContainer addSubview:_contentContainer];
-    [_presentationContainer addSubview:_clipContainer];
-
-    _shadowLayer = nil;
-    // Created lazily so the common clipping-only path owns no shadow layer.
+    [self buildContainers];
     _bakedShadows = NO;
-
-    _unequalCornerMask = [CAShapeLayer layer];
-    _unequalCornerMask.actions = @{
-      @"path": [NSNull null],
-      @"bounds": [NSNull null],
-      @"position": [NSNull null],
-    };
-    _unequalCornerMask.fillColor = UIColor.blackColor.CGColor;
-    _unequalCornerMask.needsDisplayOnBoundsChange = NO;
+    _flightTag = @"";
+    _flightOutcome = SmoothClipFlightOutcomeRunning;
 
     _requestedClip = CGRectZero;
     _canonicalClip = CGRectZero;
@@ -855,9 +982,549 @@ static CGRect SmoothClipBakedShadowLayerRect(
 }
 
 - (void)dealloc {
+  [self detachFlightForHostLossRebuilding:NO];
+  if (_flightUncoverPending) {
+    // No waiting from dealloc (it would form a weak reference to self).
+    _flightUncoverPending = NO;
+    [[SmoothClipFlightCoordinator shared] host:self
+                                didLandWithTag:_flightLiftTag ?: @""];
+  }
   if (_driverId != 0) {
     smoothclip::unregisterView(_driverId, self);
   }
+}
+
+// The library-owned containers: _presentationContainer (rotation, opacity;
+// the layer a flight lifts) > _clipContainer (the aperture) >
+// _contentContainer (Fabric children). A host whose flight outlives it builds
+// fresh ones; the flying set stays with the flight.
+- (void)buildContainers {
+  _presentationContainer = [[SmoothClipPresentationContainerView alloc] initWithFrame:CGRectZero];
+  _presentationContainer.layer.anchorPoint = CGPointZero;
+  _presentationContainer.layer.allowsGroupOpacity = YES;
+  _presentationContainer.autoresizesSubviews = NO;
+  [self insertSubview:_presentationContainer atIndex:0];
+  _clipContainer = [[SmoothClipContainerView alloc] initWithFrame:CGRectZero];
+  _clipContainer.layer.masksToBounds = YES;
+  _clipContainer.layer.needsDisplayOnBoundsChange = NO;
+  _clipContainer.autoresizesSubviews = NO;
+  _clipContainer.hidden = YES;
+  _clipContainer.accessibilityElementsHidden = YES;
+  _clipHidden = YES;
+  _contentContainer =
+      [[SmoothClipContainerView alloc] initWithFrame:CGRectZero];
+  _contentContainer.layer.needsDisplayOnBoundsChange = NO;
+  _contentContainer.autoresizesSubviews = NO;
+  [_clipContainer addSubview:_contentContainer];
+  [_presentationContainer addSubview:_clipContainer];
+
+  // Created lazily so the common clipping-only path owns no shadow layer.
+  _shadowLayer = nil;
+
+  _unequalCornerMask = [CAShapeLayer layer];
+  _unequalCornerMask.actions = @{
+    @"path": [NSNull null],
+    @"bounds": [NSNull null],
+    @"position": [NSNull null],
+  };
+  _unequalCornerMask.fillColor = UIColor.blackColor.CGColor;
+  _unequalCornerMask.needsDisplayOnBoundsChange = NO;
+}
+
+#pragma mark - Flights
+
+// Hosts with `flight` (docs/flight-spec.md). A run, or an
+// interaction, lifts _presentationContainer into a carrier in the window's
+// flight layer, drawn through the host's transform to the window, so the
+// first flying frame is pixel-identical to the host. The flight lands when
+// the run ends: on its target (`SmoothClipFlightTarget` with the same tag),
+// which is revealed in the transaction that returns the container and puts
+// this host back at rest; or back in this host.
+
+- (BOOL)smoothClipFlightWantsLift {
+  return _flightEnabled || _flightCarrier != nil;
+}
+
+- (BOOL)smoothClipFlightLifted {
+  return _flightCarrier != nil;
+}
+
+// The host's transform to its window from model geometry: UIKit's push and
+// pop animate presentation values, so the model tree already holds where the
+// host rests. A route screen that react-native-screens has not attached yet
+// ends the superview chain; it is laid over its stack (`reactSuperview`).
+// Nil when there is no window, or when the transform rotates, skews or
+// scales unevenly (a presentation cannot express it).
+- (UIWindow *)smoothClipModelWindowTransform:
+    (smoothclip::HostWindowTransform *)transform {
+  UIView *top = self;
+  while (top.superview != nil) top = top.superview;
+  UIWindow *window = nil;
+  CGPoint origin = CGPointZero;
+  if ([top isKindOfClass:UIWindow.class]) {
+    window = (UIWindow *)top;
+  } else {
+    UIView *stack = top.reactSuperview;
+    if (stack == nil || stack == top || stack.window == nil) return nil;
+    window = stack.window;
+    origin = [stack convertPoint:CGPointZero toView:nil];
+  }
+  const CGPoint p0 = [self convertPoint:CGPointZero toView:top];
+  const CGPoint px = [self convertPoint:CGPointMake(1, 0) toView:top];
+  const CGPoint py = [self convertPoint:CGPointMake(0, 1) toView:top];
+  smoothclip::HostWindowTransform result;
+  if (!smoothclip::hostWindowTransformFromAffine(
+          px.x - p0.x, px.y - p0.y, py.x - p0.x, py.y - p0.y,
+          p0.x + origin.x, p0.y + origin.y, result)) {
+    return nil;
+  }
+  if (transform != nullptr) *transform = result;
+  return window;
+}
+
+// The transform window-space presentations convert through: the one captured
+// at lift while the host flies, the model one otherwise.
+- (BOOL)smoothClipWindowTransform:(smoothclip::HostWindowTransform *)transform {
+  if (_flightCarrier != nil) {
+    *transform = _flightTransform;
+    return YES;
+  }
+  return [self smoothClipModelWindowTransform:transform] != nil;
+}
+
+- (BOOL)smoothClipCanEnterFlight {
+  return _flightEnabled && _flightMounted &&
+      [self smoothClipModelWindowTransform:nullptr] != nil;
+}
+
+- (CALayer *)smoothClipRenderLayer {
+  return _flightCarrier != nil ? _presentationContainer.layer : self.layer;
+}
+
+// Called by the registry when a run starts on this host (before its start
+// presentation applies) and when an interaction begins on it. `rest` is what
+// the host shows now: a handoff puts it back there. A host that already flies
+// continues in the same lift.
+- (void)smoothClipLiftForFlightWithRest:(smoothclip::Presentation)rest
+                            interaction:(BOOL)interaction {
+  if (![self smoothClipFlightWantsLift]) return;
+  _flightInteractionHeld = interaction;
+  _flightOutcome = SmoothClipFlightOutcomeRunning;
+  if (_flightCarrier != nil) return;
+
+  smoothclip::HostWindowTransform transform;
+  UIWindow *window = [self smoothClipModelWindowTransform:&transform];
+  if (window == nil) return;
+  [self finishPendingFlightUncover];
+  SmoothClipFlightCoordinator *coordinator = [SmoothClipFlightCoordinator shared];
+  NSString *tag = [_flightTag copy] ?: @"";
+  SmoothClipFlightTargetView *target = [coordinator attachedTargetForTag:tag];
+
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  UIView *carrier = [[SmoothClipFlightCarrierView alloc] initWithFrame:CGRectZero];
+  // A flight may leave the host's bounds (a grid tile flying full screen):
+  // the aperture alone bounds what shows.
+  carrier.clipsToBounds = NO;
+  carrier.userInteractionEnabled = NO;
+  CALayer *layer = carrier.layer;
+  layer.anchorPoint = CGPointZero;
+  layer.bounds = self.bounds;
+  layer.position = CGPointZero;
+  // A host point p shows at scale * p + translate; the layer maps a bounds
+  // point p to position + affine(p - bounds.origin).
+  const double scale = transform.scale;
+  const CGPoint boundsOrigin = self.bounds.origin;
+  layer.affineTransform = CGAffineTransformMake(
+      scale, 0, 0, scale,
+      transform.translateX + scale * boundsOrigin.x,
+      transform.translateY + scale * boundsOrigin.y);
+  [[coordinator flightLayerForWindow:window] addSubview:carrier];
+  [carrier addSubview:_presentationContainer];
+  [CATransaction commit];
+
+  _flightCarrier = carrier;
+  _flightTransform = transform;
+  _flightRest = rest;
+  _flightLiftTag = tag;
+  _flightDeparting = target != nil && !target.flightCovered;
+  _flightSawTarget = [coordinator registeredTargetForTag:tag] != nil;
+  _flightGeneration += 1;
+  _flightGraceStarted = NO;
+  _flightGraceExpired = NO;
+  _flightSnapshotTaken = NO;
+  _flightDetachedContent = nil;
+  // The way back is consumed (or stale) once the host flies again.
+  _flightHasLanded = NO;
+  _flightLandedTag = nil;
+  [coordinator host:self didLiftWithTag:tag];
+
+}
+
+// The registry ended this host's run (finished, or replaced, cancelled,
+// frozen by an interaction), before it reports the completion.
+// - Finished: nothing replaces the run in this call, so the landing is
+//   evaluated now. A handoff resets the host to rest before the completion
+//   is sent, so JS sees the rest frame; a landing that waits (`ready`, a
+//   transition) leaves the landed frame for the completion to report.
+// - Otherwise: a replacement may start its own run in the same call, so the
+//   landing is evaluated after it, from the main queue.
+- (void)smoothClipFlightRunDidEnd:(BOOL)finished {
+  if (_flightCarrier == nil) return;
+  _flightOutcome = finished ? SmoothClipFlightOutcomeFinished
+                            : SmoothClipFlightOutcomeCancelled;
+  if (finished) {
+    [self evaluateFlightLanding];
+    return;
+  }
+  [self scheduleFlightLanding];
+}
+
+- (void)scheduleFlightLanding {
+  if (_flightLandingScheduled) return;
+  _flightLandingScheduled = YES;
+  __weak SmoothClipView *weakSelf = self;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    SmoothClipView *strongSelf = weakSelf;
+    if (strongSelf == nil) return;
+    strongSelf->_flightLandingScheduled = NO;
+    [strongSelf evaluateFlightLanding];
+  });
+}
+
+// The way back: a run with no `from` on a host whose flight handed off to a
+// target that is still attached and visible starts where that flight landed.
+- (BOOL)smoothClipFlightWayBackFrom:(smoothclip::Presentation *)from {
+  if (!_flightHasLanded || _flightCarrier != nil || _flightLandedTag.length == 0) {
+    return NO;
+  }
+  SmoothClipFlightTargetView *target =
+      [[SmoothClipFlightCoordinator shared] attachedTargetForTag:_flightLandedTag];
+  if (target == nil || target.flightCovered) return NO;
+  *from = _flightLanded;
+  return YES;
+}
+
+// The app moved the host itself (setFrame): a landed record no longer
+// describes where it is.
+- (void)smoothClipFlightForgetLanding {
+  _flightHasLanded = NO;
+  _flightLandedTag = nil;
+}
+
+#pragma mark SmoothClipFlightHost
+
+- (void)smoothClipFlightTargetsDidChange {
+  if (_flightCarrier != nil) {
+    const BOOL registered = [[SmoothClipFlightCoordinator shared]
+        registeredTargetForTag:_flightLiftTag] != nil;
+    if (registered) _flightSawTarget = YES;
+    if (_flightInteractionHeld && _flightDeparting && !registered) {
+      // An interaction that left a target that has now unmounted: the route
+      // that drove it (following its own dismissal) is gone, and nothing will
+      // start the run that would end it. It lands as a flight that lost its
+      // target, with the host back at rest; held, it would stay above every
+      // screen with its content for good.
+      _flightInteractionHeld = NO;
+      _flightDeparting = NO;
+      _flightSawTarget = YES;
+      _flightOutcome = SmoothClipFlightOutcomeFinished;
+    }
+    [self evaluateFlightLanding];
+  } else {
+    [self finishPendingFlightUncover];
+  }
+}
+
+#pragma mark Landing
+
+// Every trigger lands here: the run's end, this host's window and screen
+// transition, target changes (registration, attach, `ready`, transitions)
+// and the 300 ms grace for a detached host.
+- (void)evaluateFlightLanding {
+  if (_flightCarrier == nil) return;
+  if (_flightInteractionHeld || _activeAnimationId != 0) return;
+  if (_driverId != 0 && smoothclip::hasActiveAnimation(_driverId)) return;
+  if (_flightOutcome != SmoothClipFlightOutcomeFinished) {
+    // Cancelled (never handed off): land in place, reveal the target.
+    [self returnFromFlightHandingOffTo:nil restingHost:NO];
+    return;
+  }
+  if (!_flightDeparting) {
+    SmoothClipFlightCoordinator *coordinator = [SmoothClipFlightCoordinator shared];
+    SmoothClipFlightTargetView *target =
+        [coordinator attachedTargetForTag:_flightLiftTag];
+    if (target != nil) {
+      // Wait: the content holds the run's last frame in the layer until the
+      // target can take over (`ready` and transitions notify).
+      if (!target.flightReady) return;
+      if (target.flightInTransition) {
+        [self awaitTransitionOfView:target];
+        return;
+      }
+      [self returnFromFlightHandingOffTo:target restingHost:YES];
+      return;
+    }
+    // A target that is mounted but not attached yet is arriving (a pushed
+    // screen attaches one message after its mount) for the grace period:
+    // returning now would flash the flown content back in the host.
+    if (!_flightGraceExpired &&
+        [coordinator registeredTargetForTag:_flightLiftTag] != nil) {
+      [self startFlightGrace];
+      return;
+    }
+  }
+  // Departing, or no target: back into the host once it is on screen.
+  //
+  // Lost target: a landing flight that saw its target and has none attached
+  // now (the route was popped mid-flight and nothing flew the host home, or
+  // its screen never attached). The flight arrived somewhere that is gone,
+  // so it lands as a handoff with nothing to reveal: the host goes back to
+  // rest. Returning it where it landed would leave it at the destination
+  // frame on its own screen for good.
+  const BOOL lostTarget = !_flightDeparting && _flightSawTarget;
+  if (self.window != nil) {
+    if (SmoothClipViewIsInTransition(self)) {
+      [self awaitTransitionOfView:self];
+      return;
+    }
+    [self returnFromFlightHandingOffTo:nil restingHost:lostTarget];
+    return;
+  }
+  // Fallback: a detached host waits for its screen, or for the grace period.
+  if (_flightGraceExpired) {
+    [self returnFromFlightHandingOffTo:nil restingHost:lostTarget];
+    return;
+  }
+  [self startFlightGrace];
+}
+
+// 300 ms from the first landing evaluation that had to wait for a host or a
+// target to attach; once, per lift.
+- (void)startFlightGrace {
+  if (_flightGraceStarted) return;
+  _flightGraceStarted = YES;
+  const NSUInteger generation = _flightGeneration;
+  __weak SmoothClipView *weakSelf = self;
+  dispatch_after(
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+      dispatch_get_main_queue(), ^{
+        SmoothClipView *strongSelf = weakSelf;
+        if (strongSelf == nil || strongSelf->_flightGeneration != generation ||
+            strongSelf->_flightCarrier == nil) {
+          return;
+        }
+        strongSelf->_flightGraceExpired = YES;
+        [strongSelf evaluateFlightLanding];
+      });
+}
+
+- (void)awaitTransitionOfView:(UIView *)view {
+  id<UIViewControllerTransitionCoordinator> transition =
+      SmoothClipViewTransitionCoordinator(view);
+  if (transition == nil) return;
+  if (_flightAwaitedTransitions == nil) {
+    _flightAwaitedTransitions = [NSHashTable weakObjectsHashTable];
+  }
+  if ([_flightAwaitedTransitions containsObject:transition]) return;
+  [_flightAwaitedTransitions addObject:transition];
+  __weak SmoothClipView *weakSelf = self;
+  SmoothClipObserveTransitionEnd(view, ^{
+    [weakSelf smoothClipFlightTargetsDidChange];
+  });
+}
+
+// Ends the lift in one transaction. With a target (the handoff): reveal it,
+// return the container, put the host back at rest and remember where the
+// flight landed for the way back. Without: return the container and reveal
+// any covered target; the host stays where the flight left it, unless it
+// lost its target (`rest`), which lands as a handoff with nothing to reveal.
+- (void)returnFromFlightHandingOffTo:(SmoothClipFlightTargetView *)target
+                         restingHost:(BOOL)rest {
+  if (_flightCarrier == nil) return;
+  SmoothClipFlightCoordinator *coordinator = [SmoothClipFlightCoordinator shared];
+  NSString *tag = _flightLiftTag ?: @"";
+  BOOL keepCovered = NO;
+  if (target == nil && _flightDeparting) {
+    // A departing flight whose target is still on its way out (a pop):
+    // revealing it now would show it beside its own flight.
+    SmoothClipFlightTargetView *departed = [coordinator attachedTargetForTag:tag];
+    keepCovered = departed != nil && departed.flightInTransition;
+    if (keepCovered) [self awaitTransitionOfView:departed];
+  }
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  if (keepCovered) {
+    _flightUncoverPending = YES;
+  } else {
+    [coordinator host:self didLandWithTag:tag];
+  }
+  [self insertSubview:_presentationContainer atIndex:0];
+  if (rest) {
+    smoothclip::Presentation landed;
+    if (_driverId == 0 ||
+        !smoothclip::settleFlightHost(_driverId, _flightRest, landed)) {
+      landed = [self smoothClipCurrentPresentation];
+      [self smoothClipApplyPresentation:_flightRest recordVelocitySample:NO];
+    }
+    _flightLanded = landed;
+    _flightHasLanded = YES;
+    _flightLandedTag = tag;
+  }
+  [_flightCarrier removeFromSuperview];
+  _flightCarrier = nil;
+  for (UIView *snapshot in _flightSnapshots) [snapshot removeFromSuperview];
+  [_flightSnapshots removeAllObjects];
+  [CATransaction commit];
+  _flightGeneration += 1;
+  _flightInteractionHeld = NO;
+  if (target != nil && UIAccessibilityIsVoiceOverRunning()) {
+    UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, target);
+  }
+}
+
+- (void)finishPendingFlightUncover {
+  if (!_flightUncoverPending) return;
+  SmoothClipFlightCoordinator *coordinator = [SmoothClipFlightCoordinator shared];
+  NSString *tag = _flightLiftTag ?: @"";
+  SmoothClipFlightTargetView *departed = [coordinator attachedTargetForTag:tag];
+  if (departed != nil && departed.flightInTransition && _flightCarrier == nil) {
+    [self awaitTransitionOfView:departed];
+    return;
+  }
+  _flightUncoverPending = NO;
+  [coordinator host:self didLandWithTag:tag];
+}
+
+#pragma mark Host loss
+
+// The host is going away mid-flight (a pop deletes the route's views, or its
+// controller is destroyed). The flying containers stay in the carrier with
+// their Core Animation run; a keeper lands them when the run would have
+// ended. The host lets go of them and builds fresh ones, so the registry's
+// host-loss freeze never touches the flying layers.
+- (void)smoothClipDetachFlightForHostLoss {
+  [self detachFlightForHostLossRebuilding:YES];
+}
+
+- (void)detachFlightForHostLossRebuilding:(BOOL)rebuild {
+  if (_flightCarrier == nil) return;
+  CFTimeInterval remaining = 0;
+  CAAnimation *geometry = _activeAnimationId != 0
+      ? [_clipContainer.layer animationForKey:@"smoothClip.geometry"]
+      : nil;
+  if (geometry != nil && geometry.speed != 0) {
+    const CFTimeInterval begin =
+        [_clipContainer.layer convertTime:geometry.beginTime toLayer:nil];
+    remaining = MAX(0, begin + geometry.duration - CACurrentMediaTime());
+  }
+  SmoothClipFlightKeeper *keeper = [SmoothClipFlightKeeper new];
+  keeper.carrier = _flightCarrier;
+  keeper.tag = _flightLiftTag ?: @"";
+  SmoothClipFlightCoordinator *coordinator = [SmoothClipFlightCoordinator shared];
+  [coordinator host:keeper didLiftWithTag:keeper.tag];
+  [coordinator host:self didLandWithTag:keeper.tag];
+
+  // The run keeps flying on the old layers; none of it reaches this host.
+  _animationDelegate.invalidated = YES;
+  _animationDelegate = nil;
+  _activeAnimationId = 0;
+  _activeAnimationKind = 0;
+  _springPausedForInactivity = NO;
+  _pausedSpringHadMaskAnimation = NO;
+  _pausedSpringHadShadowAnimation = NO;
+  _hasAppearanceAnimation = NO;
+  _hasMaskAnimation = NO;
+  _flightDetachedContent = _contentContainer;
+  _flightCarrier = nil;
+  _flightInteractionHeld = NO;
+  _flightGeneration += 1;
+  [_flightSnapshots removeAllObjects];
+  if (rebuild) {
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    [self buildContainers];
+    [self resetCanonicalPresentationState];
+    if (_hasLayout) [self layoutContentContainer];
+    [self applyRequestedClip];
+    [CATransaction commit];
+  } else {
+    // dealloc: the registry's host-loss freeze that follows must not write
+    // into the flying layers.
+    _presentationContainer = nil;
+    _clipContainer = nil;
+    _contentContainer = nil;
+    _shadowLayer = nil;
+    _unequalCornerMask = nil;
+  }
+  [keeper landAfter:remaining];
+}
+
+// Fresh containers show nothing yet: forget what the old ones showed, so the
+// next write reaches every layer.
+- (void)resetCanonicalPresentationState {
+  _canonicalClip = CGRectZero;
+  _canonicalRadius = 0;
+  _canonicalRadii = {0, 0, 0, 0};
+  _canonicalCurve = SmoothClipCornerCurveCircular;
+  _canonicalHasExplicitRadii = NO;
+  _canonicalContentTranslation = CGPointZero;
+  _canonicalContentScale = 1;
+  _canonicalShadow = {};
+  _canonicalRotation = 0;
+  _canonicalOpacity = 1;
+  _hasShadowModel = NO;
+}
+
+// A pop deletes the route's views while the hero flies back. Fabric removes
+// leaves first (an Image from its wrapper before the wrapper from this host),
+// so the content is captured once, before any of those removals; the host's
+// Delete hands the flight to a keeper. Only a flying host (or one whose
+// flight left with its content) does any work here.
+//
+// A flying host that stays keeps its content live: a transaction that only
+// removes one of its children (a spinner unmounting when an image loads) is
+// an ordinary update, and a snapshot there would freeze the content, spinner
+// included, until the flight lands. The snapshot is for content that is
+// about to lose its host: this transaction deletes it, or the flight already
+// left with a keeper.
+- (void)mountingTransactionWillMount:(const facebook::react::MountingTransaction &)transaction
+                withSurfaceTelemetry:(const facebook::react::SurfaceTelemetry &)surfaceTelemetry {
+  UIView *content = _flightCarrier != nil ? _contentContainer : _flightDetachedContent;
+  if (content == nil || (_flightCarrier == nil && _flightSnapshotTaken)) return;
+  const auto tag = static_cast<facebook::react::Tag>(self.tag);
+  BOOL deletesHost = NO;
+  BOOL removesChild = NO;
+  for (const auto &mutation : transaction.getMutations()) {
+    if (mutation.type == ShadowViewMutation::Delete &&
+        mutation.oldChildShadowView.tag == tag) {
+      deletesHost = YES;
+      break;
+    }
+    if (mutation.type == ShadowViewMutation::Remove && mutation.parentTag == tag) {
+      removesChild = YES;
+    }
+  }
+  const BOOL orphaned = _flightCarrier == nil;
+  if (!deletesHost && !(orphaned && removesChild)) return;
+  if (!_flightSnapshotTaken) {
+    _flightSnapshotTaken = YES;
+    UIView *snapshot = [content snapshotViewAfterScreenUpdates:NO];
+    if (snapshot != nil) {
+      snapshot.frame = content.bounds;
+      [content addSubview:snapshot];
+      if (_flightSnapshots == nil) _flightSnapshots = [NSMutableArray array];
+      [_flightSnapshots addObject:snapshot];
+    }
+  }
+  if (deletesHost) [self smoothClipDetachFlightForHostLoss];
+}
+
+- (void)mountingTransactionDidMount:(const facebook::react::MountingTransaction &)transaction
+               withSurfaceTelemetry:(const facebook::react::SurfaceTelemetry &)surfaceTelemetry {
+  if (!_flightEnabled || _flightMounted) return;
+  _flightMounted = YES;
+  if (_driverId != 0) smoothclip::viewDisplayabilityChanged(_driverId, self);
 }
 
 - (void)didMoveToWindow {
@@ -865,6 +1532,7 @@ static CGRect SmoothClipBakedShadowLayerRect(
   if (_driverId != 0) {
     smoothclip::viewDisplayabilityChanged(_driverId, self);
   }
+  if (_flightCarrier != nil) [self evaluateFlightLanding];
 }
 
 - (void)mountChildComponentView:(UIView<RCTComponentViewProtocol> *)childComponentView
@@ -876,6 +1544,14 @@ static CGRect SmoothClipBakedShadowLayerRect(
 
 - (void)unmountChildComponentView:(UIView<RCTComponentViewProtocol> *)childComponentView
                             index:(NSInteger)index {
+  UIView *parent = childComponentView.superview;
+  if (parent != _contentContainer &&
+      [parent isKindOfClass:SmoothClipContainerView.class]) {
+    // It left with a flight that outlived this host (a snapshot of it flies
+    // on, mountingTransactionWillMount).
+    [childComponentView removeFromSuperview];
+    return;
+  }
   NSAssert(childComponentView.superview == _contentContainer,
            @"SmoothClipView attempted to unmount a child from another parent");
   NSAssert(index < _contentContainer.subviews.count &&
@@ -1421,32 +2097,59 @@ static CGRect SmoothClipBakedShadowLayerRect(
   _canonicalOpacity = opacity;
 }
 
-// Matrix decomposition loses complete turns. Use the installed native trajectory
-// to choose the equivalent visible angle, including after a paused spring resumes.
-- (double)visibleRotation {
-  CAAnimationGroup *group = (CAAnimationGroup *)[_presentationContainer.layer
-      animationForKey:@"smoothClip.appearance"];
-  CALayer *visible = _presentationContainer.layer.presentationLayer;
-  if (_activeAnimationId == 0 || group == nil || visible == nil) return _canonicalRotation;
+// The installed run's progress along its own curve now, as its layers show
+// it: `group`'s local time (its frozen offset while paused for inactivity),
+// through the run's timing curve, or the spring Core Animation runs. NO when
+// no run is installed on `layer`.
+- (BOOL)installedRunProgress:(double *)progress
+                     ofGroup:(CAAnimation *)group
+                     onLayer:(CALayer *)layer {
+  if (_activeAnimationId == 0 || group == nil) return NO;
   const double elapsed = group.speed == 0 ? group.timeOffset :
-      std::clamp([_presentationContainer.layer convertTime:CACurrentMediaTime() fromLayer:nil] - group.beginTime,
+      std::clamp([layer convertTime:CACurrentMediaTime() fromLayer:nil] - group.beginTime,
                  0.0, group.duration);
-  double progress;
   if (_activeAnimationKind == 1) {
-    progress = smoothclip::cubicBezier(_timingAnimation.controlPoint1X,
+    *progress = smoothclip::cubicBezier(_timingAnimation.controlPoint1X,
         _timingAnimation.controlPoint1Y, _timingAnimation.controlPoint2X,
         _timingAnimation.controlPoint2Y, group.duration > 0 ? elapsed / group.duration : 1);
   } else {
-    progress = SmoothClipCARotationProgress(elapsed, _springAnimation);
+    *progress = SmoothClipCARotationProgress(elapsed, _springAnimation);
+  }
+  return YES;
+}
+
+// Matrix decomposition loses complete turns. Use the installed native trajectory
+// to choose the equivalent visible angle, including after a paused spring resumes.
+- (double)visibleRotation {
+  CAAnimation *group =
+      [_presentationContainer.layer animationForKey:@"smoothClip.appearance"];
+  CALayer *visible = _presentationContainer.layer.presentationLayer;
+  double progress;
+  if (visible == nil ||
+      ![self installedRunProgress:&progress
+                          ofGroup:group
+                          onLayer:_presentationContainer.layer]) {
+    return _canonicalRotation;
   }
   const double expected = _animationFromRotation +
       (_animationToRotation - _animationFromRotation) * progress;
-  const CGAffineTransform matrix = visible.affineTransform;
+  // `transform`, as smoothClipCurrentPresentation reads the content.
+  const CGAffineTransform matrix =
+      CATransform3DGetAffineTransform(visible.transform);
   return smoothclip::unwrapRotation(std::atan2(matrix.b, matrix.a), expected);
 }
 
+// A run is on the layers (installed, or paused for inactivity). Between an
+// install's id assignment and its addAnimation: there is none yet, and the
+// presentation layers still hold the last committed frame, not the start
+// the registry has just applied (a flight's way back, an explicit `from`).
+- (BOOL)hasRunOnLayers {
+  return _activeAnimationId != 0 &&
+      [_clipContainer.layer animationForKey:@"smoothClip.geometry"] != nil;
+}
+
 - (double)visibleOpacity {
-  CALayer *layer = _activeAnimationId != 0 ? _presentationContainer.layer.presentationLayer : nil;
+  CALayer *layer = [self hasRunOnLayers] ? _presentationContainer.layer.presentationLayer : nil;
   return smoothclip::clamp01(layer == nil ? _canonicalOpacity : layer.opacity);
 }
 
@@ -1574,14 +2277,21 @@ static CGRect SmoothClipBakedShadowLayerRect(
 
 - (smoothclip::Presentation)smoothClipCurrentPresentation {
   SmoothClipCornerRadii visibleRadii = _canonicalRadii;
-  const CGRect visibleRect = _activeAnimationId != 0
+  const BOOL running = [self hasRunOnLayers];
+  const CGRect visibleRect = running
       ? [self presentationRectWithRadii:&visibleRadii]
       : _canonicalClip;
-  CALayer *contentLayer = _activeAnimationId != 0
+  CALayer *contentLayer = running
       ? (CALayer *)_contentContainer.layer.presentationLayer
       : _contentContainer.layer;
   if (contentLayer == nil) contentLayer = _contentContainer.layer;
-  const CGAffineTransform transform = contentLayer.affineTransform;
+  // `transform`, not `affineTransform`. While a run animates
+  // `transform.scale` (which scales z too), a presentation layer's
+  // `affineTransform` is not the animated matrix: XCTest read scale 1, the
+  // target, where `transform` read 0.70. Reading it started every replacement
+  // of a moving run with the content at the old target.
+  const CGAffineTransform transform =
+      CATransform3DGetAffineTransform(contentLayer.transform);
   const BOOL uniform = SmoothClipCornerRadiiAreUniform(visibleRadii);
   smoothclip::Geometry geometry{
       CGRectGetMinX(visibleRect),
@@ -1600,17 +2310,37 @@ static CGRect SmoothClipBakedShadowLayerRect(
       : smoothclip::ClipCurve::Circular;
   const CGFloat contentScale = hypot(transform.a, transform.b);
   smoothclip::Shadow shadow = _canonicalShadow;
-  CALayer *shadowLayer = _activeAnimationId != 0 && _shadowLayer != nil
+  CALayer *shadowLayer = running && _shadowLayer != nil
       ? (CALayer *)_shadowLayer.presentationLayer
       : _shadowLayer;
   if (shadowLayer == nil) return SmoothClipCanonicalSnapshot({
       geometry, transform.tx, transform.ty, contentScale, shadow,
       [self visibleRotation], [self visibleOpacity]});
   if (shadowLayer.contents != nil) {
-    // A baked tile: colour, blur, offset and spread never move on the layer
-    // (a run swaps tiles); the layer's opacity carries the alpha.
+    // A baked tile: colour, blur, offset and spread are not layer
+    // properties (a run swaps tiles); the layer's opacity carries the alpha.
+    // Mid-run, the tile layer's frame moves the offset and spread along the
+    // run's curve; take them there, not at the target the model holds. The
+    // colour and blur are the tile's categories and stay the target's.
     shadow.enabled = _canonicalShadow.enabled || shadowLayer.opacity > 0;
     shadow.alpha = shadowLayer.opacity;
+    double progress;
+    if (running &&
+        [self installedRunProgress:&progress
+                           ofGroup:[_clipContainer.layer
+                                       animationForKey:@"smoothClip.geometry"]
+                           onLayer:_clipContainer.layer]) {
+      const auto mix = [progress](double from, double to) {
+        return from + (to - from) * progress;
+      };
+      shadow.offsetX =
+          mix(_animationFromShadow.offsetX, _animationToShadow.offsetX);
+      shadow.offsetY =
+          mix(_animationFromShadow.offsetY, _animationToShadow.offsetY);
+      shadow.spreadDistance = mix(
+          _animationFromShadow.spreadDistance,
+          _animationToShadow.spreadDistance);
+    }
     return SmoothClipCanonicalSnapshot({
         geometry, transform.tx, transform.ty, contentScale, shadow,
         [self visibleRotation], [self visibleOpacity]});
@@ -1652,7 +2382,11 @@ static CGRect SmoothClipBakedShadowLayerRect(
   // A CA animation committed while this view's layer tree is detached from
   // the render tree does not survive the later attach commit; installs and
   // pre-ready runs must wait until a frame can actually be produced.
-  return [self smoothClipIsJoinable] && self.window != nil &&
+  return [self smoothClipIsJoinable] &&
+      // A lifted host displays in the flight layer, even once its own
+      // screen detaches; an off-window flight host can lift into it.
+      (self.window != nil || _flightCarrier.window != nil ||
+       [self smoothClipCanEnterFlight]) &&
       smoothclip::applicationIsActive();
 }
 
@@ -1816,6 +2550,8 @@ static CGRect SmoothClipBakedShadowLayerRect(
   _canonicalShadow = toShadow;
   SmoothBoxShadowNormalizeAnimationEndpoints(
       fromGeometry, &fromShadow, toGeometry, &toShadow);
+  _animationFromShadow = fromShadow;
+  _animationToShadow = toShadow;
   // A baked run animates the tile layer's frame and opacity and swaps tiles
   // in steps (bakedShadowAnimationsFromGeometry:...). One non-uniform
   // endpoint has no tile, so such a run takes the blur path throughout.
@@ -2203,14 +2939,6 @@ static CGRect SmoothClipBakedShadowLayerRect(
           convertTime:sharedBeginTime
           fromLayer:nil];
     }
-    // A stamped epoch may sit up to one frame ahead of this commit. Until it
-    // arrives the run presents its first frame rather than the model values
-    // the layers already hold, which are the target.
-    appearanceGroup.fillMode = kCAFillModeBackwards;
-    group.fillMode = kCAFillModeBackwards;
-    contentGroup.fillMode = kCAFillModeBackwards;
-    if (animatesShadow) shadowGroup.fillMode = kCAFillModeBackwards;
-    if (maskAnimation != nil) maskAnimation.fillMode = kCAFillModeBackwards;
   }
 
   _animationDelegate = [SmoothClipAnimationDelegate new];
@@ -2225,6 +2953,7 @@ static CGRect SmoothClipBakedShadowLayerRect(
   if (_hasAppearanceAnimation) {
     [_presentationContainer.layer addAnimation:appearanceGroup forKey:@"smoothClip.appearance"];
   }
+  HERO_TRACE("clip-install driver=%llu begin=%.6f duration=%.3f", _driverId, sharedBeginTime, group.duration);
   [layer addAnimation:group forKey:@"smoothClip.geometry"];
   [_contentContainer.layer addAnimation:contentGroup
                                  forKey:@"smoothClip.content"];
@@ -2534,6 +3263,7 @@ static CGRect SmoothClipBakedShadowLayerRect(
   [self syncVisibilityForRect:_canonicalClip];
   smoothclip::viewAnimationDidStop(
       driverId, animationId, self, finished);
+  [self evaluateFlightLanding];
 }
 
 - (void)updateProps:(const Props::Shared &)props
@@ -2542,6 +3272,16 @@ static CGRect SmoothClipBakedShadowLayerRect(
       *std::static_pointer_cast<const SmoothClipViewProps>(props);
   [super updateProps:props oldProps:oldProps];
   self.clipsToBounds = YES;
+  _flightEnabled = newProps.flightEnabled;
+  NSString *flightTag =
+      [NSString stringWithUTF8String:newProps.flightTag.c_str()] ?: @"";
+  if (![flightTag isEqualToString:_flightTag]) {
+    _flightTag = [flightTag copy];
+    // A landed record pairs with the tag it landed on.
+    if (![_flightLandedTag isEqualToString:flightTag]) {
+      [self smoothClipFlightForgetLanding];
+    }
+  }
 
   const BOOL bakedShadows = newProps.shadowRendering == 1;
   if (bakedShadows != _bakedShadows) {

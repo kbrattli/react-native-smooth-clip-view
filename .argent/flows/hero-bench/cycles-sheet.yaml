@@ -1,0 +1,23 @@
+# Fragment: 10 open/close cycles of the selected sheet variant: open the card,
+# close by dragging the sheet down.
+steps:
+  - run: open-card
+  - run: close-drag
+  - run: open-card
+  - run: close-drag
+  - run: open-card
+  - run: close-drag
+  - run: open-card
+  - run: close-drag
+  - run: open-card
+  - run: close-drag
+  - run: open-card
+  - run: close-drag
+  - run: open-card
+  - run: close-drag
+  - run: open-card
+  - run: close-drag
+  - run: open-card
+  - run: close-drag
+  - run: open-card
+  - run: close-drag

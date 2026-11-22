@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+- **Flights (hero transitions).** `flight` on `SmoothClipView` moves the
+  host's content into a window-level flight layer while a run (or
+  `beginInteraction()`) moves it, above navigation transitions and sheets, and
+  lands it when the run ends. `<SmoothClipFlightTarget tag ready>` is the other
+  end: hidden while its flight is airborne and revealed in the frame the
+  flight hands off to it, with the host back at rest; a later run on the host
+  starts from the target (the way back). Presentations take `space: 'window'`
+  for window-space targets and frames, and springs, single and grouped, take
+  `velocity: 'inherit'`. See the README's "Flights". It adds codegen props and
+  a native component: a native rebuild is required.
+- **`ui` calls off the UI thread throw.** A `clip.ui` or `group.ui` call that
+  runs off the UI thread (`runOnUISync` runs its worklet on the calling JS
+  thread) cannot reach the host. It used to do nothing, or fail with "Native
+  returned an invalid group snapshot"; it now throws an error that names the
+  cause.
+- **iOS: a group run begins at its install.** It used to begin at the UI
+  frame's Reanimated stamp (`__frameTimestamp`, the display link's
+  `targetTimestamp`), which can lie a frame on either side of the install. A
+  stamp ahead made the first displayed frame the start pose, so motion began a
+  frame late; one behind made the first frame skip ahead, and a run that
+  waited for its host started partway through. Now its first frame already
+  moves and no frame skips ahead; a run that waited for its host starts from
+  its start. **Behaviour change:** a `withTiming` begun in the same frame no
+  longer shares the run's epoch on iOS (they can be up to a frame apart). Code
+  that continues from a run must use the frame `beginInteraction()` returns,
+  not a Reanimated model of the run.
+- **Android: no run begins later than its call.** A stamp ahead of the wall
+  clock starts a run at the call, for a fresh start as it already did for a
+  replacement. Reanimated's Android stamps are never ahead, so nothing changes
+  in practice; the rule now holds by construction.
+
 ## [0.5.4](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.5.4) — 2026-11-04
 
 - Android: `PointerEventsDelegate` suppresses Kotlin's `ACCIDENTAL_OVERRIDE` on its

@@ -245,6 +245,17 @@ std::vector<uint64_t> driverIdsFromArray(Runtime &runtime, const Array &values) 
   return driverIds;
 }
 
+// Bits of a motion entry's flags slot.
+constexpr int32_t kMotionFlagHasFrom = 1;
+constexpr int32_t kMotionFlagTargetInWindow = 2;
+constexpr int32_t kMotionFlagFromInWindow = 4;
+
+// Flags are an integer 0-7; anything else rejects the whole call.
+bool validMotionFlags(double value) {
+  return std::isfinite(value) && std::floor(value) == value && value >= 0 &&
+      value <= 7;
+}
+
 bool parseGroupMotionEntries(
     Runtime &runtime,
     const Array &values,
@@ -256,22 +267,28 @@ bool parseGroupMotionEntries(
   entries.reserve(length / kMotionEntryStride);
   for (size_t index = 0; index < length; index += kMotionEntryStride) {
     double driverId;
-    double hasFromValue;
+    double flagsValue;
     Presentation from;
     Presentation target;
     if (!numberAt(runtime, values, index, driverId) ||
-        !numberAt(runtime, values, index + 1, hasFromValue) ||
+        !numberAt(runtime, values, index + 1, flagsValue) ||
         !presentationAt(runtime, values, index + 2, from) ||
         !presentationAt(
             runtime, values, index + 2 + kPresentationStride, target) ||
-        !validDriverId(driverId) ||
-        (hasFromValue != 0.0 && hasFromValue != 1.0) ||
+        !validDriverId(driverId) || !validMotionFlags(flagsValue) ||
         !finitePresentation(from) || !finitePresentation(target)) {
       entries.clear();
       return false;
     }
-    entries.push_back(
-        {static_cast<uint64_t>(driverId), hasFromValue == 1.0, from, target});
+    const int32_t flags = static_cast<int32_t>(flagsValue);
+    GroupMotionEntry entry{
+        static_cast<uint64_t>(driverId),
+        (flags & kMotionFlagHasFrom) != 0,
+        from,
+        target};
+    entry.targetInWindow = (flags & kMotionFlagTargetInWindow) != 0;
+    entry.fromInWindow = (flags & kMotionFlagFromInWindow) != 0;
+    entries.push_back(entry);
   }
   return true;
 }
@@ -439,13 +456,17 @@ void installBindings(
         for (size_t index = 0; index < length; index += kSnapshotStride) {
           double driverId;
           Presentation presentation;
+          // A negative id marks a window-space presentation for driver -id.
           if (!numberAt(rt, values, index, driverId) ||
               !presentationAt(rt, values, index + 1, presentation) ||
-              !validDriverId(driverId) || !finitePresentation(presentation)) {
+              !validDriverId(std::abs(driverId)) ||
+              !finitePresentation(presentation)) {
             return Value(false);
           }
-          entries.push_back(
-              {static_cast<uint64_t>(driverId), presentation});
+          BatchEntry entry{
+              static_cast<uint64_t>(std::abs(driverId)), presentation};
+          entry.inWindow = driverId < 0;
+          entries.push_back(entry);
         }
         return Value(setPresentationBatch(entries));
       });
@@ -492,9 +513,13 @@ void installBindings(
         const double controllerId = args[0].asNumber();
         Array values = args[1].getObject(rt).getArray(rt);
         std::vector<GroupMotionEntry> entries;
+        // A NaN velocity is `velocity: 'inherit'`, resolved per driver by
+        // the registry; an infinite one still rejects the call.
+        const double velocity = args[5].asNumber();
+        const bool inheritVelocity = std::isnan(velocity);
         const SpringAnimation animation{
             args[2].asNumber(), args[3].asNumber(), args[4].asNumber(),
-            args[5].asNumber(), false,
+            inheritVelocity ? 0.0 : velocity, inheritVelocity,
             static_cast<int32_t>(args[7].asNumber()),
             args[6].asNumber()};
         if (!validDriverId(controllerId) ||
@@ -962,6 +987,14 @@ void nativeSetApplicationActive(
   smoothclip::setApplicationActiveAndroid(active != 0);
 }
 
+void nativeFlightHandedOff(
+    jni::alias_ref<jni::JObject>,
+    jdouble driverId,
+    jni::alias_ref<smoothclip::JSmoothClipView> view) {
+  if (driverId <= 0 || !std::isfinite(driverId)) return;
+  smoothclip::flightHandedOffAndroid(static_cast<uint64_t>(driverId), view);
+}
+
 void nativeInvalidate(jni::alias_ref<jni::JObject>) {
   smoothclip::invalidateBindings();
 }
@@ -992,6 +1025,8 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) {
                 nativeSetViewLifecycleVisibility),
             makeNativeMethod(
                 "nativeSetApplicationActive", nativeSetApplicationActive),
+            makeNativeMethod(
+                "nativeFlightHandedOff", nativeFlightHandedOff),
             makeNativeMethod("nativeInvalidate", nativeInvalidate),
             makeNativeMethod("nativeOnFrame", nativeOnFrame),
         });

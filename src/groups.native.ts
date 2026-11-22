@@ -43,6 +43,8 @@ const cancelAnimationGroupHostFunction =
 
 const SNAPSHOT_STRIDE = PRESENTATION_STRIDE + 1;
 const MOTION_ENTRY_STRIDE = PRESENTATION_STRIDE * 2 + 2;
+/** Bit 1 of a motion entry's flags slot: the target is in window space. */
+const MOTION_FLAG_TARGET_IN_WINDOW = 2;
 const DEFAULT_MASS = 4;
 const DEFAULT_STIFFNESS = 900;
 const DEFAULT_DAMPING = 120;
@@ -115,6 +117,35 @@ function validatedRefs(
   });
 }
 
+/**
+ * The `ui` calls read and move native hosts, which only the UI (main) thread
+ * may do. A UI-runtime worklet can run elsewhere: `runOnUISync` runs it on
+ * the calling (JS) thread. Native then does nothing and answers with an empty
+ * packet. Calling into the UI thread synchronously from there could deadlock,
+ * so such a call is rejected with this error instead.
+ */
+const OFF_UI_THREAD_MESSAGE =
+  '[SmoothClipView] clip.ui and group.ui calls must run on the UI thread, ' +
+  'for example in scheduleOnUI, a gesture or frame callback, or an animated ' +
+  'reaction. This call ran on another thread, where native cannot reach the ' +
+  'host: runOnUISync runs its worklet on the calling JS thread.';
+
+/**
+ * After a native `ui` call failed: whether it ran off the UI thread. On the UI
+ * thread `snapshotGroup` answers one entry per driver whatever its state
+ * (an unknown driver reports a non-finite frame); off it, an empty packet.
+ * Only failure paths ask, so a call on the UI thread pays nothing.
+ */
+function throwIfOffUIThread(driverIds: readonly number[]): void {
+  'worklet';
+  if (
+    driverIds.length > 0 &&
+    snapshotGroupHostFunction(driverIds).length === 0
+  ) {
+    throw new Error(OFF_UI_THREAD_MESSAGE);
+  }
+}
+
 function snapshotsFromPacket(
   refs: readonly SmoothClipRef[],
   values: readonly number[]
@@ -143,10 +174,10 @@ function beginGroupOnUI(
 ): readonly SmoothClipGroupSnapshot[] {
   'worklet';
   const internals = validatedRefs(refs);
-  return snapshotsFromPacket(
-    refs,
-    beginGroupInteractionHostFunction(internals.map((ref) => ref.id))
-  );
+  const driverIds = internals.map((ref) => ref.id);
+  const values = beginGroupInteractionHostFunction(driverIds);
+  if (values.length === 0) throwIfOffUIThread(driverIds);
+  return snapshotsFromPacket(refs, values);
 }
 
 function setFramesOnUI(entries: readonly SmoothClipGroupFrame[]): void {
@@ -158,14 +189,19 @@ function setFramesOnUI(entries: readonly SmoothClipGroupFrame[]): void {
     if (frame === null) {
       throw new Error('[SmoothClipView] A group frame is invalid.');
     }
-    packet.push(internals[index]?.id ?? 0);
+    // A negative id marks a window-space frame (SmoothClipPresentation.space).
+    const id = internals[index]?.id ?? 0;
+    packet.push(entry.frame.space === 'window' ? -id : id);
     appendPresentationPacket(packet, frame);
   });
   // A UI frame can race the Fabric host's first native registration (or its
   // teardown). That is an availability result, not malformed input. The next
   // streamed frame retries, while beginInteraction remains the explicit
-  // readiness gate for an atomic handoff.
-  setClipPresentationBatchHostFunction(packet);
+  // readiness gate for an atomic handoff. A frame set off the UI thread would
+  // never apply, so that one throws.
+  if (!setClipPresentationBatchHostFunction(packet)) {
+    throwIfOffUIThread(internals.map((ref) => ref.id));
+  }
 }
 
 function reduceMotionCode(value: ClipReduceMotion | undefined): number {
@@ -177,12 +213,12 @@ function reduceMotionCode(value: ClipReduceMotion | undefined): number {
 
 /**
  * The Reanimated frame stamp (`__frameTimestamp`, milliseconds) when the run
- * starts inside a UI frame, else the animation clock. Both platforms anchor
- * the native run to it: the Android frame loop advances from it, and iOS uses
- * it as the shared Core Animation `beginTime`. A run and a `withTiming` begun
- * in the same UI frame therefore share one epoch. Reanimated stamps a frame
- * with the display link's target vsync, so an install-time
- * `CACurrentMediaTime()` would put the native run about one frame ahead.
+ * starts inside a UI frame, else the animation clock. Android's frame loop
+ * advances the run from it (never from later than the call), so a run and a
+ * `withTiming` begun in the same UI frame share one epoch there. iOS ignores
+ * it and begins the run at its install, up to a frame from the stamp either
+ * way: continue from a run with the frame `beginInteraction()` returns, not
+ * from a Reanimated model of it.
  */
 function startTimestamp(): number {
   'worklet';
@@ -215,7 +251,8 @@ function animationIsValid(animation: SmoothClipAnimation): boolean {
   const mass = animation.mass ?? DEFAULT_MASS;
   const stiffness = animation.stiffness ?? DEFAULT_STIFFNESS;
   const damping = animation.damping ?? DEFAULT_DAMPING;
-  const velocity = animation.velocity ?? 0;
+  const velocity =
+    animation.velocity === 'inherit' ? 0 : (animation.velocity ?? 0);
   const energyThreshold = animation.energyThreshold ?? DEFAULT_ENERGY_THRESHOLD;
   return (
     [mass, stiffness, damping, velocity, energyThreshold].every(
@@ -272,9 +309,14 @@ function animateGroupOnUI(
     const target =
       entry === undefined ? null : canonicalizeClipPresentation(entry.target);
     if (entry === undefined || target === null) return null;
-    packet.push(internals[index]?.id ?? 0, 0);
-    // Fixed native packets retain a start slot. With hasFrom=0 its contents
-    // are ignored; duplicating the target avoids a second sentinel format.
+    // The flags slot: bit 0 has-from (never set here), bit 1 target in window
+    // space (see SmoothClipPresentation.space). Fixed native packets retain a
+    // start slot; without has-from its contents are ignored, and duplicating
+    // the target avoids a second sentinel format.
+    packet.push(
+      internals[index]?.id ?? 0,
+      entry.target.space === 'window' ? MOTION_FLAG_TARGET_IN_WINDOW : 0
+    );
     appendPresentationPacket(packet, target);
     appendPresentationPacket(packet, target);
   }
@@ -303,14 +345,19 @@ function animateGroupOnUI(
       animation.mass ?? DEFAULT_MASS,
       animation.stiffness ?? DEFAULT_STIFFNESS,
       animation.damping ?? DEFAULT_DAMPING,
-      animation.velocity ?? 0,
+      // NaN asks native to inherit the replaced motion's velocity.
+      animation.velocity === 'inherit' ? Number.NaN : (animation.velocity ?? 0),
       animation.energyThreshold ?? DEFAULT_ENERGY_THRESHOLD,
       reduceMotionCode(animation.reduceMotion),
       completionTag,
       timestamp
     );
   }
-  if (id <= 0) return null;
+  if (id <= 0) {
+    // A rejected run is null; one started off the UI thread is an error.
+    throwIfOffUIThread(internals.map((ref) => ref.id));
+    return null;
+  }
   return {
     controllerId,
     id,
@@ -342,12 +389,13 @@ function cancelGroupOnUI(
   if (values.length > 0) {
     return snapshotsFromPacket(internal.refs, values);
   }
+  // The run had already ended (or native is off the UI thread, where both
+  // calls answer nothing).
   const snapshots = snapshotGroupHostFunction(
     internals.map((internalRefValue) => internalRefValue.id)
   );
-  return snapshots.length === 0
-    ? []
-    : snapshotsFromPacket(internal.refs, snapshots);
+  if (snapshots.length === 0) throw new Error(OFF_UI_THREAD_MESSAGE);
+  return snapshotsFromPacket(internal.refs, snapshots);
 }
 
 function validReactEntries(entries: readonly SmoothClipGroupTarget[]): boolean {

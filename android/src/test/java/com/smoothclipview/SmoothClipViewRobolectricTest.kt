@@ -11,6 +11,7 @@ import android.view.View
 import android.widget.FrameLayout
 import com.facebook.react.bridge.JavaOnlyMap
 import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.internal.featureflags.ReactNativeFeatureFlagsForTests
 import com.facebook.react.uimanager.PointerEvents
 import com.facebook.react.uimanager.ReactStylesDiffMap
 import com.facebook.react.uimanager.ThemedReactContext
@@ -40,6 +41,9 @@ class SmoothClipViewRobolectricTest {
 
     @Before
     fun setUp() {
+        // ReactViewGroup reads feature flags at construction; RN 0.88 reads
+        // them through JNI unless a JVM-only accessor is installed.
+        ReactNativeFeatureFlagsForTests.setUp()
         val application = RuntimeEnvironment.getApplication()
         val reactContext = mock(ReactApplicationContext::class.java)
         val themedContext = ThemedReactContext(reactContext, application, null, -1)

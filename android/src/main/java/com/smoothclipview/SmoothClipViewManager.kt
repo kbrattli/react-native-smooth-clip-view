@@ -189,6 +189,16 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
         view.setBakedShadows(value == 1)
     }
 
+    @ReactProp(name = "flightEnabled", defaultBoolean = false)
+    override fun setFlightEnabled(view: SmoothClipView, value: Boolean) {
+        view.flight.setEnabled(value)
+    }
+
+    @ReactProp(name = "flightTag")
+    override fun setFlightTag(view: SmoothClipView, value: String?) {
+        view.flight.setTag(value ?: "")
+    }
+
     @ReactProp(name = "initialBackdropTranslateX", defaultDouble = 0.0)
     override fun setInitialBackdropTranslateX(view: SmoothClipView, value: Double) {
         pending(view).backdropTranslateX = value
@@ -336,6 +346,9 @@ class SmoothClipViewManager : ViewGroupManager<SmoothClipView>(),
 
     override fun onDropViewInstance(view: SmoothClipView) {
         pendingInitialClips.remove(view)
+        // Host loss: remove the carrier and reveal the target before the
+        // registry finishes the run on the unregister below.
+        view.flightHostLost()
         if (view.boundDriverId != 0.0) {
             SmoothClipBindings.nativeUnregisterView(view.boundDriverId, view)
             view.boundDriverId = 0.0

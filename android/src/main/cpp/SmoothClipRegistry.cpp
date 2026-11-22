@@ -1,6 +1,7 @@
 #include "SmoothClipAndroid.h"
 #include "SmoothClipAnimationId.h"
 #include "SmoothClipAnimationCurve.h"
+#include "SmoothClipFlightGeometry.h"
 #include "SmoothClipTrace.h"
 #include "SmoothClipVelocityTracker.h"
 
@@ -29,6 +30,10 @@ using facebook::jni::global_ref;
 enum class Ownership { Interactive, Native };
 enum class AnimationKind { Timing, Spring };
 enum class ViewParticipation { Deferred, Active };
+
+// Flight codes shared with android/.../SmoothClipFlight.kt.
+constexpr int32_t kFlightLiftNew = 1;
+constexpr int32_t kFlightLandHandoff = 1;
 
 // Load-bearing invariant, not just a convenience clock: advance()'s frame-clock
 // anchor compares this value ABSOLUTELY against a choreographer frame stamp
@@ -61,6 +66,9 @@ struct ActiveAnimation {
   SpringAnimation spring{};
   double durationS = 0;
   double startedAtS = 0;
+  // The presentation the host showed before this run took over. A flight
+  // host that lifts when the run starts keeps it as its rest presentation.
+  Presentation preRun{{0, 0, 0, 0, 0}, 0, 0};
   // Integrated spring state. Shadow channels are skipped when neither endpoint
   // has a visible shadow.
   Channels springPosition{};
@@ -115,6 +123,15 @@ struct DriverState {
   // 'inherit' velocity samples; recording/coalescing/projection live in the
   // shared cpp/SmoothClipVelocityTracker.h (behavior-paired with iOS).
   VelocitySampleHistory samples;
+
+  // Flights (flightEnabled hosts). The rest presentation is captured when
+  // the host lifts and restored by a handoff; the landed presentation (the
+  // run's end) is remembered at the handoff so a later run can start from
+  // the target it landed on (the way back).
+  Presentation flightRest{{0, 0, 0, 0, 0}, 0, 0};
+  bool hasFlightRest = false;
+  Presentation flightLanded{{0, 0, 0, 0, 0}, 0, 0};
+  bool hasFlightLanded = false;
 };
 
 struct CompletionSink {
@@ -139,12 +156,13 @@ struct ActiveGroup {
   AnimationKind kind = AnimationKind::Timing;
   TimingAnimation timing{};
   SpringAnimation spring{};
-  ScalarSpringState scalarSpring{0, 0};
   double durationS = 0;
   double startedAtS = 0;
   double lastFrameS = 0;
   bool started = false;
   bool frameClockAnchored = false;
+  // Spring members each integrate their own scalar spring (their
+  // animation.scalarSpring), so each can carry its own initial velocity.
   std::vector<GroupMemberAnimation> members;
 };
 
@@ -518,6 +536,225 @@ void applyPresentation(DriverState &state, const Presentation &presentation) {
   applyToViews(state, presentation);
 }
 
+// --- Flights ----------------------------------------------------------------
+//
+// The view side (SmoothClipFlight.kt) owns the flight layer, the carrier and
+// the landing decision; the registry tells it when a run starts and ends and
+// performs the registry half of a handoff. Every hook is a no-op JNI call for
+// a host without flightEnabled.
+
+// A run started (or an interaction began) on the driver: flight hosts lift.
+// `rest` is what the host showed before; a host that lifts now keeps it.
+void liftFlight(
+    DriverState &state,
+    const Presentation &rest,
+    bool interaction = false) {
+  for (const ViewEntry &entry : state.views) {
+    if (entry.view->flightLift(interaction) == kFlightLiftNew) {
+      state.flightRest = rest;
+      state.hasFlightRest = true;
+      // The lift hides the target again; its landing is consumed.
+      state.hasFlightLanded = false;
+    }
+  }
+}
+
+// The registry half of a handoff: remember the landing for the way back and
+// put the host back at rest, so the registry's latest presentation is the
+// rest presentation. Never a velocity sample: no finger made this jump.
+void applyFlightHandoff(DriverState &state, const Presentation &landed) {
+  state.flightLanded = landed;
+  state.hasFlightLanded = true;
+  if (!state.hasFlightRest) return;
+  state.hasFlightRest = false;
+  state.latest = state.flightRest;
+  state.hasLatest = true;
+  state.ownership = Ownership::Interactive;
+  clearVelocitySamples(state.samples);
+  applyToViews(state, state.flightRest);
+}
+
+// The run driving the driver ended (finished or cancelled; not replaced):
+// airborne hosts land. Only a finished run (or a cancel that finishes it at
+// its target) can hand off; a cancelled one returns. Called after the run's
+// state is cleared, so a view that pushes its displayability while landing
+// re-enters a quiet registry.
+void landFlight(
+    DriverState &state,
+    const Presentation &landed,
+    bool finished) {
+  bool handedOff = false;
+  for (const ViewEntry &entry : state.views) {
+    if (entry.view->flightRunEnded(finished) == kFlightLandHandoff) {
+      handedOff = true;
+    }
+  }
+  if (handedOff) applyFlightHandoff(state, landed);
+}
+
+// A new run (or interaction) starts from the landed presentation while the
+// target it landed on is still attached and visible.
+bool flightWayBackAvailable(const DriverState &state) {
+  if (!state.hasFlightLanded) return false;
+  for (const ViewEntry &entry : state.views) {
+    if (entry.view->flightWayBackAvailable()) return true;
+  }
+  return false;
+}
+
+// Window-space input (SmoothClipPresentation.space = 'window') for the
+// driver's registered host, converted to host space through the host's
+// transform to its window. No host, or a transform with rotation, skew or
+// uneven scale, rejects.
+bool resolveWindowSpace(uint64_t driverId, Presentation &presentation) {
+  const auto iterator = registry().find(driverId);
+  if (iterator == registry().end() || iterator->second.views.empty()) {
+    return false;
+  }
+  double values[8];
+  if (!iterator->second.views.front().view->flightWindowTransform(values)) {
+    return false;
+  }
+  HostWindowTransform transform;
+  if (!hostWindowTransformFromAffine(
+          values[0], values[1], values[2], values[3], values[4], values[5],
+          transform) ||
+      !std::isfinite(values[6]) || !std::isfinite(values[7])) {
+    return false;
+  }
+  presentation =
+      presentationFromWindowSpace(presentation, transform, values[6], values[7]);
+  return true;
+}
+
+// --- Replacing a moving run (flight-spec.md) --------------------------------
+//
+// A call that replaces a started run starts the new run where the replaced
+// run is when the new run's elapsed 0 is drawn, and inherits its velocity
+// there. That moment is the new run's epoch (replacementHandoverS), which on
+// this frame clock is the frame the replacement is first drawn in: a
+// worklet's stamp is the frame being produced, and the frame loop advances
+// the new run in that same doFrame, before the traversal. Whether the
+// replaced run was already advanced to that frame (frame callbacks run in
+// posting order, ours before or after Reanimated's) does not change the
+// result: it is sampled at the epoch, from its own description.
+
+// A started run that a call replaces: the driver's own run, or its member of
+// a started group, and the frame time it was last advanced to.
+struct ReplacedRun {
+  const ActiveAnimation *run = nullptr;
+  bool groupMember = false;
+  double lastFrameS = 0;
+};
+
+ReplacedRun replacedRunOf(uint64_t driverId, const DriverState &state) {
+  ReplacedRun replaced;
+  if (state.groupId != 0) {
+    const auto groupIterator = groupRegistry().find(state.groupId);
+    if (groupIterator == groupRegistry().end() ||
+        !groupIterator->second.started) {
+      return replaced;
+    }
+    const GroupMemberAnimation *member =
+        findGroupMember(state.groupId, driverId);
+    if (member == nullptr) return replaced;
+    replaced.run = &member->animation;
+    replaced.groupMember = true;
+    replaced.lastFrameS = groupIterator->second.lastFrameS;
+  } else if (state.animation.has_value() && state.animation->started) {
+    replaced.run = &*state.animation;
+    replaced.lastFrameS = state.animation->lastFrameS;
+  }
+  return replaced;
+}
+
+// A replaced run at a moment, with its progress there (for inherit).
+struct RunSample {
+  Presentation presentation;
+  RunProgress progress;
+};
+
+// The replaced run at `atS`, as its next frame at `atS` would draw it: a
+// timing run's curve, a group member's scalar spring stepped from its last
+// frame, or a single run's channel springs stepped the same way. At or before
+// its last frame, that frame (what the host shows).
+RunSample sampleReplacedRun(const ReplacedRun &replaced, double atS) {
+  const ActiveAnimation &run = *replaced.run;
+  const bool ahead = atS > replaced.lastFrameS;
+  const double at = ahead ? atS : replaced.lastFrameS;
+  RunSample sample{run.current, {0, 0}};
+  if (run.kind == AnimationKind::Timing) {
+    sample.progress = timingRunProgress(run.timing, at - run.startedAtS);
+    if (ahead) {
+      const double eased = cubicBezier(
+          run.timing.controlPoint1X,
+          run.timing.controlPoint1Y,
+          run.timing.controlPoint2X,
+          run.timing.controlPoint2Y,
+          timingFraction(at, run.startedAtS, run.durationS));
+      sample.presentation = interpolate(run.start, run.target, eased);
+    }
+  } else if (replaced.groupMember) {
+    const ScalarSpringState spring = ahead
+        ? advanceScalarSpring(
+              run.scalarSpring, run.spring, at - replaced.lastFrameS)
+        : run.scalarSpring;
+    sample.progress = {spring.position, spring.velocity};
+    if (ahead) {
+      sample.presentation = interpolate(run.start, run.target, spring.position);
+    }
+  } else {
+    sample.progress = springRunProgress(run.spring, at - run.startedAtS);
+    if (ahead) {
+      ActiveAnimation next = run;
+      advanceSpring(next, at);
+      sample.presentation = next.current;
+    }
+  }
+  if (ahead && !canonicalizePresentation(sample.presentation)) {
+    sample.presentation = run.current;
+  }
+  return sample;
+}
+
+// `velocity: 'inherit'`, resolved per driver against the new run's own
+// start and target:
+//   1. a started run this call replaces hands over its velocity at the
+//      handover (`replaced`, sampled there), projected onto the new run's
+//      displacement, start -> target;
+//   2. otherwise the velocity of the frames an interaction streamed;
+//   3. otherwise 0.
+// Same units as the explicit velocity: 1 covers the remaining distance in
+// one second. The math is shared with iOS (cpp/SmoothClipFlightGeometry.h).
+double inheritedVelocityFor(
+    const DriverState &state,
+    const ActiveAnimation *replaced,
+    const RunProgress &progress,
+    const Presentation &start,
+    const Presentation &target,
+    double now) {
+  if (replaced != nullptr) {
+    return inheritedRunVelocityFrom(
+        replaced->start, replaced->target, progress, start, target);
+  }
+  return inheritedVelocity(
+      state.samples, velocitySampleChannels(target), now);
+}
+
+// An interaction lifts a flight host too. With a landing to come back from
+// (the way back), the interaction starts where the target shows the content;
+// the lift then hides the target, so the jump is never visible.
+void beginFlightInteraction(DriverState &state) {
+  const Presentation rest = state.latest;
+  if (flightWayBackAvailable(state)) {
+    state.latest = state.flightLanded;
+    state.hasLatest = true;
+    clearVelocitySamples(state.samples);
+    applyToViews(state, state.latest);
+  }
+  liftFlight(state, rest, true);
+}
+
 std::vector<uint64_t> &animatingDrivers() {
   static std::vector<uint64_t> value;
   return value;
@@ -617,6 +854,7 @@ void startGroupFrameLoop(ActiveGroup &group) {
   for (const GroupMemberAnimation &member : group.members) {
     auto iterator = registry().find(member.driverId);
     if (iterator != registry().end()) {
+      liftFlight(iterator->second, member.animation.preRun);
       setAutonomousMotion(iterator->second, true);
     }
   }
@@ -628,10 +866,21 @@ void startGroupFrameLoop(ActiveGroup &group) {
   scheduleFrame();
 }
 
+// Every member of a finished group lands an airborne flight.
+const std::vector<uint64_t> &landAll() {
+  static const std::vector<uint64_t> value;
+  return value;
+}
+
+// Members listed in `continuing` are taken over by the call that replaces
+// the group (a new run, an interaction, an interactive write): an airborne
+// flight continues in the same lift instead of landing. Every other member
+// lands.
 std::vector<DriverSnapshot> finishGroupImpl(
     int32_t groupId,
     bool useTarget,
-    bool finished) {
+    bool finished,
+    const std::vector<uint64_t> &continuing) {
   auto groupIterator = groupRegistry().find(groupId);
   if (groupIterator == groupRegistry().end()) return {};
   ActiveGroup group = std::move(groupIterator->second);
@@ -655,8 +904,15 @@ std::vector<DriverSnapshot> finishGroupImpl(
     state.ownership = Ownership::Interactive;
     setAutonomousMotion(state, false);
     applyToViews(state, result);
+    // A handoff resets the host to rest here, before the completion reads
+    // the registry: JS sees the frame the host actually shows.
+    if (std::find(continuing.begin(), continuing.end(), member.driverId) ==
+        continuing.end()) {
+      landFlight(state, result, finished);
+    }
     snapshots.push_back(
-        {member.driverId, result, !state.destroyed && anyDisplayableView(state)});
+        {member.driverId, state.latest,
+         !state.destroyed && anyDisplayableView(state)});
   }
   emitGroupCompletion(group, finished);
   return snapshots;
@@ -695,7 +951,7 @@ void reconcileGroupReadiness(uint64_t driverId) {
     return;
   }
   if (ready) return;
-  finishGroupImpl(groupId, false, false);
+  finishGroupImpl(groupId, false, false, landAll());
 }
 
 // Starts a pre-ready animation with its full duration, then joins the
@@ -715,16 +971,18 @@ void startPendingAnimation(uint64_t driverId, DriverState &state) {
       entry.participation = ViewParticipation::Active;
     }
   }
+  liftFlight(state, animation.preRun);
   setAutonomousMotion(state, true);
   applyToViews(state, animation.start);
   scheduleFrame();
 }
 
+// `stamp` comes from resolveStartStamp (see SingleRunHandover).
 int32_t startAnimation(
     uint64_t driverId,
     DriverState &state,
     ActiveAnimation animation,
-    double startedAtHintS) {
+    StartStamp stamp) {
   // With a JS-captured hint the start stamp is Reanimated's own
   // (`__frameTimestamp || _getAnimationTimestamp()`, read in the worklet that
   // issued this call), already on the axis min() only approximates — so the
@@ -733,8 +991,6 @@ int32_t startAnimation(
   // the call and would re-open the intra-frame lead the hint closes. Without
   // a hint (NaN: unstamped callers, tests, iOS ignoring the field)
   // this reduces exactly to the old nowSeconds() + min() anchor path.
-  const double wallNow = nowSeconds();
-  const StartStamp stamp = resolveStartStamp(startedAtHintS, wallNow);
   animation.startedAtS = stamp.startedAtS;
   animation.lastFrameS = stamp.startedAtS;
   animation.frameClockAnchored = stamp.frameClockAnchored;
@@ -763,6 +1019,7 @@ int32_t startAnimation(
   if (std::find(active.begin(), active.end(), driverId) == active.end()) {
     active.push_back(driverId);
   }
+  liftFlight(state, state.animation->preRun);
   setAutonomousMotion(state, true);
   applyToViews(state, state.animation->start);
   scheduleFrame();
@@ -781,6 +1038,7 @@ void finishIfHostUnavailable(uint64_t driverId, DriverState &state) {
   state.ownership = Ownership::Interactive;
   applyToViews(state, target);
   finishActive(driverId, state, true);
+  landFlight(state, target, true);
 }
 
 void reconcileViewDisplayability(
@@ -865,6 +1123,7 @@ void advance(uint64_t driverId, DriverState &state, double now) {
     state.hasLatest = true;
     state.ownership = Ownership::Interactive;
     applyToViews(state, target);
+    landFlight(state, target, true);
     emitCompletion(driverId, animationId, completionTag, true);
   }
 }
@@ -885,16 +1144,25 @@ void advanceGroup(int32_t groupId, ActiveGroup &group, double now) {
   if (group.kind == AnimationKind::Spring) {
     const double deltaTime = now - group.lastFrameS;
     group.lastFrameS = now;
-    group.scalarSpring = advanceScalarSpring(
-        group.scalarSpring, group.spring, deltaTime);
-    done = now - group.startedAtS >= kSpringMaxDurationS ||
-        relativeSpringEnergy(group.scalarSpring, group.spring) <=
-            group.spring.energyThreshold;
+    // One clock, one scalar spring per member: members share every spring
+    // parameter but their initial velocity ('inherit' resolves per driver).
+    // The group settles when every member has.
+    bool settled = true;
+    for (GroupMemberAnimation &member : group.members) {
+      member.animation.scalarSpring = advanceScalarSpring(
+          member.animation.scalarSpring, member.animation.spring, deltaTime);
+      if (relativeSpringEnergy(
+              member.animation.scalarSpring, member.animation.spring) >
+          member.animation.spring.energyThreshold) {
+        settled = false;
+      }
+    }
+    done = now - group.startedAtS >= kSpringMaxDurationS || settled;
     for (GroupMemberAnimation &member : group.members) {
       member.animation.current = interpolate(
           member.animation.start,
           member.animation.target,
-          done ? 1.0 : group.scalarSpring.position);
+          done ? 1.0 : member.animation.scalarSpring.position);
       if (!canonicalizePresentation(member.animation.current)) {
         member.animation.current = member.animation.target;
         done = true;
@@ -924,7 +1192,7 @@ void advanceGroup(int32_t groupId, ActiveGroup &group, double now) {
   }
 
   if (done) {
-    finishGroupImpl(groupId, true, true);
+    finishGroupImpl(groupId, true, true, landAll());
   } else {
     applyGroupCurrent(group);
   }
@@ -1133,7 +1401,7 @@ std::vector<DriverSnapshot> beginGroupInteraction(
     }
   }
   for (const int32_t groupId : groupsToCancel) {
-    finishGroupImpl(groupId, false, false);
+    finishGroupImpl(groupId, false, false, driverIds);
   }
   for (const uint64_t driverId : driverIds) {
     DriverState &state = registry().at(driverId);
@@ -1148,6 +1416,7 @@ std::vector<DriverSnapshot> beginGroupInteraction(
       emitCompletion(driverId, animationId, completionTag, false);
     }
     state.ownership = Ownership::Interactive;
+    beginFlightInteraction(state);
   }
   return snapshotGroup(driverIds);
 }
@@ -1155,6 +1424,14 @@ std::vector<DriverSnapshot> beginGroupInteraction(
 bool setPresentationBatch(const std::vector<BatchEntry> &entries) {
   if (!isOnMainThread() || entries.empty()) return false;
   std::vector<BatchEntry> canonicalEntries = entries;
+  // Window-space frames resolve against each host before anything else.
+  for (BatchEntry &entry : canonicalEntries) {
+    if (entry.inWindow &&
+        !resolveWindowSpace(entry.driverId, entry.presentation)) {
+      return false;
+    }
+    entry.inWindow = false;
+  }
   for (BatchEntry &entry : canonicalEntries) {
     if (!canonicalizePresentation(entry.presentation)) return false;
   }
@@ -1185,7 +1462,7 @@ bool setPresentationBatch(const std::vector<BatchEntry> &entries) {
   // before any old group is dissolved. An overlap dissolves the whole immutable
   // old group (including members absent from this batch) exactly once.
   for (const int32_t groupId : groupsToCancel) {
-    finishGroupImpl(groupId, false, false);
+    finishGroupImpl(groupId, false, false, unique);
   }
 
   const double now = nowSeconds();
@@ -1220,6 +1497,21 @@ int32_t startGroupCommon(
   if (!isOnMainThread() || controllerId == 0 || entries.empty()) {
     return 0;
   }
+  // Window-space targets and from-frames resolve against each driver's host
+  // before preflight and canonicalization; a missing or non-uniform host
+  // rejects the whole call.
+  for (GroupMotionEntry &entry : entries) {
+    if (entry.targetInWindow &&
+        !resolveWindowSpace(entry.driverId, entry.target)) {
+      return 0;
+    }
+    if (entry.hasFrom && entry.fromInWindow &&
+        !resolveWindowSpace(entry.driverId, entry.from)) {
+      return 0;
+    }
+    entry.targetInWindow = false;
+    entry.fromInWindow = false;
+  }
   for (GroupMotionEntry &entry : entries) {
     if ((entry.hasFrom && !canonicalizePresentation(entry.from)) ||
         !canonicalizePresentation(entry.target)) {
@@ -1230,8 +1522,7 @@ int32_t startGroupCommon(
       !isValidTiming(timing)) {
     return 0;
   }
-  if (kind == AnimationKind::Spring &&
-      (!isValidSpring(spring) || spring.inheritVelocity)) {
+  if (kind == AnimationKind::Spring && !isValidSpring(spring)) {
     return 0;
   }
   const bool reduce = shouldReduceMotion(reduceMotion) ||
@@ -1239,8 +1530,33 @@ int32_t startGroupCommon(
   std::vector<uint64_t> unique;
   std::vector<int32_t> groupsToCancel;
   std::vector<Presentation> resolvedStarts;
+  // What each host shows now (a flight's rest presentation if it lifts),
+  // whether the start is applied at install (`from`, or the way back), and
+  // each driver's own spring velocity.
+  std::vector<Presentation> preRuns;
+  std::vector<bool> appliesStart;
+  std::vector<double> velocities;
   unique.reserve(entries.size());
   resolvedStarts.reserve(entries.size());
+  preRuns.reserve(entries.size());
+  appliesStart.reserve(entries.size());
+  velocities.reserve(entries.size());
+  const double preflightNow = nowSeconds();
+  // Replacing a moving run (see replacementHandoverS): the epoch is known
+  // before preflight, since the replaced runs are sampled at it. Only when
+  // the group starts in this call (startGroupCommon's `started` rule; the
+  // call revives tombstones, and a driver it creates has no host yet): a
+  // group left pending begins later, from the frame its hosts hold meanwhile,
+  // the replaced run's last.
+  bool startsOnCreate = applicationActiveState();
+  for (const GroupMotionEntry &entry : entries) {
+    const auto iterator = registry().find(entry.driverId);
+    if (iterator == registry().end() ||
+        !anyDisplayableView(iterator->second)) {
+      startsOnCreate = false;
+    }
+  }
+  const StartStamp stamp = resolveStartStamp(startedAtHintS, preflightNow);
   for (const GroupMotionEntry &entry : entries) {
     if (entry.driverId == 0 ||
         std::find(unique.begin(), unique.end(), entry.driverId) != unique.end()) {
@@ -1258,22 +1574,56 @@ int32_t startGroupCommon(
             iterator->second.groupId) == groupsToCancel.end()) {
       groupsToCancel.push_back(iterator->second.groupId);
     }
+    const bool hasState = iterator != registry().end() &&
+        !iterator->second.destroyed && iterator->second.hasLatest;
+    const Presentation visible = hasState
+        ? visiblePresentation(entry.driverId, iterator->second)
+        : entry.from;
+    // A moving run this call replaces, where it is at the handover.
+    const ReplacedRun replaced = hasState
+        ? replacedRunOf(entry.driverId, iterator->second)
+        : ReplacedRun{};
+    RunSample handover{visible, {0, 0}};
+    if (replaced.run != nullptr) {
+      handover = sampleReplacedRun(
+          replaced,
+          startsOnCreate
+              ? replacementHandoverS(stamp.startedAtS, replaced.lastFrameS)
+              : replaced.lastFrameS);
+    }
+    // The way back: a flight that handed off to a target still on screen
+    // starts there, as if `from` had been given.
+    const bool wayBack =
+        !entry.hasFrom && hasState && flightWayBackAvailable(iterator->second);
     const Presentation resolvedStart = entry.hasFrom
         ? entry.from
-        : visiblePresentation(entry.driverId, iterator->second);
+        : (wayBack ? iterator->second.flightLanded : handover.presentation);
     if (!isFinitePresentation(resolvedStart) ||
         !isFinitePresentation(entry.target) ||
         !isAutonomousUniformPair(resolvedStart, entry.target)) {
       return 0;
     }
+    double velocity = 0;
     if (kind == AnimationKind::Spring) {
-      const double velocity = spring.initialVelocity;
-      if (!springScaleStaysPositive(
+      // The way back starts on the target where the flight landed, a frame
+      // nothing moved to: it inherits 0, as a driver with no state does.
+      velocity = spring.inheritVelocity
+          ? (hasState && !wayBack
+                 ? inheritedVelocityFor(
+                       iterator->second, replaced.run, handover.progress,
+                       resolvedStart, entry.target, preflightNow)
+                 : 0.0)
+          : spring.initialVelocity;
+      if (!std::isfinite(velocity) ||
+          !springScaleStaysPositive(
               resolvedStart, entry.target, spring, velocity)) {
         return 0;
       }
     }
     resolvedStarts.push_back(resolvedStart);
+    preRuns.push_back(visible);
+    appliesStart.push_back(entry.hasFrom || wayBack);
+    velocities.push_back(velocity);
     unique.push_back(entry.driverId);
   }
 
@@ -1281,7 +1631,7 @@ int32_t startGroupCommon(
   // their current frames. Only after full preflight may replacement dissolve
   // those immutable groups and emit one unfinished completion for each.
   for (const int32_t groupId : groupsToCancel) {
-    finishGroupImpl(groupId, false, false);
+    finishGroupImpl(groupId, false, false, unique);
   }
 
   ActiveGroup group;
@@ -1291,10 +1641,9 @@ int32_t startGroupCommon(
   group.kind = kind;
   group.timing = timing;
   group.spring = spring;
-  group.scalarSpring = {0, spring.initialVelocity};
+  group.spring.inheritVelocity = false;
   group.durationS = durationMs / 1000.0;
   group.members.reserve(entries.size());
-  const double wallNow = nowSeconds();
 
   for (std::size_t entryIndex = 0; entryIndex < entries.size(); entryIndex += 1) {
     GroupMotionEntry &entry = entries[entryIndex];
@@ -1314,8 +1663,12 @@ int32_t startGroupCommon(
     member.animation.start = resolvedStart;
     member.animation.target = entry.target;
     member.animation.current = resolvedStart;
+    member.animation.preRun = preRuns[entryIndex];
     member.animation.timing = timing;
     member.animation.spring = spring;
+    member.animation.spring.initialVelocity = velocities[entryIndex];
+    member.animation.spring.inheritVelocity = false;
+    member.animation.scalarSpring = {0, velocities[entryIndex]};
     member.animation.durationS = group.durationS;
     group.members.push_back(std::move(member));
   }
@@ -1326,14 +1679,13 @@ int32_t startGroupCommon(
   // barrier is pending; ready hosts must not keep displaying their old frame
   // while snapshots already report `from`.
   for (std::size_t entryIndex = 0; entryIndex < entries.size(); entryIndex += 1) {
-    if (!entries[entryIndex].hasFrom) continue;
+    if (!appliesStart[entryIndex]) continue;
     applyToViews(
         registry().at(entries[entryIndex].driverId),
         resolvedStarts[entryIndex]);
   }
 
   const int32_t groupId = group.id;
-  const StartStamp stamp = resolveStartStamp(startedAtHintS, wallNow);
   group.startedAtS = stamp.startedAtS;
   group.lastFrameS = stamp.startedAtS;
   group.frameClockAnchored = stamp.frameClockAnchored;
@@ -1346,7 +1698,7 @@ int32_t startGroupCommon(
       applicationActiveState() && allGroupMembersReady(group);
   groupRegistry().emplace(groupId, std::move(group));
   if (reduce) {
-    finishGroupImpl(groupId, true, true);
+    finishGroupImpl(groupId, true, true, landAll());
     return groupId;
   }
   ActiveGroup &stored = groupRegistry().at(groupId);
@@ -1354,6 +1706,38 @@ int32_t startGroupCommon(
     startGroupFrameLoop(stored);
   }
   return groupId;
+}
+
+// The single-driver paths (animateTiming, animateSpring) replace a moving
+// run as startGroupCommon does: the run's start stamp, and the replaced run
+// where it is at the handover. Read before the call changes anything:
+// `replaced` points into the driver's run or group member.
+struct SingleRunHandover {
+  StartStamp stamp;
+  const ActiveAnimation *replaced = nullptr;
+  RunSample sample{};
+};
+
+SingleRunHandover singleRunHandover(uint64_t driverId, double startedAtHintS) {
+  const double wallNow = nowSeconds();
+  SingleRunHandover handover{resolveStartStamp(startedAtHintS, wallNow)};
+  const auto iterator = registry().find(driverId);
+  if (iterator == registry().end() || iterator->second.destroyed ||
+      !iterator->second.hasLatest) {
+    return handover;
+  }
+  const DriverState &state = iterator->second;
+  const ReplacedRun replaced = replacedRunOf(driverId, state);
+  if (replaced.run == nullptr) return handover;
+  handover.replaced = replaced.run;
+  const bool startsOnCreate =
+      applicationActiveState() && anyDisplayableView(state);
+  handover.sample = sampleReplacedRun(
+      replaced,
+      startsOnCreate
+          ? replacementHandoverS(handover.stamp.startedAtS, replaced.lastFrameS)
+          : replaced.lastFrameS);
+  return handover;
 }
 
 } // namespace
@@ -1399,8 +1783,7 @@ std::vector<DriverSnapshot> cancelAnimationGroup(
     GroupCancelBehavior behavior) {
   if (!isOnMainThread()) return {};
   const bool finish = behavior == GroupCancelBehavior::Finish;
-  return finishGroupImpl(
-      groupId, finish, finish);
+  return finishGroupImpl(groupId, finish, finish, landAll());
 }
 
 void setPresentation(
@@ -1425,7 +1808,7 @@ void setPresentation(
   auto &state = iterator->second;
   if (state.groupId != 0) {
     if (!takeOwnership) return;
-    finishGroupImpl(state.groupId, false, false);
+    finishGroupImpl(state.groupId, false, false, {driverId});
   }
   if (!takeOwnership && state.ownership != Ownership::Interactive) return;
   if (takeOwnership) {
@@ -1458,11 +1841,12 @@ Presentation beginInteraction(uint64_t driverId) {
   if (iterator == registry().end()) return unavailablePresentation();
   auto &state = iterator->second;
   if (state.groupId != 0) {
-    finishGroupImpl(state.groupId, false, false);
+    finishGroupImpl(state.groupId, false, false, {driverId});
   }
   state.destroyed = false;
   if (!state.animation.has_value()) {
     state.ownership = Ownership::Interactive;
+    beginFlightInteraction(state);
     return state.latest;
   }
   const int32_t animationId = state.animation->id;
@@ -1476,7 +1860,8 @@ Presentation beginInteraction(uint64_t driverId) {
   // write. Do not let it become a later `initialVelocity: inherit` sample.
   applyToViews(state, current);
   emitCompletion(driverId, animationId, completionTag, false);
-  return current;
+  beginFlightInteraction(state);
+  return state.latest;
 }
 
 int32_t animateTiming(
@@ -1496,6 +1881,20 @@ int32_t animateTiming(
     return 0;
   }
   auto iterator = registry().find(driverId);
+  if (!start.hasInteractiveStart && iterator != registry().end() &&
+      !iterator->second.destroyed && iterator->second.hasLatest &&
+      flightWayBackAvailable(iterator->second)) {
+    // The way back: start where the target shows the content.
+    start.hasInteractiveStart = true;
+    start.interactiveStart = iterator->second.flightLanded;
+  }
+  // Replacing a moving run: start where it is at the new run's epoch.
+  const SingleRunHandover handover =
+      singleRunHandover(driverId, start.startedAtHintS);
+  if (handover.replaced != nullptr && !start.hasInteractiveStart) {
+    start.hasInteractiveStart = true;
+    start.interactiveStart = handover.sample.presentation;
+  }
   Presentation preflightStart;
   if (iterator == registry().end()) {
     if (!start.hasInteractiveStart ||
@@ -1521,7 +1920,8 @@ int32_t animateTiming(
     iterator->second.hasLatest = true;
   }
   auto &state = iterator->second;
-  if (state.groupId != 0) finishGroupImpl(state.groupId, false, false);
+  const Presentation preRun = visiblePresentation(driverId, state);
+  if (state.groupId != 0) finishGroupImpl(state.groupId, false, false, {driverId});
   state.destroyed = false;
   const int32_t animationId = allocateAnimationId();
   const Presentation resolvedStart =
@@ -1536,10 +1936,11 @@ int32_t animateTiming(
   active.completionTag = completionTag;
   active.kind = AnimationKind::Timing;
   active.timing = animation;
+  active.preRun = preRun;
   active.start = resolvedStart;
   active.target = presentation;
   active.durationS = animation.durationMs / 1000.0;
-  return startAnimation(driverId, state, std::move(active), start.startedAtHintS);
+  return startAnimation(driverId, state, std::move(active), handover.stamp);
 }
 
 int32_t animateSpring(
@@ -1559,6 +1960,20 @@ int32_t animateSpring(
     return 0;
   }
   auto iterator = registry().find(driverId);
+  if (!start.hasInteractiveStart && iterator != registry().end() &&
+      !iterator->second.destroyed && iterator->second.hasLatest &&
+      flightWayBackAvailable(iterator->second)) {
+    // The way back: start where the target shows the content.
+    start.hasInteractiveStart = true;
+    start.interactiveStart = iterator->second.flightLanded;
+  }
+  // Replacing a moving run: start where it is at the new run's epoch.
+  const SingleRunHandover handover =
+      singleRunHandover(driverId, start.startedAtHintS);
+  if (handover.replaced != nullptr && !start.hasInteractiveStart) {
+    start.hasInteractiveStart = true;
+    start.interactiveStart = handover.sample.presentation;
+  }
   Presentation preflightStart;
   if (iterator == registry().end()) {
     if (!start.hasInteractiveStart ||
@@ -1574,12 +1989,11 @@ int32_t animateSpring(
   }
   const double velocity = animation.inheritVelocity &&
           iterator != registry().end()
-      ? inheritedVelocity(
-            iterator->second.samples,
-            velocityChannels(presentation),
-            nowSeconds())
+      ? inheritedVelocityFor(
+            iterator->second, handover.replaced, handover.sample.progress,
+            preflightStart, presentation, nowSeconds())
       : animation.initialVelocity;
-  if (!isFinitePresentation(preflightStart) ||
+  if (!std::isfinite(velocity) || !isFinitePresentation(preflightStart) ||
       preflightStart.clip.curve != presentation.clip.curve ||
       !springScaleStaysPositive(
           preflightStart, presentation, animation, velocity)) {
@@ -1591,7 +2005,8 @@ int32_t animateSpring(
     iterator->second.hasLatest = true;
   }
   auto &state = iterator->second;
-  if (state.groupId != 0) finishGroupImpl(state.groupId, false, false);
+  const Presentation preRun = visiblePresentation(driverId, state);
+  if (state.groupId != 0) finishGroupImpl(state.groupId, false, false, {driverId});
   state.destroyed = false;
   const int32_t animationId = allocateAnimationId();
   // Scalar velocity along the current-to-target trajectory; each channel is
@@ -1611,6 +2026,7 @@ int32_t animateSpring(
   active.spring = animation;
   active.spring.initialVelocity = velocity;
   active.spring.inheritVelocity = false;
+  active.preRun = preRun;
   active.start = resolvedStart;
   active.target = presentation;
   active.durationS = kSpringMaxDurationS;
@@ -1630,7 +2046,7 @@ int32_t animateSpring(
     active.springVelocity[index] =
         velocity * (targetChannels[index] - startChannels[index]);
   }
-  return startAnimation(driverId, state, std::move(active), start.startedAtHintS);
+  return startAnimation(driverId, state, std::move(active), handover.stamp);
 }
 
 int32_t rejectAnimation(uint64_t driverId) {
@@ -1658,7 +2074,7 @@ CancelResult cancelAnimation(
       return {false, visiblePresentation(driverId, state)};
     }
     const std::vector<DriverSnapshot> snapshots =
-        finishGroupImpl(activeGroupId, useTarget, false);
+        finishGroupImpl(activeGroupId, useTarget, false, landAll());
     for (const DriverSnapshot &snapshot : snapshots) {
       if (snapshot.driverId == driverId) return {true, snapshot.presentation};
     }
@@ -1678,8 +2094,11 @@ CancelResult cancelAnimation(
   state.hasLatest = true;
   state.ownership = Ownership::Interactive;
   applyToViews(state, result);
+  // A cancel that finishes at the target lands as a finish, as a group's
+  // cancel with `finish` does.
+  landFlight(state, result, useTarget);
   emitCompletion(driverId, activeId, completionTag, false);
-  return {true, result};
+  return {true, state.latest};
 }
 
 void destroyDriver(uint64_t driverId) {
@@ -1687,9 +2106,15 @@ void destroyDriver(uint64_t driverId) {
   auto iterator = registry().find(driverId);
   if (iterator == registry().end()) return;
   auto &state = iterator->second;
-  if (state.groupId != 0) finishGroupImpl(state.groupId, false, false);
+  if (state.groupId != 0) finishGroupImpl(state.groupId, false, false, landAll());
   state.ownership = Ownership::Interactive;
+  const bool hadAnimation = state.animation.has_value();
+  const Presentation lastFrame =
+      hadAnimation ? state.animation->current : state.latest;
   finishActive(driverId, state, false);
+  // An airborne host lands, also one an interaction holds (no run).
+  landFlight(state, lastFrame, false);
+  state.hasFlightLanded = false;
   // A destroyed driver's interaction history must not seed a revived
   // incarnation: the revival seed would otherwise pair with these samples and
   // refresh the staleness clock with motion no finger produced. (iOS clears
@@ -1821,6 +2246,52 @@ void JSmoothClipView::setAutonomousMotion(bool active) const {
   static const auto method =
       javaClassStatic()->getMethod<void(jboolean)>("setAutonomousMotion");
   method(self(), active);
+}
+
+int32_t JSmoothClipView::flightLift(bool interaction) const {
+  static const auto method =
+      javaClassStatic()->getMethod<jint(jboolean)>("flightLift");
+  return method(self(), interaction);
+}
+
+int32_t JSmoothClipView::flightRunEnded(bool finished) const {
+  static const auto method =
+      javaClassStatic()->getMethod<jint(jboolean)>("flightRunEnded");
+  return method(self(), finished);
+}
+
+bool JSmoothClipView::flightWayBackAvailable() const {
+  static const auto method =
+      javaClassStatic()->getMethod<jboolean()>("flightWayBackAvailable");
+  return method(self()) != 0;
+}
+
+bool JSmoothClipView::flightWindowTransform(double (&values)[8]) const {
+  static const auto method =
+      javaClassStatic()->getMethod<jdoubleArray()>("flightWindowTransform");
+  auto result = method(self());
+  if (!result || result->size() < 8) return false;
+  result->getRegion(0, 8, static_cast<jdouble *>(values));
+  return true;
+}
+
+void flightHandedOffAndroid(
+    uint64_t driverId,
+    alias_ref<JSmoothClipView> view) {
+  if (!isOnMainThread()) return;
+  auto iterator = registry().find(driverId);
+  if (iterator == registry().end()) return;
+  DriverState &state = iterator->second;
+  // A run on the driver owns its presentation and lands on its own.
+  if (state.groupId != 0 || state.animation.has_value()) return;
+  JNIEnv *env = facebook::jni::Environment::current();
+  for (const ViewEntry &entry : state.views) {
+    if (env->IsSameObject(entry.view.get(), view.get())) {
+      // The held landing's frame is what the host showed last.
+      applyFlightHandoff(state, state.latest);
+      return;
+    }
+  }
 }
 
 void JSmoothClipBackdropView::applyBackdropPx(

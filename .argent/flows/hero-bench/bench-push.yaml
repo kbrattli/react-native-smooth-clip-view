@@ -1,0 +1,22 @@
+# Benchmark, push scenario (docs/hero-bench.md): 10 open/close cycles per cell,
+# flight then SET, with no load, with the main thread busy 14 ms per frame,
+# and with the JS thread blocked 300 ms from the tap.
+# Cells: flight/0:10,set/0:10,flight/busy14:10,set/busy14:10,flight/jsblock:10,set/jsblock:10
+steps:
+  - run: open
+  - tap: { id: hero-bench-variant-flight-push }
+  - run: cycles-push
+  - tap: { id: hero-bench-variant-set-push }
+  - run: cycles-push
+  - tap: { id: hero-bench-busy-14 }
+  - tap: { id: hero-bench-variant-flight-push }
+  - run: cycles-push
+  - tap: { id: hero-bench-variant-set-push }
+  - run: cycles-push
+  - tap: { id: hero-bench-busy-0 }
+  - tap: { id: hero-bench-js-block }
+  - tap: { id: hero-bench-variant-flight-push }
+  - run: cycles-push
+  - tap: { id: hero-bench-variant-set-push }
+  - run: cycles-push
+  - tap: { id: hero-bench-js-block }

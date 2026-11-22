@@ -7,6 +7,7 @@ const ROUTES = [
   { href: '/image-gallery', title: 'Image gallery' },
   { href: '/benchmark-screen', title: 'Stress benchmark' },
   { href: '/clip-bench', title: 'Clip bench' },
+  { href: '/hero-bench', title: 'Hero bench: SET vs clip' },
 ] as const;
 
 export default function HomeScreen() {

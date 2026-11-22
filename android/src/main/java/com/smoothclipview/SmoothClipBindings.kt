@@ -97,6 +97,13 @@ internal object SmoothClipBindings {
     external fun nativeSetApplicationActive(active: Boolean)
 
     /**
+     * A held flight landing handed off to its target outside a registry call:
+     * the registry resets the host to the rest presentation captured at lift
+     * and remembers the landed one for the way back.
+     */
+    external fun nativeFlightHandedOff(driverId: Double, view: SmoothClipView)
+
+    /**
      * Releases runtime-bound listener state during host teardown; must run
      * while the JS runtime is still alive (module invalidate).
      */

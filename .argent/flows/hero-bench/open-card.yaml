@@ -1,0 +1,5 @@
+# Fragment: open the selected variant and let it settle.
+steps:
+  - tap: { id: hero-bench-card }
+  - await: { visible: { id: hero-bench-back }, timeout: 10000 }
+  - await: { idle: true, stableFor: 400, timeout: 9000 }

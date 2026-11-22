@@ -1,0 +1,34 @@
+# Parity check, sheet (docs/hero-flight-results.md): for the flight, then for
+# SET: open and drag the sheet down; open, cancel a drag at 15 %, then Back.
+steps:
+  - run: open
+  - tap: { id: hero-bench-variant-flight-sheet }
+  - run: open-card
+  - run: close-drag
+  - run: open-card
+  - tool: gesture-custom
+    args:
+      events:
+        - { type: Down, x: 0.5, y: 0.2 }
+        - { type: Move, x: 0.5, y: 0.35, delayMs: 800 }
+        - { type: Move, x: 0.5, y: 0.35, delayMs: 400 }
+        - { type: Up, x: 0.5, y: 0.35, delayMs: 16 }
+      interpolate: 48
+  - await: { idle: true, stableFor: 800, timeout: 9000 }
+  - await: { visible: { id: hero-bench-back }, timeout: 5000 }
+  - run: back
+  - tap: { id: hero-bench-variant-set-sheet }
+  - run: open-card
+  - run: close-drag
+  - run: open-card
+  - tool: gesture-custom
+    args:
+      events:
+        - { type: Down, x: 0.5, y: 0.2 }
+        - { type: Move, x: 0.5, y: 0.35, delayMs: 800 }
+        - { type: Move, x: 0.5, y: 0.35, delayMs: 400 }
+        - { type: Up, x: 0.5, y: 0.35, delayMs: 16 }
+      interpolate: 48
+  - await: { idle: true, stableFor: 800, timeout: 9000 }
+  - await: { visible: { id: hero-bench-back }, timeout: 5000 }
+  - run: back

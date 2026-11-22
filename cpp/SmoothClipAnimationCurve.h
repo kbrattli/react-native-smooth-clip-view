@@ -66,19 +66,46 @@ struct StartStamp {
   bool frameClockAnchored;
 };
 
-// How far a JS-captured stamp may sit from the native wall clock and still be
-// trusted. The two reads happen microseconds apart in the same synchronous
+// How far behind the native wall clock a JS-captured stamp may sit and still
+// be trusted. The two reads happen microseconds apart in the same synchronous
 // call stack, and a __frameTimestamp hint can lag by at most one stalled
 // frame; a full second means a broken epoch (a caller stamping from the wrong
 // clock), where falling back to the native clock is strictly safer than
 // completing every animation on its first frame.
 inline constexpr double kStartStampSanityWindowS = 1.0;
 
+// The stamp a run starts from: the JS stamp when it is at or behind the wall
+// clock, within the sanity window, else the wall clock, unanchored, as an
+// unstamped call. A run never begins later than its call: a stamp ahead would
+// show the start on every frame before it. Reanimated's Android stamps (the
+// doFrame's frameTimeNanos, or the uptime clock outside a frame) are never
+// ahead, so the clamp holds by construction, not by Reanimated's behaviour.
 inline StartStamp resolveStartStamp(double jsStampS, double wallNowS) {
-  const bool usable = std::isfinite(jsStampS) &&
-      std::abs(jsStampS - wallNowS) <= kStartStampSanityWindowS;
+  const bool usable = std::isfinite(jsStampS) && jsStampS <= wallNowS &&
+      wallNowS - jsStampS <= kStartStampSanityWindowS;
   if (usable) return {jsStampS, true};
   return {wallNowS, false};
+}
+
+// --- Replacing a moving run (flight-spec.md) -------------------------------
+//
+// A run that replaces a moving one starts where the replaced run is when the
+// new run's elapsed 0 is drawn, and inherits its velocity at that same
+// moment; no frame may show the new run's start before it.
+//
+// On Android a worklet's stamp is the frame being produced (Reanimated's
+// rAF time is that doFrame's frameTimeNanos, and this frame loop runs in the
+// same doFrame, before the traversal draws), so the stamp is the moment the
+// replacement's first frame is drawn (resolveStartStamp).
+
+// The moment a replacement takes the replaced run over: the new run's epoch,
+// unless the replaced run already drew a later frame. That happens with a
+// stamp behind the frame on screen (C5): the new run then begins partway
+// through, from the frame on screen. Whether the replaced run was advanced
+// to the stamp's frame before the call (frame callbacks run in posting
+// order) does not matter: it is sampled at the epoch either way.
+inline double replacementHandoverS(double epochS, double lastFrameS) {
+  return std::max(epochS, lastFrameS);
 }
 
 // Elapsed fraction of a timing animation. A non-positive duration is

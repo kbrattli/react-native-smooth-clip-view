@@ -77,9 +77,11 @@ const timing = {
 };
 
 type MockNative = {
+  beginGroupInteraction: jest.Mock;
   snapshotGroup: jest.Mock;
   setClipPresentationBatch: jest.Mock;
   animateTimingGroup: jest.Mock;
+  animateSpringGroup: jest.Mock;
   cancelAnimationGroup: jest.Mock;
 };
 
@@ -126,11 +128,136 @@ describe('useSmoothClipGroup', () => {
     expect(packet[stride + 1]).toBe(220);
   });
 
+  it('marks window-space frames with a negative driver id', () => {
+    const group = useSmoothClipGroup();
+    native.setClipPresentationBatch.mockClear();
+
+    group.ui.setFrames([
+      { clip: first, frame: { ...frame, space: 'window' } },
+      { clip: second, frame: { ...target, space: 'host' } },
+    ]);
+
+    const packet = native.setClipPresentationBatch.mock
+      .calls[0]?.[0] as number[];
+    const stride = PRESENTATION_STRIDE + 1;
+    expect(packet[0]).toBe(-(unwrapSmoothClipRef(first)?.id ?? 0));
+    expect(packet[stride]).toBe(unwrapSmoothClipRef(second)?.id);
+    // The presentation itself is unchanged: native converts it.
+    expect(packet[1]).toBe(-20);
+  });
+
+  it('flags a window-space animateTo target in the entry flags slot', () => {
+    const group = useSmoothClipGroup();
+    native.animateTimingGroup.mockClear();
+
+    expect(
+      group.ui.animateTo(
+        [
+          { clip: first, target: { ...target, space: 'window' } },
+          { clip: second, target },
+        ],
+        timing
+      )
+    ).not.toBeNull();
+
+    const packet = native.animateTimingGroup.mock.calls[0]?.[1] as number[];
+    const stride = PRESENTATION_STRIDE * 2 + 2;
+    // [driverId, flags, from, target]: bit 1 is target-in-window, and the
+    // has-from bit 0 stays clear.
+    expect(packet[1]).toBe(2);
+    expect(packet[stride + 1]).toBe(0);
+  });
+
+  it('sends NaN as the spring velocity for inherit', () => {
+    const group = useSmoothClipGroup();
+    native.animateSpringGroup.mockClear();
+
+    expect(
+      group.ui.animateTo([{ clip: first, target }], {
+        type: 'spring',
+        velocity: 'inherit',
+      })
+    ).not.toBeNull();
+    expect(
+      group.ui.animateTo([{ clip: first, target }], {
+        type: 'spring',
+        velocity: 3,
+      })
+    ).not.toBeNull();
+
+    const inherit = native.animateSpringGroup.mock.calls[0] as unknown[];
+    const explicit = native.animateSpringGroup.mock.calls[1] as unknown[];
+    // (controllerId, entries, mass, stiffness, damping, velocity, ...)
+    expect(Number.isNaN(inherit[5])).toBe(true);
+    expect(explicit[5]).toBe(3);
+  });
+
   it('treats a pre-ready streamed batch rejection as a dropped frame', () => {
     const group = useSmoothClipGroup();
     native.setClipPresentationBatch.mockReturnValueOnce(false);
+    // On the UI thread a snapshot answers one entry per clip.
+    native.snapshotGroup.mockReturnValueOnce(snapshotPacket(frame, false));
 
     expect(() => group.ui.setFrames([{ clip: first, frame }])).not.toThrow();
+  });
+
+  describe('off the UI thread (runOnUISync)', () => {
+    // Native answers nothing there: not a snapshot, not a run, not a frame.
+    const offUIThread = /must run on the UI thread[^]*runOnUISync/;
+
+    it('names the cause when beginInteraction gets no snapshot', () => {
+      const group = useSmoothClipGroup();
+      native.beginGroupInteraction.mockReturnValueOnce([]);
+      native.snapshotGroup.mockReturnValueOnce([]);
+
+      expect(() => group.ui.beginInteraction([first, second])).toThrow(
+        offUIThread
+      );
+      expect(native.snapshotGroup).toHaveBeenLastCalledWith([
+        unwrapSmoothClipRef(first)?.id,
+        unwrapSmoothClipRef(second)?.id,
+      ]);
+    });
+
+    it('still reports a malformed snapshot on the UI thread', () => {
+      const group = useSmoothClipGroup();
+      native.beginGroupInteraction.mockReturnValueOnce([]);
+      native.snapshotGroup.mockReturnValueOnce(snapshotPacket(frame));
+
+      expect(() => group.ui.beginInteraction([first])).toThrow(
+        'Native returned an invalid group snapshot'
+      );
+    });
+
+    it('rejects animateTo, setFrames and cancel', () => {
+      const group = useSmoothClipGroup();
+      native.animateTimingGroup.mockReturnValueOnce(0);
+      native.snapshotGroup.mockReturnValueOnce([]);
+      expect(() =>
+        group.ui.animateTo([{ clip: first, target }], timing)
+      ).toThrow(offUIThread);
+
+      native.setClipPresentationBatch.mockReturnValueOnce(false);
+      native.snapshotGroup.mockReturnValueOnce([]);
+      expect(() => group.ui.setFrames([{ clip: first, frame }])).toThrow(
+        offUIThread
+      );
+
+      native.animateTimingGroup.mockReturnValueOnce(93);
+      const handle = group.ui.animateTo([{ clip: first, target }], timing);
+      expect(handle).not.toBeNull();
+      native.cancelAnimationGroup.mockReturnValueOnce([]);
+      native.snapshotGroup.mockReturnValueOnce([]);
+      expect(() => group.ui.cancel(handle!)).toThrow(offUIThread);
+    });
+
+    it('keeps a rejected run on the UI thread a null handle', () => {
+      const group = useSmoothClipGroup();
+      native.animateTimingGroup.mockReturnValueOnce(0);
+      native.snapshotGroup.mockReturnValueOnce(snapshotPacket(frame));
+
+      expect(group.ui.animateTo([{ clip: first, target }], timing)).toBeNull();
+    });
   });
 
   it('settles from ordered snapshots carried by the completion event', async () => {

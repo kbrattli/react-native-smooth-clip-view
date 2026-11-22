@@ -35,6 +35,10 @@ export interface NativeProps extends ViewProps {
   shadowRendering?: CodegenTypes.WithDefault<CodegenTypes.Int32, 0>;
   initialBackdropTranslateX?: CodegenTypes.WithDefault<CodegenTypes.Double, 0>;
   initialBackdropTranslateY?: CodegenTypes.WithDefault<CodegenTypes.Double, 0>;
+  /** Runs on this host fly in the window's flight layer (see `flight`). */
+  flightEnabled?: CodegenTypes.WithDefault<boolean, false>;
+  /** Pairs the flights with the SmoothClipFlightTarget of this tag; '' = none. */
+  flightTag?: CodegenTypes.WithDefault<string, ''>;
 }
 
 interface NativeCommands {

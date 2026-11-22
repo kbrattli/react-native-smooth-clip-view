@@ -1,0 +1,5 @@
+# CPU and memory, sheet scenario, set: 10 open/close cycles with no load.
+steps:
+  - run: open
+  - tap: { id: hero-bench-variant-set-sheet }
+  - run: cycles-sheet

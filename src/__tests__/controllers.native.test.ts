@@ -79,6 +79,7 @@ const timing = {
 };
 
 type MockNative = {
+  beginGroupInteraction: jest.Mock;
   snapshotGroup: jest.Mock;
   setClipPresentationBatch: jest.Mock;
   animateTimingGroup: jest.Mock;
@@ -163,6 +164,18 @@ describe('useSmoothClipController', () => {
     expect(clip.ui.isReady()).toBe(false);
     native.snapshotGroup.mockReturnValueOnce([]);
     expect(clip.ui.isReady()).toBe(false);
+    native.snapshotGroup.mockClear();
+  });
+
+  it('names the UI thread when beginInteraction runs off it', () => {
+    const clip = useSmoothClipController(initial);
+    // runOnUISync runs the worklet on the JS thread: native answers nothing.
+    native.beginGroupInteraction.mockReturnValueOnce([]);
+    native.snapshotGroup.mockReturnValueOnce([]);
+
+    expect(() => clip.ui.beginInteraction()).toThrow(
+      /must run on the UI thread[^]*runOnUISync/
+    );
     native.snapshotGroup.mockClear();
   });
 

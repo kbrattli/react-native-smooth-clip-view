@@ -149,4 +149,18 @@ describe('SmoothClipView driver boundary', () => {
     );
     error.mockRestore();
   });
+
+  it('maps `flight` to the native flight props', () => {
+    const render = (flight?: string | true) =>
+      renderSmoothClipView({ controller: makeController(), flight }, null)
+        .props as Record<string, unknown>;
+
+    expect(render()).toMatchObject({ flightEnabled: false, flightTag: '' });
+    expect(render(true)).toMatchObject({ flightEnabled: true, flightTag: '' });
+    expect(render('photo-7')).toMatchObject({
+      flightEnabled: true,
+      flightTag: 'photo-7',
+    });
+    expect(render('photo-7')).not.toHaveProperty('flight');
+  });
 });

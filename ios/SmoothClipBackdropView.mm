@@ -152,11 +152,8 @@ static NSString *const kSmoothClipBackdropAnimationKey = @"smoothClip.backdrop";
 - (void)installBackdropGroup:(CAAnimationGroup *)group
              sharedBeginTime:(CFTimeInterval)sharedBeginTime {
   if (sharedBeginTime <= 0) sharedBeginTime = CACurrentMediaTime();
-  // The clip's epoch, translated into this layer's clock: a stamped epoch
-  // may sit up to one frame ahead of the commit, and until it arrives the
-  // run presents its first frame rather than the target the model holds.
+  // The clip's epoch (its install), translated into this layer's clock.
   group.beginTime = [_content.layer convertTime:sharedBeginTime fromLayer:nil];
-  group.fillMode = kCAFillModeBackwards;
   [_content.layer addAnimation:group forKey:kSmoothClipBackdropAnimationKey];
   _animating = YES;
 }

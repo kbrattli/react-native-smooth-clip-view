@@ -1,0 +1,23 @@
+# Fragment: 10 open/close cycles of the selected push variant: open the card,
+# close with the swipe-back gesture.
+steps:
+  - run: open-card
+  - run: close-swipe
+  - run: open-card
+  - run: close-swipe
+  - run: open-card
+  - run: close-swipe
+  - run: open-card
+  - run: close-swipe
+  - run: open-card
+  - run: close-swipe
+  - run: open-card
+  - run: close-swipe
+  - run: open-card
+  - run: close-swipe
+  - run: open-card
+  - run: close-swipe
+  - run: open-card
+  - run: close-swipe
+  - run: open-card
+  - run: close-swipe

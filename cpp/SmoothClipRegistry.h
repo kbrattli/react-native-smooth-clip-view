@@ -80,10 +80,8 @@ struct AnimationStart {
   // as `__frameTimestamp || _getAnimationTimestamp()` and converted to
   // CLOCK_MONOTONIC seconds. NaN means no stamp was captured (older callers,
   // tests): the integrator then falls back to its own clock plus the min()
-  // frame-clock anchor. iOS does not use this member: it carries the same
-  // stamp on the animation group (`GroupState::beginTimeHint` in
-  // SmoothClipRegistry.mm) and applies it as the shared Core Animation
-  // `beginTime`, bounded by the same sanity window.
+  // frame-clock anchor. The stamp is Android's: iOS ignores it here and in
+  // the group calls below, and begins every run at its install.
   double startedAtHintS = std::numeric_limits<double>::quiet_NaN();
 };
 
@@ -101,6 +99,9 @@ struct DriverSnapshot {
 struct BatchEntry {
   uint64_t driverId;
   Presentation presentation;
+  // The presentation is in window space (SmoothClipPresentation.space); the
+  // registry converts it through the host's transform to the window.
+  bool inWindow = false;
 };
 
 struct GroupMotionEntry {
@@ -108,6 +109,9 @@ struct GroupMotionEntry {
   bool hasFrom;
   Presentation from;
   Presentation target;
+  // Window-space endpoints (flags bits 2 and 1 of the motion-entry packet).
+  bool targetInWindow = false;
+  bool fromInWindow = false;
 };
 
 enum class GroupCancelBehavior : int32_t {

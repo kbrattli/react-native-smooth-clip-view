@@ -37,6 +37,15 @@ void viewAnimationDidStop(
     bool finished);
 size_t registeredViewCount(uint64_t driverId);
 bool hasActiveAnimation(uint64_t driverId);
+// A flight's handoff (flight-spec.md, Landing): puts the driver back at
+// `rest`, both its latest presentation and every registered view, and
+// returns the presentation it replaces (where the flight landed) in
+// `landed`. False, with nothing changed, while a run owns the driver or when
+// the driver is unknown or destroyed.
+bool settleFlightHost(
+    uint64_t driverId,
+    Presentation rest,
+    Presentation &landed);
 
 } // namespace smoothclip
 

@@ -2,10 +2,12 @@ import {
   forwardRef,
   type ComponentRef,
   type ForwardedRef,
+  type ForwardRefExoticComponent,
   type ReactElement,
   type ReactNode,
+  type RefAttributes,
 } from 'react';
-import type { ViewProps } from 'react-native';
+import type { HostInstance, ViewProps } from 'react-native';
 import type { SmoothClipController } from './controllerTypes';
 import { getControllerRef, unwrapSmoothClipRef } from './controllerInternals';
 import NativeSmoothClipBackdropView from './SmoothClipBackdropViewNativeComponent';
@@ -45,7 +47,9 @@ export function renderSmoothClipBackdropView(
  * value and follows from the next run. The channel owns the content's
  * transform: do not put a `transform` style on this view.
  */
-export const SmoothClipBackdropView = forwardRef<
+export const SmoothClipBackdropView: ForwardRefExoticComponent<
+  SmoothClipBackdropViewProps & RefAttributes<HostInstance>
+> = forwardRef<
   ComponentRef<typeof NativeSmoothClipBackdropView>,
   SmoothClipBackdropViewProps
 >(function SmoothClipBackdropViewComponent(props, forwardedRef) {

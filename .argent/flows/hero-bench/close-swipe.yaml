@@ -1,0 +1,12 @@
+# Fragment: close a pushed detail with the swipe-back gesture, dragged from
+# the left edge to 75 % of the width and released.
+steps:
+  - tool: gesture-custom
+    args:
+      events:
+        - { type: Down, x: 0, y: 0.6 }
+        - { type: Move, x: 0.75, y: 0.6, delayMs: 600 }
+        - { type: Up, x: 0.75, y: 0.6, delayMs: 16 }
+      interpolate: 36
+  - await: { visible: { id: hero-bench-card }, timeout: 10000 }
+  - await: { idle: true, stableFor: 400, timeout: 9000 }

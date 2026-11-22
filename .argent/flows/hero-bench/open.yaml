@@ -1,0 +1,18 @@
+# Fragment: from the running example (Home or the bench), open the hero bench
+# with no load. It does not relaunch, so a dev client pointed at a non-default
+# Metro port stays connected.
+steps:
+  - when:
+      visible: { text: Continue }
+    steps:
+      - echo: Dismiss the optional Expo development-build introduction.
+      - tap: { text: Continue }
+      - await: { hidden: { text: Continue } }
+  - when:
+      visible: { id: route-card-hero-bench }
+    steps:
+      - echo: On Home, open the hero bench.
+      - tap: { id: route-card-hero-bench }
+  - await: { visible: { id: hero-bench-card }, timeout: 10000 }
+  - await: { idle: true }
+  - tap: { id: hero-bench-busy-0 }
