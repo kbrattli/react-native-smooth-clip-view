@@ -356,9 +356,10 @@ numbers above stay as measured.
 
 **How it was measured.** The position / size split re-analyses the committed
 recordings with `analyze-frames.swift` and fits each moving frame's top edge
-and height separately through the variant's curve. On Android the layout was
-recomputed from the geometry, so its fitted run starts differ from the
-table's by up to 4 ms. The marks come from `example/src/galleryBench/galleryMarks.ts`, off
+and height separately through the variant's curve. It uses only the frames
+between 5 and 95 % of the run, so its medians can differ from the table's by
+a few ms (up to 4 ms on Android, where frames are sparse); per run, the
+re-analysis reproduces the committed values exactly. The marks come from `example/src/galleryBench/galleryMarks.ts`, off
 by default (`GALLERY_MARKS`). With it on, every opening logs its phases and
 expo-image loads at the info level, readable with
 `xcrun simctl spawn <udid> log show --info`. The transform builds are not
