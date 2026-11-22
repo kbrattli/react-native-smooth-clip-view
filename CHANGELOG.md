@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.6.1](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.6.1) — 2026-11-22
 
 - **Android: `SmoothClipFlightTarget` takes `borderRadius`, `overflow` and the
   border props.** Its view manager's codegen delegate dropped them, so a
