@@ -144,15 +144,25 @@ and frames without it.
 ## The gallery bench
 
 `docs/gallery-mount-time.md` reuses these scripts for a 12-photo grid opened
-by six transition variants (`app/gallery-*`, `.argent/flows/gallery-bench/`).
+by eight transition variants (`app/gallery-*`, `.argent/flows/gallery-bench/`),
+measured as start latency: the tap handler to the first frame in which the
+photo has moved.
 For it, `analyze-frames.swift` takes `HERO_MASK` (window rects whose pixels it
 ignores: the other tiles, which `record.sh` reads from the layout's `mask`)
 and `HERO_THRESHOLD`; a `summarize.mjs` cell can name its run's curve for the
 epoch fit (`name/0:10:easeOutCubic`); `timing.mjs` also writes `timing.json`,
 the per-run rows; and `contact-sheet.swift` tiles every recorded frame of a
-time window into one PNG, labelled with its time.
+time window into one PNG, labelled with its time. For start latency,
+`summarize.mjs` also finds each opening's first changed frame
+(`HERO_CHANGE_TOL`), `trace.sh` streams the app's `[gallery-tap]` handler
+times with the trace, `timing.mjs` times openings from them, and on Android
+`record.sh` saves `getevent` and `logcat` for `input-clock.mjs`.
+`clip-excerpts.swift` cuts constant-frame-rate excerpts for videos: a Remotion
+render of the variable-frame-rate recordings skips frames.
 
-The gallery bench also ran on the Android emulator. `record.sh` records a
+The gallery bench also runs on the Android emulator, launched with
+`-gpu host`: the Pixel_10_Pro AVD's `auto` GPU mode renders its API 37 image
+in software (lavapipe) at about 35 fps. `record.sh` records a
 device that `adb devices` lists with `adb shell screenrecord --size 640x1428`
 (`HERO_RECORD_SIZE`; at the Pixel 10 Pro emulator's native 1280x2856 the
 encoder falls back to a distorted 720x1280) and runs the flow with
@@ -160,21 +170,15 @@ encoder falls back to a distorted 720x1280) and runs the flow with
 the 6 dp gutters, so on Android each masked tile grows by 1 dp
 (`HERO_MASK_PAD`, default 1 on Android, 0 on iOS). The layout comes from a
 Debug build through Metro, as on iOS (`--device_id <adb serial>`). There is no
-native trace, so `trace.sh` and `timing.mjs` do not apply: Android times run
-from the tap marker, and `gallery-json.mjs --android` merges them into the
-JSON.
-
-```sh
-HERO_LAYOUT=$LAYOUT example/scripts/hero-bench/record.sh emulator-5554 \
-  .argent/flows/gallery-bench/bench.yaml /tmp/gallery-android $CELLS
-node example/scripts/hero-bench/gallery-json.mjs --android /tmp/gallery-android \
-  $CELLS docs/gallery-mount-time.json <meta.json>
-```
+native trace, so `trace.sh` and `timing.mjs` do not apply: Android frames
+are timed from the tap marker, and `gallery-json.mjs` merges both platforms'
+runs into the JSON (commands in `docs/gallery-mount-time.md`).
 
 ## Android
 
 The bench runs on Android, for correctness only. The emulator's frame rate is
-not trustworthy, and Android has no native trace. A page sheet is an iOS
+not trustworthy in its default GPU mode (software, about 35 fps; use
+`-gpu host`), and Android has no native trace. A page sheet is an iOS
 presentation: on Android the sheet variants are full screens. The gallery
 bench's Android numbers (`docs/gallery-mount-time.md`) compare its variants
 with each other on the emulator only.
