@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.6.3](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.6.3) — 2026-11-25
+
+- **iOS: no ghost of the target when a flight flies home and its screen
+  pops.** The lift hid the target only in the pending Core Animation
+  transaction, and react-native-screens snapshots a popped screen from the
+  last drawn frame. When the pop landed within a frame of the lift (about
+  half of closes), that snapshot still showed the target, which faded out
+  under the shrinking flight. A target now has its hide drawn just before a
+  mount transaction deletes it while covered and on screen.
+
 ## [0.6.2](https://github.com/kbrattli/react-native-smooth-clip-view/releases/tag/v0.6.2) — 2026-11-22
 
 - **Android: `SmoothClipView` and `SmoothClipBackdropView` take the border
