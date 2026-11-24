@@ -118,6 +118,12 @@ The whole call shares one handover and one epoch, and no run begins later than i
    - Move the host's presentation container into the carrier. Fabric children stay in the
      content container.
    - If `flightTag` is set, hide the registered, attached target with that tag.
+     - iOS: before a mount transaction deletes a hidden target that is still in a window,
+       the target has the hide drawn (`snapshotViewAfterScreenUpdates:YES`, discarded). The
+       way back usually pops the target's screen within a frame of the lift, and
+       react-native-screens snapshots a popped screen from the last drawn frame. Without
+       this, that snapshot shows the target, which then fades out with the pop under the
+       flight, as a ghost.
    - **Direction.** If that target was attached and visible at lift, the flight _departs_ from it
      (the way back, or a route-hosted flight leaving its card). Otherwise the flight _lands on_
      it. Only a landing flight can hand off to its target.

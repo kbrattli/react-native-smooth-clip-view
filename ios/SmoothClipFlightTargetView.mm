@@ -3,6 +3,7 @@
 #import "SmoothClipFlight.h"
 
 #import <React/RCTFabricComponentsPlugins.h>
+#import <React/RCTMountingTransactionObserving.h>
 #import <react/renderer/components/SmoothClipViewSpec/ComponentDescriptors.h>
 #import <react/renderer/components/SmoothClipViewSpec/Props.h>
 #import <react/renderer/components/SmoothClipViewSpec/RCTComponentViewHelpers.h>
@@ -18,6 +19,9 @@ using namespace facebook::react;
 - (id<CAAction>)actionForLayer:(CALayer *)layer forKey:(NSString *)event {
   return (id<CAAction>)[NSNull null];
 }
+@end
+
+@interface SmoothClipFlightTargetView () <RCTMountingTransactionObserving>
 @end
 
 @implementation SmoothClipFlightTargetView {
@@ -113,6 +117,26 @@ using namespace facebook::react;
       strongSelf->_transitionObserved = NO;
       [[SmoothClipFlightCoordinator shared] targetStateDidChange:strongSelf];
     }) != nil;
+  }
+}
+
+// A target a flight covers while it shows (the way back) is often deleted
+// within a frame of the lift: the app pops its screen in the worklet that
+// flies the host home. react-native-screens then snapshots the popped screen
+// (`snapshotViewAfterScreenUpdates:NO`), which is the last frame drawn, and
+// that may still show the target: it would fade out under the flight as a
+// ghost. So before such a transaction mounts, the hide is drawn (a snapshot
+// after screen updates, discarded).
+- (void)mountingTransactionWillMount:(const MountingTransaction &)transaction
+                withSurfaceTelemetry:(const SurfaceTelemetry &)surfaceTelemetry {
+  if (!_flightCovered || self.window == nil) return;
+  const auto tag = static_cast<Tag>(self.tag);
+  for (const auto &mutation : transaction.getMutations()) {
+    if (mutation.type == ShadowViewMutation::Delete &&
+        mutation.oldChildShadowView.tag == tag) {
+      (void)[self snapshotViewAfterScreenUpdates:YES];
+      return;
+    }
   }
 }
 
